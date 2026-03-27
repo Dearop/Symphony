@@ -35,14 +35,18 @@ pub fn decompose_vector(values: &[i64], b: i64, k: usize) -> Vec<i64> {
 }
 
 /// Recompose: reconstruct value from digits and base.
+///
+/// Panics if the result overflows i64.
 pub fn recompose(digits: &[i64], b: i64) -> i64 {
     let mut result = 0i128;
     let mut power = 1i128;
     for &d in digits {
-        result += d as i128 * power;
-        power *= b as i128;
+        result = result.checked_add(d as i128 * power)
+            .expect("recompose overflow");
+        power = power.checked_mul(b as i128)
+            .unwrap_or(power); // last iteration doesn't use updated power
     }
-    result as i64
+    i64::try_from(result).expect("recompose result exceeds i64 range")
 }
 
 /// Gadget vector g = (1, b, b^2, ..., b^{k-1}).
@@ -51,7 +55,9 @@ pub fn gadget_vector(b: i64, k: usize) -> Vec<i64> {
     let mut power = 1i64;
     for _ in 0..k {
         g.push(power);
-        power = power.wrapping_mul(b);
+        power = power.checked_mul(b).expect(
+            "gadget_vector overflow: b^i exceeds i64; reduce base or decomposition depth"
+        );
     }
     g
 }

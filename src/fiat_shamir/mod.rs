@@ -4,6 +4,7 @@
 //! the prover commits to each protocol message using Π_cm, and the verifier
 //! derives challenges from the committed transcript.
 
+pub mod hash_commitment;
 pub mod transcript;
 
 /// Trait for the Fiat-Shamir commitment scheme Π_cm.

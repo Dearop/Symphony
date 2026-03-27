@@ -52,7 +52,7 @@ fn evaluate_univariate(
     let n = evals.len();
     let mut result = ctx.zero();
 
-    for i in 0..n {
+    for (i, eval) in evals.iter().enumerate() {
         let mut basis = ctx.one();
         for j in 0..n {
             if i == j {
@@ -72,7 +72,7 @@ fn evaluate_univariate(
             let den_inv = ctx.inv(&den).expect("distinct evaluation points");
             basis = ctx.mul(&basis, &ctx.mul(&num, &den_inv));
         }
-        result = ctx.add(&result, &ctx.mul(&evals[i], &basis));
+        result = ctx.add(&result, &ctx.mul(eval, &basis));
     }
 
     result

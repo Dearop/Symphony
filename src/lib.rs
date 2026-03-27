@@ -29,9 +29,12 @@ pub mod fiat_shamir;
 pub mod snark;
 pub mod r1cs;
 pub mod params;
+pub mod cp_snark;
 
 pub use params::SymphonyParams;
 pub use commitment::{AjtaiParams, Commitment};
 pub use r1cs::R1CSMatrices;
 pub use snark::{BackendSnark, SymphonyProver, SymphonyVerifier, SymphonyProof};
 pub use snark::{DummySnark, DummySymphonyProver, DummySymphonyVerifier, DummySymphonyProof};
+pub use cp_snark::{CPSnark, CPProof, CommittedRelation};
+pub use fiat_shamir::hash_commitment::HashCommitment;

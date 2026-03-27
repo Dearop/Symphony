@@ -46,6 +46,7 @@ pub struct GR1CSChallenges {
 ///
 /// Input: (c, X_in) and witness W.
 /// Output: GR1CS proof containing both Πhad and Πrg.
+#[allow(clippy::too_many_arguments)]
 pub fn prove(
     commitment: &Commitment,
     public_input: &[i64],

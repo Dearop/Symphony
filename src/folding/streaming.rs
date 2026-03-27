@@ -49,11 +49,10 @@ impl StreamingProver {
     /// Initialize the streaming prover.
     pub fn new(ajtai: AjtaiParams, ell_np: usize) -> Self {
         let n = ajtai.n;
-        let log_log_n = if n > 1 {
-            ((n as f64).ln().ln().ceil() as usize).max(1)
-        } else {
-            1
-        };
+        let log_n = if n <= 1 { 1 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
+        let log_log_n = if log_n <= 1 { 1 } else {
+            (usize::BITS - (log_n - 1).leading_zeros()) as usize
+        }.max(1);
         Self {
             ajtai,
             ell_np,
@@ -90,8 +89,8 @@ impl StreamingProver {
     /// Initialize the evaluation table for the sumcheck phase.
     fn init_eval_table(&mut self) {
         let n = self.ajtai.n;
-        let num_vars = (n as f64).log2().ceil() as usize;
-        let table_size = 1 << num_vars;
+        let num_vars = if n <= 1 { 0 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
+        let table_size = 1usize << num_vars;
         let zero = ExtFieldElement { c0: 0, c1: 0 };
         self.eval_table = vec![zero; table_size];
     }
@@ -118,7 +117,7 @@ impl StreamingProver {
             for coeff in &witness.elements[b].coeffs {
                 witness_val = witness_val.wrapping_add(*coeff);
             }
-            witness_val = ((witness_val % q as i64) + q as i64) as i64 % q as i64;
+            witness_val = ((witness_val % q as i64) + q as i64) % q as i64;
             let q_half = (q / 2) as i64;
             if witness_val > q_half {
                 witness_val -= q as i64;
@@ -207,10 +206,18 @@ impl StreamingProver {
 
     /// Derive folding challenges from commitments via Fiat-Shamir.
     fn derive_challenges(&mut self) {
-        use crate::folding::challenge::ChallengeSet;
-        let cs = ChallengeSet::new(self.ajtai.q);
-        let mut rng = rand::rng();
-        self.beta = cs.sample_vector(&mut rng, self.ell_np);
+        let mut transcript = crate::fiat_shamir::transcript::Transcript::new(b"symphony-fold-streaming");
+        for c in &self.commitments {
+            for elem in &c.value.elements {
+                let bytes: Vec<u8> = elem.coeffs.iter().flat_map(|v| v.to_le_bytes()).collect();
+                transcript.append_bytes(b"commitment", &bytes);
+            }
+        }
+        self.beta = crate::folding::challenge::derive_challenge_vector(
+            &mut transcript,
+            self.ajtai.q,
+            self.ell_np,
+        );
     }
 }
 

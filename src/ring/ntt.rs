@@ -56,17 +56,17 @@ impl NttContext {
     pub fn forward(&self, a: &RingElement) -> [u64; D] {
         let mut vals = [0u64; D];
         // Convert from centered to positive representation
-        for i in 0..D {
-            vals[i] = if a.coeffs[i] < 0 {
-                (a.coeffs[i] + self.q as i64) as u64
+        for (v, &c) in vals.iter_mut().zip(a.coeffs.iter()) {
+            *v = if c < 0 {
+                (c + self.q as i64) as u64
             } else {
-                a.coeffs[i] as u64
+                c as u64
             };
         }
 
         // Pre-multiply by powers of ω (for negacyclic convolution)
-        for i in 0..D {
-            vals[i] = ((vals[i] as u128 * self.forward_twiddles[i] as u128) % self.q as u128) as u64;
+        for (v, &tw) in vals.iter_mut().zip(self.forward_twiddles.iter()) {
+            *v = ((*v as u128 * tw as u128) % self.q as u128) as u64;
         }
 
         // Standard radix-2 DIT NTT
@@ -163,7 +163,7 @@ impl NttContext {
 
 /// Find a primitive n-th root of unity modulo q.
 fn find_primitive_root(q: u64, n: u64) -> u64 {
-    assert!((q - 1) % n == 0);
+    assert!((q - 1).is_multiple_of(n));
     let cofactor = (q - 1) / n;
     for g in 2..q {
         let candidate = mod_pow(g, cofactor, q);

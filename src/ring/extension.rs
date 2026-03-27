@@ -52,8 +52,12 @@ impl ExtFieldContext {
     }
 
     /// Multiplication in K: (a0 + a1*Y)(b0 + b1*Y) = (a0*b0 + a1*b1*alpha) + (a0*b1 + a1*b0)*Y
+    ///
+    /// The triple product `a1 * b1 * alpha` is split into two reductions
+    /// to prevent i128 overflow when q is large.
     pub fn mul(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
-        let c0 = a.c0 as i128 * b.c0 as i128 + a.c1 as i128 * b.c1 as i128 * self.alpha as i128;
+        let a1b1 = self.reduce(a.c1 as i128 * b.c1 as i128);
+        let c0 = a.c0 as i128 * b.c0 as i128 + a1b1 as i128 * self.alpha as i128;
         let c1 = a.c0 as i128 * b.c1 as i128 + a.c1 as i128 * b.c0 as i128;
         ExtFieldElement {
             c0: self.reduce(c0),

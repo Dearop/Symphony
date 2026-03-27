@@ -32,11 +32,11 @@ impl SparseMatrix {
     /// Sparse matrix-vector multiply: y = M · x.
     pub fn mul_vec(&self, x: &[i64]) -> Vec<i64> {
         assert_eq!(x.len(), self.num_cols);
-        let mut y = vec![0i64; self.num_rows];
+        let mut y = vec![0i128; self.num_rows];
         for &(r, c, v) in &self.entries {
-            y[r] = y[r].wrapping_add(v.wrapping_mul(x[c]));
+            y[r] += v as i128 * x[c] as i128;
         }
-        y
+        y.into_iter().map(|v| v as i64).collect()
     }
 
     /// Sparse matrix-vector multiply with modular reduction.
@@ -104,7 +104,7 @@ impl R1CSMatrices {
         let bz = self.b.mul_vec(z);
         let cz = self.c.mul_vec(z);
         for i in 0..self.num_constraints {
-            if az[i].wrapping_mul(bz[i]) != cz[i] {
+            if (az[i] as i128) * (bz[i] as i128) != cz[i] as i128 {
                 return false;
             }
         }

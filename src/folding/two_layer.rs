@@ -39,6 +39,8 @@ pub struct TwoLayerProof {
     pub layer2_proof: FoldingProof,
     /// The final folded instance.
     pub final_instance: FoldedInstance,
+    /// Number of variables in the Layer 2 R1CS (needed by verifier).
+    pub layer2_n: usize,
 }
 
 /// Split a folded witness into ℓ blocks using the structured MSIS matrix.
@@ -157,6 +159,7 @@ pub fn prove_two_layer(
         layer1_instance,
         layer2_proof,
         final_instance: final_instance.clone(),
+        layer2_n,
     };
 
     (proof, layer2_witness)
@@ -173,7 +176,7 @@ pub fn verify_two_layer(
     ctx: &ExtFieldContext,
 ) -> Result<FoldedInstance, TwoLayerError> {
     // Verify Layer 1
-    let _layer1_result = crate::folding::verify(
+    let layer1_result = crate::folding::verify(
         &proof.layer1_proof,
         public_inputs,
         r1cs,
@@ -182,18 +185,24 @@ pub fn verify_two_layer(
         ctx,
     ).map_err(|_| TwoLayerError::Layer1Failed)?;
 
+    // Cross-layer consistency: the Layer 1 folded instance must match the
+    // claimed layer1_instance in the proof.
+    if layer1_result.commitment.value.elements != proof.layer1_instance.commitment.value.elements {
+        return Err(TwoLayerError::SplitFailed);
+    }
+
     // Verify Layer 2
     let empty_inputs: Vec<Vec<i64>> = (0..proof.layer2_proof.gr1cs_proofs.len())
         .map(|_| Vec::new())
         .collect();
-    let layer2_n = 1;
-    let layer2_r1cs = R1CSMatrices::new(1, layer2_n, 0);
+    let layer2_r1cs = R1CSMatrices::new(1, proof.layer2_n, 0);
 
+    let layer2_ajtai = AjtaiParams::setup(ajtai.kappa, proof.layer2_n, ajtai.q);
     let _layer2_result = crate::folding::verify(
         &proof.layer2_proof,
         &empty_inputs,
         &layer2_r1cs,
-        ajtai,
+        &layer2_ajtai,
         range_params,
         ctx,
     ).map_err(|_| TwoLayerError::Layer2Failed)?;

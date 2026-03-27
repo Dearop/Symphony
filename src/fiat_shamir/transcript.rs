@@ -65,15 +65,34 @@ impl Transcript {
         self.state = hasher.finalize().to_vec();
     }
 
-    /// Squeeze a challenge as an extension field element.
-    pub fn challenge_ext_field(&mut self, label: &[u8], q: u64) -> ExtFieldElement {
+    /// Squeeze a uniform scalar challenge in [0, q).
+    ///
+    /// Uses wide reduction (64 extra bits) to keep statistical bias
+    /// below 2^{-64}: sample a 128-bit value, then reduce mod q.
+    pub fn challenge_scalar(&mut self, label: &[u8], q: u64) -> i64 {
         let mut bytes = [0u8; 16];
         self.challenge_bytes(label, &mut bytes);
-        let c0 = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) % q;
-        let c1 = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) % q;
+        let wide = u128::from_le_bytes(bytes);
+        let val = (wide % q as u128) as u64;
+        let q_half = q / 2;
+        if val > q_half { val as i64 - q as i64 } else { val as i64 }
+    }
+
+    /// Squeeze a challenge as an extension field element.
+    ///
+    /// Uses wide reduction (128-bit intermediates mod q) to keep
+    /// statistical bias below 2^{-64}.
+    pub fn challenge_ext_field(&mut self, label: &[u8], q: u64) -> ExtFieldElement {
+        let mut bytes = [0u8; 32];
+        self.challenge_bytes(label, &mut bytes);
+        let w0 = u128::from_le_bytes(bytes[0..16].try_into().unwrap());
+        let w1 = u128::from_le_bytes(bytes[16..32].try_into().unwrap());
+        let c0 = (w0 % q as u128) as u64;
+        let c1 = (w1 % q as u128) as u64;
+        let q_half = q / 2;
         ExtFieldElement {
-            c0: if c0 > q / 2 { c0 as i64 - q as i64 } else { c0 as i64 },
-            c1: if c1 > q / 2 { c1 as i64 - q as i64 } else { c1 as i64 },
+            c0: if c0 > q_half { c0 as i64 - q as i64 } else { c0 as i64 },
+            c1: if c1 > q_half { c1 as i64 - q as i64 } else { c1 as i64 },
         }
     }
 

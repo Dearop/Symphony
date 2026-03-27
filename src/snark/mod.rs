@@ -160,23 +160,35 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
     /// Verify a Symphony proof against public inputs.
     ///
     /// Internally:
-    /// 1. Recompute challenges from (x, {c_{fs,i}}) and H
-    /// 2. Check Π_cp.Verify(π_cp) — proves folding correctness without hash-in-circuit
-    /// 3. Check Π_snark.Verify(π) — proves the folded statement
+    /// 1. Bind public inputs and R1CS metadata to the transcript
+    /// 2. Recompute challenges from (x, {c_{fs,i}}) and H
+    /// 3. Check Π_cp.Verify(π_cp) — proves folding correctness without hash-in-circuit
+    /// 4. Check Π_snark.Verify(π) — proves the folded statement
     pub fn verify(
         &self,
-        _public_inputs: &[Vec<i64>],
+        public_inputs: &[Vec<i64>],
         proof: &SymphonyProof<S>,
-        _r1cs: &R1CSMatrices,
+        r1cs: &R1CSMatrices,
     ) -> bool {
         // Step 1: Recompute challenges from transcript
         let mut transcript = crate::fiat_shamir::transcript::Transcript::new(b"symphony-v1");
+
+        // Bind public inputs to the transcript so they cannot be swapped
+        for pi in public_inputs {
+            let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
+            transcript.append_bytes(b"public-input", &bytes);
+        }
+
+        // Bind R1CS metadata
+        transcript.append_bytes(b"r1cs-m", &(r1cs.num_constraints as u64).to_le_bytes());
+        transcript.append_bytes(b"r1cs-n", &(r1cs.num_variables as u64).to_le_bytes());
+        transcript.append_bytes(b"r1cs-pub", &(r1cs.num_public as u64).to_le_bytes());
+
         for fs_comm in &proof.fs_commitments {
             transcript.append_bytes(b"fs-commitment", fs_comm);
         }
 
         // Step 2: Verify CP-SNARK
-        // Encode the CP-SNARK instance: (fs_commitments, derived challenges)
         let cp_instance = cp_snark::encode_cp_instance(&proof.fs_commitments, &mut transcript);
         if !S::verify(&self.cp_vk, &cp_instance, &proof.cp_proof) {
             return false;

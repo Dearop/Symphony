@@ -42,7 +42,7 @@ pub fn prove(
     ctx: &ExtFieldContext,
 ) -> HadamardProof {
     let m = r1cs.num_constraints;
-    let num_vars = (m as f64).log2().ceil() as usize;
+    let num_vars = if m <= 1 { 0 } else { (usize::BITS - (m - 1).leading_zeros()) as usize };
     let table_size = 1 << num_vars;
     let q = ctx.q;
 
@@ -108,10 +108,10 @@ pub fn prove(
                 Vec::with_capacity(table_size),
                 Vec::with_capacity(table_size),
             ];
-            for b in 0..table_size {
-                tabs[0].push(ExtFieldElement { c0: g_evals[0][b][j], c1: 0 });
-                tabs[1].push(ExtFieldElement { c0: g_evals[1][b][j], c1: 0 });
-                tabs[2].push(ExtFieldElement { c0: g_evals[2][b][j], c1: 0 });
+            for (g0_row, (g1_row, g2_row)) in g_evals[0].iter().zip(g_evals[1].iter().zip(g_evals[2].iter())) {
+                tabs[0].push(ExtFieldElement { c0: g0_row[j], c1: 0 });
+                tabs[1].push(ExtFieldElement { c0: g1_row[j], c1: 0 });
+                tabs[2].push(ExtFieldElement { c0: g2_row[j], c1: 0 });
             }
             tabs
         })
@@ -182,16 +182,16 @@ pub fn prove(
         }
         eq_tab = new_eq;
 
-        for j in 0..D {
-            for i in 0..3 {
+        for g_tab in &mut g_tabs {
+            for tab in g_tab {
                 let mut new_tab = Vec::with_capacity(half);
                 for rest_idx in 0..half {
                     new_tab.push(fold(
-                        &g_tabs[j][i][rest_idx],
-                        &g_tabs[j][i][half + rest_idx],
+                        &tab[rest_idx],
+                        &tab[half + rest_idx],
                     ));
                 }
-                g_tabs[j][i] = new_tab;
+                *tab = new_tab;
             }
         }
     }
@@ -205,10 +205,10 @@ pub fn prove(
         TensorElement::zero(),
         TensorElement::zero(),
     ];
-    for j in 0..D {
-        for i in 0..3 {
-            assert_eq!(g_tabs[j][i].len(), 1);
-            let val = g_tabs[j][i][0];
+    for (j, g_tab) in g_tabs.iter().enumerate() {
+        for (i, tab) in g_tab.iter().enumerate() {
+            assert_eq!(tab.len(), 1);
+            let val = tab[0];
             evaluation_matrix[i].data[0][j] = val.c0;
             if crate::params::T > 1 {
                 evaluation_matrix[i].data[1][j] = val.c1;
@@ -246,14 +246,9 @@ pub fn verify(
 
     // Verify consistency: the claimed evaluation at the sumcheck point must equal
     // eq(s, r) · Σ_j α^{j-1} · (U[0,j] · U[1,j] − U[2,j])
-    //
-    // Reverse evaluation_point: build_eq_table uses little-endian bit order
-    // while sumcheck rounds fold MSB-first.
-    let n_vars = num_vars.min(challenges.s.len());
-    let r_rev: Vec<_> = sumcheck_result.evaluation_point[..n_vars].iter().rev().cloned().collect();
-    let eq_val = sumcheck::eq_eval_ext(
-        &challenges.s[..n_vars],
-        &r_rev,
+    let eq_val = sumcheck::eq_eval_ext_sumcheck(
+        &challenges.s,
+        &sumcheck_result.evaluation_point,
         ctx,
     );
 

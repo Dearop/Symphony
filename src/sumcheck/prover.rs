@@ -44,11 +44,11 @@ pub fn prove<P: SumcheckPolynomial>(
     let mut round_messages = Vec::with_capacity(claim.num_vars);
     let mut challenges_so_far = Vec::with_capacity(claim.num_vars);
 
-    for round in 0..claim.num_vars {
+    for (round, &challenge) in challenges.iter().enumerate() {
         let evaluations =
             poly.compute_round_polynomial(round, &challenges_so_far, claim.degree, ctx);
         round_messages.push(SumcheckRoundMessage { evaluations });
-        challenges_so_far.push(challenges[round]);
+        challenges_so_far.push(challenge);
     }
 
     SumcheckProof { round_messages }
@@ -64,7 +64,7 @@ pub fn prove<P: SumcheckPolynomial>(
 ///
 /// `combiner` takes one value from each factor and produces the polynomial evaluation.
 pub fn prove_bookkeeping(
-    factor_tables: &mut Vec<Vec<ExtFieldElement>>,
+    factor_tables: &mut [Vec<ExtFieldElement>],
     combiner: &dyn Fn(&[ExtFieldElement], &ExtFieldContext) -> ExtFieldElement,
     num_vars: usize,
     degree: usize,
@@ -75,11 +75,11 @@ pub fn prove_bookkeeping(
 
     let mut round_messages = Vec::with_capacity(num_vars);
 
-    for round in 0..num_vars {
+    for (round, &r) in challenges.iter().enumerate() {
         let half = 1 << (num_vars - round - 1);
         let mut evals = vec![ctx.zero(); degree + 1];
 
-        for eval_idx in 0..=degree {
+        for (eval_idx, eval) in evals.iter_mut().enumerate() {
             let t = ExtFieldElement { c0: eval_idx as i64, c1: 0 };
             let one_minus_t = ctx.sub(&ctx.one(), &t);
 
@@ -103,13 +103,12 @@ pub fn prove_bookkeeping(
                 sum = ctx.add(&sum, &val);
             }
 
-            evals[eval_idx] = sum;
+            *eval = sum;
         }
 
         round_messages.push(SumcheckRoundMessage { evaluations: evals });
 
         // Fold tables with the challenge for this round
-        let r = challenges[round];
         let one_minus_r = ctx.sub(&ctx.one(), &r);
         for table in factor_tables.iter_mut() {
             let mut new_table = Vec::with_capacity(half);
@@ -142,12 +141,12 @@ pub fn build_eq_table(
     // Build incrementally: after processing variable i, entries 0..2^{i+1}
     // hold eq evaluated over all combinations of variables 0..i.
     // Bit i of the index corresponds to variable i (little-endian).
-    for i in 0..n {
+    for (i, si) in s.iter().enumerate() {
         let stride = 1 << i;
-        let one_minus_si = ctx.sub(&ctx.one(), &s[i]);
+        let one_minus_si = ctx.sub(&ctx.one(), si);
         for j in (0..stride).rev() {
             let base = table[j];
-            table[j + stride] = ctx.mul(&base, &s[i]);   // b_i = 1
+            table[j + stride] = ctx.mul(&base, si);   // b_i = 1
             table[j] = ctx.mul(&base, &one_minus_si);     // b_i = 0
         }
     }

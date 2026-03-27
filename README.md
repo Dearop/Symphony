@@ -43,7 +43,7 @@ symphony/
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
 ├── tests/
-│   └── comprehensive.rs   # 62 integration tests (completeness + soundness)
+│   └── comprehensive.rs   # 128 integration tests (completeness + soundness)
 ├── benches/
 │   └── folding.rs         # Criterion benchmarks
 └── docs/
@@ -125,7 +125,7 @@ Possible backends:
 ## Testing
 
 ```bash
-cargo test          # 91 tests: 29 unit + 62 integration
+cargo test          # 157 tests: 29 unit + 128 integration
 cargo test -- -q    # quiet output
 ```
 

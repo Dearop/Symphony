@@ -84,6 +84,21 @@ pub fn eq_eval_ext(
     result
 }
 
+/// Evaluate eq(s, r) where r comes from a sumcheck that folds MSB-first.
+///
+/// `build_eq_table` uses little-endian bit order, but sumcheck rounds fold
+/// from MSB to LSB. This helper reverses the evaluation point before calling
+/// `eq_eval_ext` so callers don't need to do it manually.
+pub fn eq_eval_ext_sumcheck(
+    s: &[ExtFieldElement],
+    sumcheck_point: &[ExtFieldElement],
+    ctx: &ExtFieldContext,
+) -> ExtFieldElement {
+    let n = s.len().min(sumcheck_point.len());
+    let r_rev: Vec<_> = sumcheck_point[..n].iter().rev().cloned().collect();
+    eq_eval_ext(&s[..n], &r_rev, ctx)
+}
+
 /// Convert a usize index to a boolean vector of given length (little-endian).
 pub fn index_to_bits(idx: usize, num_bits: usize) -> Vec<bool> {
     (0..num_bits).map(|i| (idx >> i) & 1 == 1).collect()

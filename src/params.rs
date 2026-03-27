@@ -32,6 +32,17 @@ pub struct SymphonyParams {
 }
 
 impl SymphonyParams {
+    /// Validate that runtime `d` matches the compile-time constant `D`.
+    ///
+    /// Must be called before using the params in any protocol step.
+    pub fn validate(&self) {
+        assert_eq!(
+            self.d, D,
+            "SymphonyParams.d ({}) does not match compile-time D ({D})",
+            self.d
+        );
+    }
+
     /// Generalized witness length: n = n_bar * k_cs.
     pub fn n(&self) -> usize {
         self.n_bar * self.k_cs
@@ -39,7 +50,7 @@ impl SymphonyParams {
 
     /// Construct default parameters from Table 1.
     pub fn default_from_paper() -> Self {
-        Self {
+        let params = Self {
             q: find_suitable_prime(),
             d: D,
             kappa: 12,
@@ -50,7 +61,9 @@ impl SymphonyParams {
             m: 1 << 16,
             b: 16,
             k_cs: 16,
-        }
+        };
+        params.validate();
+        params
     }
 
     /// MSIS norm bound β_SIS = 2^37.
@@ -79,17 +92,22 @@ impl SymphonyParams {
     }
 }
 
-/// Find a 64-bit prime q with q ≡ 1 (mod 2d) for NTT compatibility.
+/// Find a prime q with q ≡ 1 (mod 2d) for NTT compatibility.
+///
+/// q is capped below 2^61 to guarantee that all i128 intermediate
+/// products (up to D × (q/2)^2 in schoolbook multiplication) stay
+/// within range, and that `q as i64` never wraps.
 fn find_suitable_prime() -> u64 {
-    // q must satisfy q ≡ 1 (mod 128) since d = 64 and we need 2d | (q - 1).
-    // Using a known suitable prime for the default instantiation.
-    // This is a placeholder; a proper implementation should search for or
-    // verify a prime meeting all security requirements.
     let two_d = 2 * D as u64; // 128
-    let mut candidate = (1u64 << 63) - ((1u64 << 63) % two_d) + 1;
+    // Start near 2^60 so q fits comfortably in i64 and schoolbook
+    // accumulator stays within i128.
+    let start = (1u64 << 60) - ((1u64 << 60) % two_d) + 1;
+    let mut candidate = start;
     while !is_probably_prime(candidate) {
-        candidate += two_d;
+        candidate = candidate.checked_add(two_d)
+            .expect("prime search overflow");
     }
+    assert!(candidate <= i64::MAX as u64, "q must fit in i64");
     candidate
 }
 
@@ -101,14 +119,14 @@ fn is_probably_prime(n: u64) -> bool {
     if n == 2 || n == 3 {
         return true;
     }
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         return false;
     }
 
     // Write n-1 as 2^r * d
     let mut d = n - 1;
     let mut r = 0u32;
-    while d % 2 == 0 {
+    while d.is_multiple_of(2) {
         d /= 2;
         r += 1;
     }

@@ -39,6 +39,15 @@ pub fn generate_proof<S: BackendSnark>(
 ) -> SymphonyProof<S> {
     let mut transcript = Transcript::new(b"symphony-v1");
 
+    // Bind public inputs and R1CS metadata to match the verifier's transcript
+    for (_, pi, _) in statements {
+        let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
+        transcript.append_bytes(b"public-input", &bytes);
+    }
+    transcript.append_bytes(b"r1cs-m", &(r1cs.num_constraints as u64).to_le_bytes());
+    transcript.append_bytes(b"r1cs-n", &(r1cs.num_variables as u64).to_le_bytes());
+    transcript.append_bytes(b"r1cs-pub", &(r1cs.num_public as u64).to_le_bytes());
+
     // Step 1: Build FoldingStatements
     let folding_statements: Vec<FoldingStatement> = statements
         .iter()
@@ -73,11 +82,27 @@ pub fn generate_proof<S: BackendSnark>(
     // Step 4: Generate CP-SNARK proof via S::prove
     // Build the instance (public) and witness (private) for the CP relation
     let mut cp_transcript = Transcript::new(b"symphony-v1");
+
+    // Mirror the verifier's transcript binding
+    for stmt in statements {
+        let bytes: Vec<u8> = stmt.1.iter().flat_map(|v| v.to_le_bytes()).collect();
+        cp_transcript.append_bytes(b"public-input", &bytes);
+    }
+    cp_transcript.append_bytes(b"r1cs-m", &(r1cs.num_constraints as u64).to_le_bytes());
+    cp_transcript.append_bytes(b"r1cs-n", &(r1cs.num_variables as u64).to_le_bytes());
+    cp_transcript.append_bytes(b"r1cs-pub", &(r1cs.num_public as u64).to_le_bytes());
+
     for fs_comm in &fs_commitments {
         cp_transcript.append_bytes(b"fs-commitment", fs_comm);
     }
     let cp_instance = cp_snark::encode_cp_instance(&fs_commitments, &mut cp_transcript);
-    let cp_witness = cp_snark::encode_cp_witness(&[], &[]);
+
+    // The CP witness contains the folding transcript bytes so that the
+    // CP-SNARK can prove the transcript was computed correctly.
+    let folding_transcript_bytes = cp_snark::encode_folded_instance(
+        &folding_proof.folded_instance,
+    );
+    let cp_witness = cp_snark::encode_cp_witness(&fs_commitments, &folding_transcript_bytes);
     let cp_proof = S::prove(cp_pk, &cp_instance, &cp_witness);
 
     // Step 5: Generate backend SNARK proof for the folded statement via S::prove

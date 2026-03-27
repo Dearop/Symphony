@@ -99,6 +99,15 @@ impl ProjectionMatrix {
 }
 
 /// Proof for the approximate range proof.
+///
+/// # Zero-knowledge note
+///
+/// In a production deployment, `monomial_vectors` and `projected_values`
+/// would NOT be included in the proof sent to the verifier. They are
+/// included here so the verifier can perform the consistency check
+/// directly. A full ZK implementation would instead rely on the Πmon
+/// evaluation claims and the table polynomial to verify consistency
+/// without seeing the raw vectors.
 #[derive(Debug, Clone)]
 pub struct RangeProof {
     /// Monomial commitments for decomposition layers.
@@ -161,8 +170,12 @@ pub fn prove(
 
     for layer in &layers {
         let monomial_vec: Vec<RingElement> = layer.iter().map(|&val| {
-            let clamped = val.clamp(-(half_d - 1), half_d - 1);
-            exp_map(clamped)
+            assert!(
+                val > -(half_d) && val < half_d,
+                "decomposition digit {val} out of monomial range (−{half_d}, {half_d}); \
+                 check that d_prime ({d_prime}) and k_g ({k_g}) are sufficient for the input norm"
+            );
+            exp_map(val)
         }).collect();
 
         // Pad to power of 2 for sumcheck
@@ -220,7 +233,7 @@ pub fn verify(
     for (b, &proj_val) in proof.projected_values.iter().enumerate() {
         let mut reconstructed = 0i64;
         let mut d_power = 1i64;
-        for (_i, mvec) in proof.monomial_vectors.iter().enumerate() {
+        for mvec in proof.monomial_vectors.iter() {
             if b < mvec.len() {
                 let g = &mvec[b];
                 let product = g.mul(&table_poly, ctx.q);
@@ -229,8 +242,7 @@ pub fn verify(
             }
             d_power *= d_prime;
         }
-        // Allow approximate match due to clamping
-        if (reconstructed - proj_val).abs() > d_prime.pow(params.k_g as u32) {
+        if reconstructed != proj_val {
             return Err(RangeProofError::ProjectionFailed);
         }
     }

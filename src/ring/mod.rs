@@ -52,15 +52,15 @@ impl RingElement {
     pub fn add(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];
         let q_half = (q / 2) as i64;
-        for i in 0..D {
-            let sum = self.coeffs[i] as i128 + other.coeffs[i] as i128;
+        for (out, (&a, &b)) in coeffs.iter_mut().zip(self.coeffs.iter().zip(other.coeffs.iter())) {
+            let sum = a as i128 + b as i128;
             let mut r = (sum % q as i128) as i64;
             if r > q_half {
                 r -= q as i64;
             } else if r < -q_half {
                 r += q as i64;
             }
-            coeffs[i] = r;
+            *out = r;
         }
         Self { coeffs }
     }
@@ -69,15 +69,15 @@ impl RingElement {
     pub fn sub(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];
         let q_half = (q / 2) as i64;
-        for i in 0..D {
-            let diff = self.coeffs[i] as i128 - other.coeffs[i] as i128;
+        for (out, (&a, &b)) in coeffs.iter_mut().zip(self.coeffs.iter().zip(other.coeffs.iter())) {
+            let diff = a as i128 - b as i128;
             let mut r = (diff % q as i128) as i64;
             if r > q_half {
                 r -= q as i64;
             } else if r < -q_half {
                 r += q as i64;
             }
-            coeffs[i] = r;
+            *out = r;
         }
         Self { coeffs }
     }
@@ -116,15 +116,15 @@ impl RingElement {
     pub fn scalar_mul(&self, scalar: i64, q: u64) -> Self {
         let mut coeffs = [0i64; D];
         let q_half = (q / 2) as i64;
-        for i in 0..D {
-            let prod = self.coeffs[i] as i128 * scalar as i128;
+        for (out, &c) in coeffs.iter_mut().zip(self.coeffs.iter()) {
+            let prod = c as i128 * scalar as i128;
             let mut r = (prod % q as i128) as i64;
             if r > q_half {
                 r -= q as i64;
             } else if r < -q_half {
                 r += q as i64;
             }
-            coeffs[i] = r;
+            *out = r;
         }
         Self { coeffs }
     }

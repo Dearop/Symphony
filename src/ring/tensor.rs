@@ -60,16 +60,16 @@ impl TensorElement {
     pub fn add(&self, other: &Self, q: u64) -> Self {
         let q_half = (q / 2) as i64;
         let mut data = [[0i64; D]; T];
-        for t in 0..T {
-            for j in 0..D {
-                let sum = self.data[t][j] as i128 + other.data[t][j] as i128;
+        for ((out_row, self_row), other_row) in data.iter_mut().zip(self.data.iter()).zip(other.data.iter()) {
+            for ((out, &s), &o) in out_row.iter_mut().zip(self_row.iter()).zip(other_row.iter()) {
+                let sum = s as i128 + o as i128;
                 let mut r = (sum % q as i128) as i64;
                 if r > q_half {
                     r -= q as i64;
                 } else if r < -q_half {
                     r += q as i64;
                 }
-                data[t][j] = r;
+                *out = r;
             }
         }
         Self { data }
@@ -78,12 +78,13 @@ impl TensorElement {
     /// Scalar multiplication by an extension field element (K-scalar).
     pub fn k_scalar_mul(&self, scalar: &ExtFieldElement, ctx: &ExtFieldContext) -> Self {
         let mut data = [[0i64; D]; T];
-        for j in 0..D {
+        let (row0, rest) = data.split_first_mut().unwrap();
+        for (j, d0) in row0.iter_mut().enumerate() {
             let col = self.col(j);
             let prod = ctx.mul(&col, scalar);
-            data[0][j] = prod.c0;
+            *d0 = prod.c0;
             if T > 1 {
-                data[1][j] = prod.c1;
+                rest[0][j] = prod.c1;
             }
         }
         Self { data }
