@@ -7,6 +7,14 @@ Symphony is a Rust implementation of the folding-based SNARK construction from
 
 It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Ajtai lattice commitments** and a **commit-and-prove compiler** that never embeds Fiat-Shamir hashes into the proven statement.
 
+## Current status
+
+- Core Symphony pipeline is implemented end-to-end in Rust.
+- Standalone CP-SNARK module is implemented (`src/cp_snark/mod.rs`).
+- Backend SNARK is pluggable through `BackendSnark` (current demo backend: `DummySnark`).
+- Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
+- Integration test suite is split into focused files for maintainability and debugging.
+
 ## Key properties
 
 - **No hash-in-circuit** — the SNARK statement is free of random-oracle evaluations, eliminating the dominant cost in existing folding schemes.
@@ -35,15 +43,26 @@ symphony/
 │   │   ├── two_layer.rs   #   Two-layer extension for very large statement counts
 │   │   └── challenge.rs   #   Folding challenge set S ⊂ Rq
 │   ├── r1cs/              # Sparse R1CS matrices, generalized committed R1CS, Kronecker expansion
-│   ├── fiat_shamir/       # SHA-256-based Fiat-Shamir transcript with domain separation
+│   ├── fiat_shamir/       # SHA-256 transcript + HashCommitment FS commitment scheme
 │   ├── snark/             # Top-level SNARK pipeline
 │   │   ├── mod.rs         #   BackendSnark trait, SymphonyProver/Verifier/Proof, DummySnark
 │   │   ├── prover.rs      #   Full proof generation orchestration
 │   │   └── cp_snark.rs    #   Commit-and-prove encoding helpers
+│   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
 ├── tests/
-│   └── comprehensive.rs   # 128 integration tests (completeness + soundness)
+│   ├── ring.rs            # Ring + extension field + NTT + tensor tests
+│   ├── commitment.rs      # Module-Ajtai commitment tests
+│   ├── decomposition.rs   # Gadget decomposition + monomial embedding tests
+│   ├── fiat_shamir.rs     # Transcript and challenge derivation tests
+│   ├── sumcheck.rs        # Sumcheck + eq polynomial tests
+│   ├── rok.rs             # Πhad / Πmon / Πrg / Πgr1cs tests
+│   ├── r1cs.rs            # R1CS and conversion tests
+│   ├── folding.rs         # Folding, streaming, and two-layer tests
+│   ├── snark.rs           # Full Symphony pipeline tests
+│   ├── cp_snark.rs        # Standalone CP-SNARK tests
+│   └── common/mod.rs      # Shared integration test helpers
 ├── benches/
 │   └── folding.rs         # Criterion benchmarks
 └── docs/
@@ -122,10 +141,38 @@ Possible backends:
 - **Post-quantum**: LaBRADOR, WHIR (50–100 KB proofs)
 - **Pairing-based**: HyperPlonk + KZG (< 50 KB proofs, not PQ)
 
+## Standalone CP-SNARK usage
+
+You can use commit-and-prove independently of the full folding pipeline:
+
+```rust
+use symphony::cp_snark::{CPSnark, IdentityRelation};
+use symphony::HashCommitment;
+use symphony::snark::DummySnark;
+use symphony::fiat_shamir::FSCommitment;
+
+let scheme = HashCommitment::new();
+let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 32);
+
+let (c, o) = scheme.commit(b"secret-message");
+let proof = cp
+    .prove(
+        &scheme,
+        &[b"secret-message".as_slice()],
+        &[o],
+        &[c],
+        b"",
+        &IdentityRelation,
+    )
+    .unwrap();
+
+assert!(cp.verify(&[c], b"", &proof));
+```
+
 ## Testing
 
 ```bash
-cargo test          # 157 tests: 29 unit + 128 integration
+cargo test          # 234 tests: 39 unit + 193 integration + 2 doc tests
 cargo test -- -q    # quiet output
 ```
 
@@ -133,18 +180,21 @@ The test suite covers every protocol layer:
 
 | Layer | What's tested |
 |-------|---------------|
-| Ring algebra | Commutativity, associativity, distributivity, NTT consistency, cyclotomic reduction, extension field inverses |
-| Commitment | Commit/verify roundtrip, wrong witness rejection, norm bounds, strict/relaxed/fine-grained openings |
-| Decomposition | Gadget recomposition, monomial embedding full range, monomial decompose consistency |
-| Fiat-Shamir | Determinism, domain separation, order dependence, challenge range |
-| Sumcheck | Valid proofs, wrong sum/degree/round count rejection |
-| Πmon | Multi-layer monomial check, soundness (non-monomials rejected) |
-| Πhad | Valid R1CS accepted, wrong witness rejected |
-| Πrg | Range proof with various witness sizes |
-| Πgr1cs | Full single-instance reduction |
-| Folding | Two-statement fold, public input consistency, challenge set properties |
-| Two-layer | Layer 1 → split → decompose → Layer 2 → verify |
-| SNARK pipeline | End-to-end with DummySnark, tampered proof rejection |
+| Ring + extension field + NTT + tensor | Algebraic laws, edge cases, overflow safety, NTT correctness, tensor arithmetic |
+| Commitment | Roundtrip, wrong witness rejection, norm bounds, strict/relaxed/fine-grained openings, homomorphic properties |
+| Decomposition | Recompose correctness, bounded digits, monomial embedding, overflow fix coverage |
+| Fiat-Shamir | Determinism, domain separation, bias/range checks, rejection-sampled challenges |
+| Sumcheck + eq polynomial | Valid/invalid claims, degree/round checks, table/direct consistency, partition of unity |
+| RoK protocols (Πhad/Πmon/Πrg/Πgr1cs) | Completeness and soundness across base and extended settings |
+| Folding + streaming + two-layer | Consistency, transcript binding, projection seed derivation, cross-layer checks |
+| SNARK pipeline | End-to-end flow, CP encoding consistency, transcript/public-input binding, tamper checks |
+| Standalone CP-SNARK | `HashCommitment`, `Identity`/`Preimage`/`Transcript`/`FnRelation`, builder API, soundness-oriented checks |
+
+## Notes on cryptographic backend
+
+- `DummySnark` is intended for API/testing and does not provide production soundness.
+- The architecture is ready for plugging in a real backend via `BackendSnark`.
+- For production deployment, integrate a concrete backend implementation and run backend-specific security review/benchmarks.
 
 ## References
 
