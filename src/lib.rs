@@ -42,3 +42,4 @@ pub use snark::sumcheck_snark::{
 };
 pub use snark::{BackendSnark, SymphonyProof, SymphonyProver, SymphonyVerifier};
 pub use snark::{DummySnark, DummySymphonyProof, DummySymphonyProver, DummySymphonyVerifier};
+pub use snark::spartan::{SpartanSnark, SpartanProof, SpartanProvingKey, SpartanVerifyingKey};

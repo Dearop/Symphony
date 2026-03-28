@@ -126,3 +126,44 @@ mod recompose_overflow_fix {
         assert_eq!(g, vec![1, 2, 4, 8, 16, 32, 64, 128]);
     }
 }
+
+// =========================================================================
+// Property-based decomposition tests
+// =========================================================================
+mod decomposition_proptest {
+    use proptest::prelude::*;
+    use symphony::decomposition;
+
+    proptest! {
+        #[test]
+        fn roundtrip_base16(v in -10_000i64..=10_000) {
+            let digits = decomposition::decompose(v, 16, 6);
+            prop_assert_eq!(decomposition::recompose(&digits, 16), v);
+        }
+
+        #[test]
+        fn roundtrip_base4(v in -500i64..=500) {
+            let digits = decomposition::decompose(v, 4, 8);
+            prop_assert_eq!(decomposition::recompose(&digits, 4), v);
+        }
+
+        #[test]
+        fn digits_bounded(v in -10_000i64..=10_000) {
+            let base = 16i64;
+            let digits = decomposition::decompose(v, base, 6);
+            for &d in &digits {
+                prop_assert!(d.abs() <= base / 2, "digit {} exceeds base/2 for v={}", d, v);
+            }
+        }
+
+        #[test]
+        fn vector_roundtrip(vals in prop::collection::vec(-500i64..=500, 1..20)) {
+            let decomposed = decomposition::decompose_vector(&vals, 16, 4);
+            prop_assert_eq!(decomposed.len(), vals.len() * 4);
+            for (i, &v) in vals.iter().enumerate() {
+                let chunk = &decomposed[i * 4..(i + 1) * 4];
+                prop_assert_eq!(decomposition::recompose(chunk, 16), v);
+            }
+        }
+    }
+}

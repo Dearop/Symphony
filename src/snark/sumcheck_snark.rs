@@ -30,6 +30,7 @@ const Q: u64 = 65537;
 /// Proves knowledge of a witness by running a sumcheck protocol over the
 /// multilinear extension of the witness table, bound to the public instance
 /// via Fiat-Shamir.
+#[derive(Clone)]
 pub struct SumcheckSnark;
 
 /// Proving key — contains a seed derived deterministically from the relation.
@@ -48,15 +49,15 @@ pub struct SumcheckVerifyingKey {
 #[derive(Debug, Clone)]
 pub struct SumcheckProofData {
     /// SHA-256 commitment to the serialised witness table.
-    witness_commitment: [u8; 32],
+    pub witness_commitment: [u8; 32],
     /// The sumcheck proof for Σ eq(s,b)·w(b) = claimed_sum.
-    sumcheck_proof: SumcheckProof,
+    pub sumcheck_proof: SumcheckProof,
     /// Claimed sum value.
-    claimed_sum: ExtFieldElement,
+    pub claimed_sum: ExtFieldElement,
     /// Full witness table (needed by the verifier for evaluation checks).
-    witness_table: Vec<ExtFieldElement>,
+    pub witness_table: Vec<ExtFieldElement>,
     /// Number of sumcheck variables (log₂ of table size).
-    num_vars: usize,
+    pub num_vars: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +287,7 @@ mod tests {
             num_instance_vars: 4,
             num_witness_vars: 8,
             num_constraints: 4,
+            context: None,
         }
     }
 

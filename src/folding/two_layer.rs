@@ -48,6 +48,7 @@ pub struct TwoLayerProof {
 /// Given f* and A = [r_1·A', ..., r_ℓ·A'], decompose f* into ℓ blocks
 /// of size n/ℓ each.
 fn split_witness(witness: &RingVector, num_blocks: usize) -> Vec<RingVector> {
+    assert!(num_blocks > 0, "num_blocks must be positive");
     let block_size = witness.len() / num_blocks;
     let mut blocks = Vec::with_capacity(num_blocks);
     for b in 0..num_blocks {

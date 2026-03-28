@@ -542,3 +542,241 @@ mod cp_snark_witness_fix {
         );
     }
 }
+
+// =========================================================================
+// SumcheckSnark backend tests (real cryptographic verification)
+// =========================================================================
+mod sumcheck_snark_backend {
+    use super::*;
+    use symphony::snark::SymphonyProver;
+    use symphony::SumcheckSnark;
+
+    fn sumcheck_params() -> SymphonyParams {
+        SymphonyParams {
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
+        }
+    }
+
+    fn make_statement(
+        prover: &SymphonyProver<SumcheckSnark>,
+        z: &[i64],
+        n_in: usize,
+    ) -> (Commitment, Vec<i64>, RingVector) {
+        let full_ring = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = prover.commit_witness(&full_ring);
+        let witness_part = RingVector {
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
+        };
+        (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    #[test]
+    fn sumcheck_snark_end_to_end() {
+        let params = sumcheck_params();
+        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let proof = prover.prove(&statements, &r1cs);
+        assert!(verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
+    }
+
+    #[test]
+    fn sumcheck_snark_tampered_cp_rejected() {
+        let params = sumcheck_params();
+        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        // Tamper with the CP proof's witness commitment
+        proof.cp_proof.witness_commitment[0] ^= 0xFF;
+        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
+    }
+
+    #[test]
+    fn sumcheck_snark_tampered_snark_proof_rejected() {
+        let params = sumcheck_params();
+        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        // Tamper with the SNARK proof's witness commitment
+        proof.snark_proof.witness_commitment[0] ^= 0xFF;
+        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
+    }
+
+    #[test]
+    fn sumcheck_snark_wrong_public_inputs_rejected() {
+        let params = sumcheck_params();
+        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let statements = vec![s1, s2];
+        let proof = prover.prove(&statements, &r1cs);
+
+        let wrong_pis = vec![vec![999i64], vec![999i64]];
+        assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
+    }
+
+    fn pi1_pi2(pi1: &[i64], pi2: &[i64]) -> Vec<Vec<i64>> {
+        vec![pi1.to_vec(), pi2.to_vec()]
+    }
+}
+
+// =========================================================================
+// SpartanSnark backend tests (succinct proof via IPA)
+// =========================================================================
+mod spartan_snark_backend {
+    use super::*;
+    use symphony::snark::SymphonyProver;
+    use symphony::SpartanSnark;
+
+    fn spartan_params() -> SymphonyParams {
+        SymphonyParams {
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
+        }
+    }
+
+    fn make_statement(
+        prover: &SymphonyProver<SpartanSnark>,
+        z: &[i64],
+        n_in: usize,
+    ) -> (Commitment, Vec<i64>, RingVector) {
+        let full_ring = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = prover.commit_witness(&full_ring);
+        let witness_part = RingVector {
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
+        };
+        (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    fn pi1_pi2(pi1: &[i64], pi2: &[i64]) -> Vec<Vec<i64>> {
+        vec![pi1.to_vec(), pi2.to_vec()]
+    }
+
+    #[test]
+    fn spartan_snark_end_to_end() {
+        let params = spartan_params();
+        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let proof = prover.prove(&statements, &r1cs);
+        assert!(verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
+    }
+
+    #[test]
+    fn spartan_snark_tampered_cp_witness_rejected() {
+        let params = spartan_params();
+        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        // Tamper with CP proof's witness hash
+        if let Some(ref mut hash) = proof.cp_proof.witness_hash {
+            hash[0] ^= 0xFF;
+        }
+        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
+    }
+
+    #[test]
+    fn spartan_snark_tampered_sumcheck_rejected() {
+        let params = spartan_params();
+        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        // Tamper with the SNARK proof's sumcheck
+        if let Some(round) = proof.snark_proof.sumcheck_proof.round_polys.first_mut() {
+            if !round.is_empty() {
+                round[0] += curve25519_dalek::scalar::Scalar::ONE;
+            }
+        }
+        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
+    }
+
+    #[test]
+    fn spartan_snark_wrong_public_inputs_rejected() {
+        let params = spartan_params();
+        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+
+        let s1 = make_statement(&prover, &z, n_in);
+        let s2 = make_statement(&prover, &z, n_in);
+        let statements = vec![s1, s2];
+        let proof = prover.prove(&statements, &r1cs);
+
+        let wrong_pis = vec![vec![999i64], vec![999i64]];
+        assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
+    }
+}

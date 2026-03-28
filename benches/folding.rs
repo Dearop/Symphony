@@ -927,6 +927,7 @@ fn bench_backend_micro<S: BackendSnark>(
             num_instance_vars: instance_size,
             num_witness_vars: witness_size,
             num_constraints: (witness_size / 32).max(4),
+            context: None,
         };
         let (pk, vk) = S::setup(&relation);
 

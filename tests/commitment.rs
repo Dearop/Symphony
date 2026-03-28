@@ -6,6 +6,8 @@ use common::Q;
 use symphony::commitment::AjtaiParams;
 use symphony::ring::{RingElement, RingVector};
 
+use proptest::prelude::*;
+
 // =========================================================================
 // Core commitment
 // =========================================================================
@@ -166,6 +168,65 @@ mod commitment_advanced {
             let (c, _) = ajtai.commit(&w);
             assert_eq!(c.value.len(), kappa);
             assert!(ajtai.verify_open(&c, &w, u128::MAX));
+        }
+    }
+}
+
+// =========================================================================
+// Property-based commitment tests
+// =========================================================================
+mod commitment_proptest {
+    use super::*;
+
+    fn arb_small_witness(n: usize) -> impl Strategy<Value = RingVector> {
+        prop::collection::vec(
+            prop::array::uniform(-10i64..=10),
+            n..=n,
+        )
+        .prop_map(|vecs| RingVector {
+            elements: vecs
+                .into_iter()
+                .map(|coeffs| RingElement { coeffs })
+                .collect(),
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        #[test]
+        fn commit_verify_roundtrip_random(w in arb_small_witness(3)) {
+            let ajtai = AjtaiParams::setup(2, 3, Q);
+            let (c, _) = ajtai.commit(&w);
+            prop_assert!(ajtai.verify_open(&c, &w, u128::MAX));
+        }
+
+        #[test]
+        fn wrong_witness_always_rejected(
+            w in arb_small_witness(3),
+            perturbation in 1i64..=50
+        ) {
+            let ajtai = AjtaiParams::setup(2, 3, Q);
+            let (c, _) = ajtai.commit(&w);
+
+            // Create a different witness by adding a perturbation to the first element
+            let mut bad_w = w.clone();
+            bad_w.elements[0].coeffs[0] += perturbation;
+            prop_assert!(!ajtai.verify_open(&c, &bad_w, u128::MAX));
+        }
+
+        #[test]
+        fn homomorphic_addition(
+            w1 in arb_small_witness(3),
+            w2 in arb_small_witness(3)
+        ) {
+            let ajtai = AjtaiParams::setup(2, 3, Q);
+            let w_sum = w1.add(&w2, Q);
+            let (c1, _) = ajtai.commit(&w1);
+            let (c2, _) = ajtai.commit(&w2);
+            let (c_sum, _) = ajtai.commit(&w_sum);
+            let c1_plus_c2 = c1.value.add(&c2.value, Q);
+            prop_assert_eq!(c1_plus_c2.elements, c_sum.value.elements);
         }
     }
 }

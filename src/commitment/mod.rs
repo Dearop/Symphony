@@ -79,6 +79,7 @@ impl AjtaiParams {
     }
 
     /// Verify: check A·f = c and ‖f‖_2 < bound.
+    #[must_use]
     pub fn verify_open(&self, c: &Commitment, f: &RingVector, bound_sq: u128) -> bool {
         if f.len() != self.n {
             return false;

@@ -197,6 +197,7 @@ impl<S: BackendSnark, C: FSCommitment> CPSnark<S, C> {
             num_instance_vars: num_messages * 32 + max_message_size,
             num_witness_vars: num_messages * (max_message_size + 32),
             num_constraints: num_messages + 1,
+            context: None,
         };
         let (pk, vk) = S::setup(&relation);
         Self {

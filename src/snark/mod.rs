@@ -19,6 +19,7 @@
 
 pub mod cp_snark;
 pub mod prover;
+pub mod spartan;
 pub mod sumcheck_snark;
 
 use std::marker::PhantomData;
@@ -54,6 +55,8 @@ pub struct RelationDescription {
     pub num_instance_vars: usize,
     pub num_witness_vars: usize,
     pub num_constraints: usize,
+    /// Optional backend-specific context (e.g., serialized R1CS for Spartan).
+    pub context: Option<Vec<u8>>,
 }
 
 /// A complete Symphony proof, generic over the backend SNARK `S`.
@@ -112,6 +115,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             num_instance_vars: params.ell_np,
             num_witness_vars: params.ell_np * params.m,
             num_constraints: params.ell_np,
+            context: None,
         };
         let (cp_pk, cp_vk) = S::setup(&cp_relation);
 
@@ -119,6 +123,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             num_instance_vars: params.n(),
             num_witness_vars: params.n(),
             num_constraints: params.m,
+            context: None,
         };
         let (snark_pk, snark_vk) = S::setup(&snark_relation);
 
@@ -169,6 +174,7 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
     /// 2. Recompute challenges from (x, {c_{fs,i}}) and H
     /// 3. Check Π_cp.Verify(π_cp) — proves folding correctness without hash-in-circuit
     /// 4. Check Π_snark.Verify(π) — proves the folded statement
+    #[must_use]
     pub fn verify(
         &self,
         public_inputs: &[Vec<i64>],

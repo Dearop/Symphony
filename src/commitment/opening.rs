@@ -11,11 +11,13 @@ pub struct RelaxedOpening {
 }
 
 /// Verify a strict opening: A·f = c and ‖f‖_2 < B_bnd.
+#[must_use]
 pub fn verify_strict(params: &AjtaiParams, c: &Commitment, f: &RingVector, b_bnd_sq: u128) -> bool {
     params.verify_open(c, f, b_bnd_sq)
 }
 
 /// Verify a relaxed opening: A·f = s·c and s·m = f and ‖f‖_2 ≤ B_rbnd and s ∈ S−S.
+#[must_use]
 pub fn verify_relaxed(
     params: &AjtaiParams,
     c: &Commitment,
@@ -56,6 +58,7 @@ pub fn verify_relaxed(
 }
 
 /// Verify a fine-grained opening: A·f = c and for all sub-blocks, ‖F_{i,j}‖_2 ≤ B.
+#[must_use]
 pub fn verify_fine_grained(
     params: &AjtaiParams,
     c: &Commitment,

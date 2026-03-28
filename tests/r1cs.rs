@@ -75,4 +75,86 @@ mod r1cs_extended {
         let r1cs = R1CSMatrices::new(0, 2, 1);
         assert!(r1cs.is_satisfied(&[1, 5]));
     }
+
+    #[test]
+    fn single_constraint_system() {
+        // a * b = c: x1 * x2 = x3
+        let mut r1cs = R1CSMatrices::new(1, 4, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 2, 1);
+        r1cs.c.insert(0, 3, 1);
+        // z = [1, 3, 7, 21]  => 3 * 7 = 21
+        assert!(r1cs.is_satisfied(&[1, 3, 7, 21]));
+        // z = [1, 3, 7, 20]  => 3 * 7 != 20
+        assert!(!r1cs.is_satisfied(&[1, 3, 7, 20]));
+    }
+
+    #[test]
+    fn five_constraint_chain() {
+        // Chain: x1*x1=x2, x2*x1=x3, x3*x1=x4, x4*x1=x5, x5*x1=x6
+        // For x1=2: x2=4, x3=8, x4=16, x5=32, x6=64
+        let n = 7; // 1 public + 6 vars
+        let m = 5;
+        let mut r1cs = R1CSMatrices::new(m, n, 1);
+        for i in 0..m {
+            r1cs.a.insert(i, if i == 0 { 1 } else { i + 1 }, 1);
+            r1cs.b.insert(i, 1, 1);
+            r1cs.c.insert(i, i + 2, 1);
+        }
+        assert!(r1cs.is_satisfied(&[1, 2, 4, 8, 16, 32, 64]));
+        assert!(!r1cs.is_satisfied(&[1, 2, 4, 8, 16, 32, 63]));
+    }
+
+    #[test]
+    fn wrong_witness_detected_modular() {
+        let mut r1cs = R1CSMatrices::new(1, 3, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 1, 1);
+        r1cs.c.insert(0, 2, 1);
+        // 5 * 5 = 25 (correct)
+        assert!(r1cs.is_satisfied_mod(&[1, 5, 25], Q));
+        // 5 * 5 != 26 (wrong)
+        assert!(!r1cs.is_satisfied_mod(&[1, 5, 26], Q));
+    }
+
+    #[test]
+    fn linear_combination_coefficients() {
+        // 2*x1 + 3*x2 = x3  (linear, b = identity)
+        let mut r1cs = R1CSMatrices::new(1, 4, 1);
+        r1cs.a.insert(0, 1, 2);
+        r1cs.a.insert(0, 2, 3);
+        r1cs.b.insert(0, 0, 1); // multiply by the constant 1
+        r1cs.c.insert(0, 3, 1);
+        // z = [1, 4, 5, 23]  => (2*4 + 3*5) * 1 = 23
+        assert!(r1cs.is_satisfied(&[1, 4, 5, 23]));
+        assert!(!r1cs.is_satisfied(&[1, 4, 5, 22]));
+    }
+
+    #[test]
+    fn max_variables_small() {
+        // 10 constraints, 20 variables — larger but still tractable
+        let m = 10;
+        let n = 20;
+        let mut r1cs = R1CSMatrices::new(m, n, 1);
+        // Each constraint: x_{2i+1} * x_{2i+2} = 0 (trivially by setting all to 0)
+        for i in 0..m {
+            r1cs.a.insert(i, 2 * i + 1, 1);
+            r1cs.b.insert(i, (2 * i + 2).min(n - 1), 1);
+            r1cs.c.insert(i, 0, 0); // c = 0
+        }
+        let z = vec![1i64; n]; // all 1 means a*b = 1, c = 0 => fails
+        assert!(!r1cs.is_satisfied(&z));
+
+        let mut z_zero = vec![0i64; n];
+        z_zero[0] = 1; // public input
+        assert!(r1cs.is_satisfied(&z_zero));
+    }
+
+    #[test]
+    fn dimension_check_in_sparse_mul() {
+        let r1cs = R1CSMatrices::new(2, 4, 1);
+        // Correct dimensions
+        let result = r1cs.a.mul_vec_mod(&[1, 2, 3, 4], Q);
+        assert_eq!(result.len(), 2);
+    }
 }

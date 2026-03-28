@@ -7,6 +7,8 @@ use symphony::params::D;
 use symphony::ring::extension::{ExtFieldContext, ExtFieldElement};
 use symphony::ring::{RingElement, RingVector};
 
+use proptest::prelude::*;
+
 fn ctx() -> ExtFieldContext {
     common::ctx()
 }
@@ -506,6 +508,130 @@ mod tensor_extended {
         let result = te.k_scalar_mul(&k, &ctx());
         assert_eq!(result.row(0).ct(), 10);
         assert_eq!(result.row(1).ct(), 15);
+    }
+}
+
+// =========================================================================
+// Property-based tests (proptest)
+// =========================================================================
+mod ring_proptest {
+    use super::*;
+
+    fn arb_ring_element() -> impl Strategy<Value = RingElement> {
+        prop::array::uniform(-(Q as i64 / 2)..=(Q as i64 / 2))
+            .prop_map(|coeffs| RingElement { coeffs })
+    }
+
+    proptest! {
+        #[test]
+        fn add_commutative(a in arb_ring_element(), b in arb_ring_element()) {
+            prop_assert_eq!(a.add(&b, Q), b.add(&a, Q));
+        }
+
+        #[test]
+        fn add_associative(a in arb_ring_element(), b in arb_ring_element(), c in arb_ring_element()) {
+            let ab_c = a.add(&b, Q).add(&c, Q);
+            let a_bc = a.add(&b.add(&c, Q), Q);
+            prop_assert_eq!(ab_c, a_bc);
+        }
+
+        #[test]
+        fn mul_commutative(a in arb_ring_element(), b in arb_ring_element()) {
+            prop_assert_eq!(a.mul(&b, Q), b.mul(&a, Q));
+        }
+
+        #[test]
+        fn mul_associative(a in arb_ring_element(), b in arb_ring_element(), c in arb_ring_element()) {
+            let ab_c = a.mul(&b, Q).mul(&c, Q);
+            let a_bc = a.mul(&b.mul(&c, Q), Q);
+            prop_assert_eq!(ab_c, a_bc);
+        }
+
+        #[test]
+        fn mul_distributive(a in arb_ring_element(), b in arb_ring_element(), c in arb_ring_element()) {
+            let lhs = a.mul(&b.add(&c, Q), Q);
+            let rhs = a.mul(&b, Q).add(&a.mul(&c, Q), Q);
+            prop_assert_eq!(lhs, rhs);
+        }
+
+        #[test]
+        fn add_zero_identity(a in arb_ring_element()) {
+            prop_assert_eq!(a.add(&RingElement::zero(), Q), a.clone());
+        }
+
+        #[test]
+        fn mul_one_identity(a in arb_ring_element()) {
+            let one = RingElement::from_constant(1);
+            prop_assert_eq!(a.mul(&one, Q), a.clone());
+        }
+
+        #[test]
+        fn sub_self_is_zero(a in arb_ring_element()) {
+            prop_assert_eq!(a.sub(&a, Q), RingElement::zero());
+        }
+
+        #[test]
+        fn scalar_mul_matches_ring_mul(a in arb_ring_element(), s in -(Q as i64 / 2)..=(Q as i64 / 2)) {
+            let via_scalar = a.scalar_mul(s, Q);
+            let via_ring = a.mul(&RingElement::from_constant(s), Q);
+            prop_assert_eq!(via_scalar, via_ring);
+        }
+
+        #[test]
+        fn norm_sq_is_zero_iff_zero(a in arb_ring_element()) {
+            if a == RingElement::zero() {
+                prop_assert_eq!(a.norm_sq(), 0);
+            } else {
+                prop_assert!(a.norm_sq() > 0);
+            }
+        }
+    }
+}
+
+mod ext_field_proptest {
+    use super::*;
+
+    fn arb_ext_field() -> impl Strategy<Value = ExtFieldElement> {
+        let range = -(Q as i64 / 2)..=(Q as i64 / 2);
+        (range.clone(), range).prop_map(|(c0, c1)| ExtFieldElement { c0, c1 })
+    }
+
+    proptest! {
+        #[test]
+        fn add_commutative(a in arb_ext_field(), b in arb_ext_field()) {
+            let ctx = ctx();
+            prop_assert_eq!(ctx.add(&a, &b), ctx.add(&b, &a));
+        }
+
+        #[test]
+        fn mul_commutative(a in arb_ext_field(), b in arb_ext_field()) {
+            let ctx = ctx();
+            prop_assert_eq!(ctx.mul(&a, &b), ctx.mul(&b, &a));
+        }
+
+        #[test]
+        fn mul_associative(a in arb_ext_field(), b in arb_ext_field(), c in arb_ext_field()) {
+            let ctx = ctx();
+            let ab_c = ctx.mul(&ctx.mul(&a, &b), &c);
+            let a_bc = ctx.mul(&a, &ctx.mul(&b, &c));
+            prop_assert_eq!(ab_c, a_bc);
+        }
+
+        #[test]
+        fn distributive(a in arb_ext_field(), b in arb_ext_field(), c in arb_ext_field()) {
+            let ctx = ctx();
+            let lhs = ctx.mul(&a, &ctx.add(&b, &c));
+            let rhs = ctx.add(&ctx.mul(&a, &b), &ctx.mul(&a, &c));
+            prop_assert_eq!(lhs, rhs);
+        }
+
+        #[test]
+        fn inverse_roundtrip(a in arb_ext_field()) {
+            let ctx = ctx();
+            if let Some(inv) = ctx.inv(&a) {
+                prop_assert_eq!(ctx.mul(&a, &inv), ctx.one());
+            }
+        }
     }
 }
 

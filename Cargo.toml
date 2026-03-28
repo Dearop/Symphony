@@ -7,9 +7,11 @@ description = "Scalable SNARKs from lattice-based high-arity folding (Symphony)"
 [dependencies]
 rand = "0.10.0"
 sha2 = "0.11.0"
+curve25519-dalek = { version = "4.1", features = ["digest"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
+proptest = "1.6"
 
 [[bench]]
 name = "folding"
