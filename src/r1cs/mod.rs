@@ -1,7 +1,7 @@
 //! R1CS relation definitions and sparse matrix representation.
 
-pub mod generalized;
 pub mod conversion;
+pub mod generalized;
 
 /// Sparse matrix in COO (coordinate) format.
 #[derive(Debug, Clone)]

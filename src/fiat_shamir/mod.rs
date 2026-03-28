@@ -20,7 +20,12 @@ pub trait FSCommitment {
     fn commit(&self, message: &[u8]) -> (Self::Commitment, Self::Opening);
 
     /// Verify a commitment opening.
-    fn verify(&self, commitment: &Self::Commitment, message: &[u8], opening: &Self::Opening) -> bool;
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        message: &[u8],
+        opening: &Self::Opening,
+    ) -> bool;
 }
 
 /// A Fiat-Shamir commitment to a protocol message.

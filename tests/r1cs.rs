@@ -16,7 +16,7 @@ mod r1cs_conversion {
 
         let k_cs = 2;
         let base = 16;
-        let expanded = conversion::kronecker_expand(&r1cs, base as i64, k_cs);
+        let expanded = conversion::kronecker_expand(&r1cs, base, k_cs);
         let decomposed = conversion::decompose_witness(&z, base, k_cs);
 
         let az = expanded.a.mul_vec_mod(&decomposed, Q);
@@ -26,8 +26,12 @@ mod r1cs_conversion {
         let q_half = (Q / 2) as i64;
         for i in 0..expanded.num_constraints {
             let mut prod = ((az[i] as i128 * bz[i] as i128) % Q as i128) as i64;
-            if prod > q_half { prod -= Q as i64; }
-            if prod < -q_half { prod += Q as i64; }
+            if prod > q_half {
+                prod -= Q as i64;
+            }
+            if prod < -q_half {
+                prod += Q as i64;
+            }
             assert_eq!(prod, cz[i], "Kronecker R1CS not satisfied at row {i}");
         }
     }

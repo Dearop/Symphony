@@ -4,8 +4,8 @@
 //! Straightline-extractable in the random oracle model: the extractor
 //! observes the random oracle queries and reads out (r, m) directly.
 
-use sha2::{Sha256, Digest};
 use crate::fiat_shamir::FSCommitment;
+use sha2::{Digest, Sha256};
 
 /// SHA-256-based commitment scheme implementing [`FSCommitment`].
 ///

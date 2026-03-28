@@ -39,7 +39,11 @@ mod sumcheck_core {
         let mut tables = vec![eq, g];
         let proof = prover::prove_bookkeeping(&mut tables, &combiner, 2, 2, &challenges, &ctx);
 
-        let claim = SumcheckClaim { num_vars: 2, degree: 2, claimed_sum };
+        let claim = SumcheckClaim {
+            num_vars: 2,
+            degree: 2,
+            claimed_sum,
+        };
         let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
         assert!(result.is_ok());
     }
@@ -70,8 +74,14 @@ mod sumcheck_core {
     #[test]
     fn wrong_round_count_rejected() {
         let ctx = ctx();
-        let proof = SumcheckProof { round_messages: vec![] };
-        let claim = SumcheckClaim { num_vars: 2, degree: 2, claimed_sum: ctx.zero() };
+        let proof = SumcheckProof {
+            round_messages: vec![],
+        };
+        let claim = SumcheckClaim {
+            num_vars: 2,
+            degree: 2,
+            claimed_sum: ctx.zero(),
+        };
         let challenges = vec![
             ExtFieldElement { c0: 1, c1: 0 },
             ExtFieldElement { c0: 2, c1: 0 },
@@ -101,7 +111,11 @@ mod sumcheck_core {
         let mut bad_proof = proof;
         bad_proof.round_messages[0].evaluations[2] = ExtFieldElement { c0: 999, c1: 0 };
 
-        let claim = SumcheckClaim { num_vars: 1, degree: 2, claimed_sum };
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 2,
+            claimed_sum,
+        };
         let _result = sumcheck::verifier::verify(&bad_proof, &claim, &challenges, &ctx);
     }
 
@@ -109,13 +123,15 @@ mod sumcheck_core {
     fn wrong_degree_rejected() {
         let ctx = ctx();
         let proof = SumcheckProof {
-            round_messages: vec![
-                SumcheckRoundMessage {
-                    evaluations: vec![ctx.zero(); 2],
-                },
-            ],
+            round_messages: vec![SumcheckRoundMessage {
+                evaluations: vec![ctx.zero(); 2],
+            }],
         };
-        let claim = SumcheckClaim { num_vars: 1, degree: 3, claimed_sum: ctx.zero() };
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 3,
+            claimed_sum: ctx.zero(),
+        };
         let challenges = vec![ExtFieldElement { c0: 1, c1: 0 }];
         let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
         assert!(result.is_err(), "should reject wrong degree");
@@ -135,7 +151,12 @@ mod sumcheck_extended {
             ExtFieldElement { c0: 5, c1: 3 },
             ExtFieldElement { c0: 9, c1: 0 },
         ];
-        let g: Vec<ExtFieldElement> = (0..8).map(|i| ExtFieldElement { c0: (i * 3 + 1) as i64, c1: i as i64 }).collect();
+        let g: Vec<ExtFieldElement> = (0..8)
+            .map(|i| ExtFieldElement {
+                c0: (i * 3 + 1) as i64,
+                c1: i as i64,
+            })
+            .collect();
         let eq = prover::build_eq_table(&s, &ctx);
         let mut claimed_sum = ctx.zero();
         for i in 0..8 {
@@ -150,7 +171,11 @@ mod sumcheck_extended {
         let mut tables = vec![eq, g];
         let proof = prover::prove_bookkeeping(&mut tables, &combiner, 3, 2, &challenges, &ctx);
 
-        let claim = SumcheckClaim { num_vars: 3, degree: 2, claimed_sum };
+        let claim = SumcheckClaim {
+            num_vars: 3,
+            degree: 2,
+            claimed_sum,
+        };
         let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
         assert!(result.is_ok(), "3-var sumcheck failed: {:?}", result.err());
     }
@@ -173,16 +198,24 @@ mod sumcheck_extended {
         let mut tables = vec![eq, g];
         let proof = prover::prove_bookkeeping(&mut tables, &combiner, 1, 2, &challenges, &ctx);
 
-        let claim = SumcheckClaim { num_vars: 1, degree: 2, claimed_sum };
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 2,
+            claimed_sum,
+        };
         let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
-        assert!(result.is_ok(), "ext field sumcheck failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "ext field sumcheck failed: {:?}",
+            result.err()
+        );
     }
 }
 
 mod eq_polynomial {
     use super::*;
-    use symphony::sumcheck::{self, eq_eval_ext};
     use symphony::sumcheck::prover::build_eq_table;
+    use symphony::sumcheck::{self, eq_eval_ext};
 
     #[test]
     fn table_matches_direct_eval_3vars() {
@@ -195,10 +228,10 @@ mod eq_polynomial {
         let table = build_eq_table(&s, &ctx);
         assert_eq!(table.len(), 8);
 
-        for idx in 0..8 {
+        for (idx, actual) in table.iter().enumerate().take(8) {
             let bits = sumcheck::index_to_bits(idx, 3);
             let expected = sumcheck::eq_eval(&s, &bits, &ctx);
-            assert_eq!(table[idx], expected, "mismatch at idx={idx}");
+            assert_eq!(*actual, expected, "mismatch at idx={idx}");
         }
     }
 
@@ -225,12 +258,12 @@ mod eq_polynomial {
             ExtFieldElement { c0: 3, c1: 0 },
             ExtFieldElement { c0: 7, c1: 0 },
         ];
-        let r_00 = vec![ExtFieldElement { c0: 0, c1: 0 }, ExtFieldElement { c0: 0, c1: 0 }];
+        let r_00 = vec![
+            ExtFieldElement { c0: 0, c1: 0 },
+            ExtFieldElement { c0: 0, c1: 0 },
+        ];
         let val = eq_eval_ext(&s, &r_00, &ctx);
-        let expected = ctx.mul(
-            &ctx.sub(&ctx.one(), &s[0]),
-            &ctx.sub(&ctx.one(), &s[1]),
-        );
+        let expected = ctx.mul(&ctx.sub(&ctx.one(), &s[0]), &ctx.sub(&ctx.one(), &s[1]));
         assert_eq!(val, expected);
     }
 }

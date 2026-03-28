@@ -11,7 +11,7 @@ It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Aj
 
 - Core Symphony pipeline is implemented end-to-end in Rust.
 - Standalone CP-SNARK module is implemented (`src/cp_snark/mod.rs`).
-- Backend SNARK is pluggable through `BackendSnark` (current demo backend: `DummySnark`).
+- Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`).
 - Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
 - Integration test suite is split into focused files for maintainability and debugging.
 
@@ -47,7 +47,8 @@ symphony/
 │   ├── snark/             # Top-level SNARK pipeline
 │   │   ├── mod.rs         #   BackendSnark trait, SymphonyProver/Verifier/Proof, DummySnark
 │   │   ├── prover.rs      #   Full proof generation orchestration
-│   │   └── cp_snark.rs    #   Commit-and-prove encoding helpers
+│   │   ├── cp_snark.rs    #   Commit-and-prove encoding helpers
+│   │   └── sumcheck_snark.rs # Sumcheck-backed demo backend (consistency/soundness checks)
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
@@ -172,7 +173,7 @@ assert!(cp.verify(&[c], b"", &proof));
 ## Testing
 
 ```bash
-cargo test          # 234 tests: 39 unit + 193 integration + 2 doc tests
+cargo test          # run the full unit/integration/doc test suite
 cargo test -- -q    # quiet output
 ```
 
@@ -193,6 +194,7 @@ The test suite covers every protocol layer:
 ## Notes on cryptographic backend
 
 - `DummySnark` is intended for API/testing and does not provide production soundness.
+- `SumcheckSnark` provides stronger tamper-detection and transcript binding checks, but is not a production succinct SNARK backend.
 - The architecture is ready for plugging in a real backend via `BackendSnark`.
 - For production deployment, integrate a concrete backend implementation and run backend-specific security review/benchmarks.
 

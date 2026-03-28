@@ -9,8 +9,8 @@ use crate::r1cs::R1CSMatrices;
 use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
 use crate::ring::tensor::TensorElement;
 use crate::rok::LinearRelation;
-use crate::sumcheck::{self, SumcheckClaim, SumcheckProof};
 use crate::sumcheck::prover;
+use crate::sumcheck::{self, SumcheckClaim, SumcheckProof};
 
 /// Proof for the Hadamard-to-linear reduction.
 #[derive(Debug, Clone)]
@@ -42,7 +42,11 @@ pub fn prove(
     ctx: &ExtFieldContext,
 ) -> HadamardProof {
     let m = r1cs.num_constraints;
-    let num_vars = if m <= 1 { 0 } else { (usize::BITS - (m - 1).leading_zeros()) as usize };
+    let num_vars = if m <= 1 {
+        0
+    } else {
+        (usize::BITS - (m - 1).leading_zeros()) as usize
+    };
     let table_size = 1 << num_vars;
     let q = ctx.q;
 
@@ -108,10 +112,22 @@ pub fn prove(
                 Vec::with_capacity(table_size),
                 Vec::with_capacity(table_size),
             ];
-            for (g0_row, (g1_row, g2_row)) in g_evals[0].iter().zip(g_evals[1].iter().zip(g_evals[2].iter())) {
-                tabs[0].push(ExtFieldElement { c0: g0_row[j], c1: 0 });
-                tabs[1].push(ExtFieldElement { c0: g1_row[j], c1: 0 });
-                tabs[2].push(ExtFieldElement { c0: g2_row[j], c1: 0 });
+            for (g0_row, (g1_row, g2_row)) in g_evals[0]
+                .iter()
+                .zip(g_evals[1].iter().zip(g_evals[2].iter()))
+            {
+                tabs[0].push(ExtFieldElement {
+                    c0: g0_row[j],
+                    c1: 0,
+                });
+                tabs[1].push(ExtFieldElement {
+                    c0: g1_row[j],
+                    c1: 0,
+                });
+                tabs[2].push(ExtFieldElement {
+                    c0: g2_row[j],
+                    c1: 0,
+                });
             }
             tabs
         })
@@ -125,7 +141,10 @@ pub fn prove(
         let mut evals = vec![ctx.zero(); 4]; // degree 3 → 4 evaluation points
 
         for eval_idx in 0..4u32 {
-            let t = ExtFieldElement { c0: eval_idx as i64, c1: 0 };
+            let t = ExtFieldElement {
+                c0: eval_idx as i64,
+                c1: 0,
+            };
             let one_minus_t = ctx.sub(&ctx.one(), &t);
 
             let mut sum = ctx.zero();
@@ -186,10 +205,7 @@ pub fn prove(
             for tab in g_tab {
                 let mut new_tab = Vec::with_capacity(half);
                 for rest_idx in 0..half {
-                    new_tab.push(fold(
-                        &tab[rest_idx],
-                        &tab[half + rest_idx],
-                    ));
+                    new_tab.push(fold(&tab[rest_idx], &tab[half + rest_idx]));
                 }
                 *tab = new_tab;
             }
@@ -242,15 +258,13 @@ pub fn verify(
         &claim,
         &challenges.sumcheck_challenges,
         ctx,
-    ).map_err(|_| HadamardError::SumcheckFailed)?;
+    )
+    .map_err(|_| HadamardError::SumcheckFailed)?;
 
     // Verify consistency: the claimed evaluation at the sumcheck point must equal
     // eq(s, r) · Σ_j α^{j-1} · (U[0,j] · U[1,j] − U[2,j])
-    let eq_val = sumcheck::eq_eval_ext_sumcheck(
-        &challenges.s,
-        &sumcheck_result.evaluation_point,
-        ctx,
-    );
+    let eq_val =
+        sumcheck::eq_eval_ext_sumcheck(&challenges.s, &sumcheck_result.evaluation_point, ctx);
 
     let mut alpha_power = ctx.one();
     let mut combined = ctx.zero();
@@ -286,9 +300,9 @@ pub enum HadamardError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commitment::AjtaiParams;
     use crate::r1cs::R1CSMatrices;
     use crate::ring::RingVector;
-    use crate::commitment::AjtaiParams;
 
     #[test]
     fn test_hadamard_prove_verify() {
@@ -303,7 +317,7 @@ mod tests {
         r1cs.a.insert(0, 1, 1); // A selects x
         r1cs.b.insert(0, 1, 1); // B selects x
         r1cs.c.insert(0, 2, 1); // C selects y
-        // Row 1: trivial constraint 0*0 = 0 (padding)
+                                // Row 1: trivial constraint 0*0 = 0 (padding)
 
         let z = vec![1i64, 3, 9];
         assert!(r1cs.is_satisfied_mod(&z, q));
@@ -323,7 +337,10 @@ mod tests {
         let kappa = 2;
         let ajtai = AjtaiParams::setup(kappa, n, q);
         let ring_witness = RingVector {
-            elements: z.iter().map(|&v| crate::ring::RingElement::from_constant(v)).collect(),
+            elements: z
+                .iter()
+                .map(|&v| crate::ring::RingElement::from_constant(v))
+                .collect(),
         };
         let (commitment, _) = ajtai.commit(&ring_witness);
 
@@ -373,20 +390,37 @@ mod tests {
         let kappa = 2;
         let ajtai = AjtaiParams::setup(kappa, n, q);
         let ring_witness = RingVector {
-            elements: z.iter().map(|&v| crate::ring::RingElement::from_constant(v)).collect(),
+            elements: z
+                .iter()
+                .map(|&v| crate::ring::RingElement::from_constant(v))
+                .collect(),
         };
         let (commitment, _) = ajtai.commit(&ring_witness);
 
         // num_vars = log2(4) = 2 — this exercises the bit-order reversal
         let num_vars = 2;
         let challenges = HadamardChallenges {
-            s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+            s: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 3, c1: 2 },
-            sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+            sumcheck_challenges: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
         };
 
         let proof = prove(&commitment, &witness_matrix, &r1cs, &challenges, &ctx);
         let result = verify(&commitment, &proof, &challenges, &ctx);
-        assert!(result.is_ok(), "Πhad verify (num_vars=2) failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Πhad verify (num_vars=2) failed: {:?}",
+            result.err()
+        );
     }
 }

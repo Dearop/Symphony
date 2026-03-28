@@ -1,9 +1,11 @@
 //! Standalone CP-SNARK tests: HashCommitment, relations, builder.
 
-use symphony::cp_snark::{CPSnark, CPSnarkBuilder, FnRelation, IdentityRelation, PreimageRelation, TranscriptRelation};
+use symphony::cp_snark::{
+    CPSnark, CPSnarkBuilder, FnRelation, IdentityRelation, PreimageRelation, TranscriptRelation,
+};
 use symphony::fiat_shamir::hash_commitment::HashCommitment;
-use symphony::fiat_shamir::FSCommitment;
 use symphony::fiat_shamir::transcript::Transcript;
+use symphony::fiat_shamir::FSCommitment;
 use symphony::snark::DummySnark;
 
 mod hash_commitment_tests {
@@ -45,7 +47,10 @@ mod hash_commitment_tests {
         let scheme = HashCommitment::new();
         let (c1, _) = scheme.commit(b"same");
         let (c2, _) = scheme.commit(b"same");
-        assert_ne!(c1, c2, "different randomness should produce different commitments");
+        assert_ne!(
+            c1, c2,
+            "different randomness should produce different commitments"
+        );
     }
 
     #[test]
@@ -73,7 +78,16 @@ mod identity_relation {
         let scheme = HashCommitment::new();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 32);
         let (c, o) = scheme.commit(b"secret");
-        let proof = cp.prove(&scheme, &[b"secret".as_slice()], &[o], &[c], b"", &IdentityRelation).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[b"secret".as_slice()],
+                &[o],
+                &[c],
+                b"",
+                &IdentityRelation,
+            )
+            .unwrap();
         assert!(cp.verify(&[c], b"", &proof));
     }
 
@@ -84,7 +98,16 @@ mod identity_relation {
         let (c1, o1) = scheme.commit(b"alpha");
         let (c2, o2) = scheme.commit(b"beta");
         let (c3, o3) = scheme.commit(b"gamma");
-        let proof = cp.prove(&scheme, &[b"alpha".as_slice(), b"beta", b"gamma"], &[o1, o2, o3], &[c1, c2, c3], b"pub-data", &IdentityRelation).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[b"alpha".as_slice(), b"beta", b"gamma"],
+                &[o1, o2, o3],
+                &[c1, c2, c3],
+                b"pub-data",
+                &IdentityRelation,
+            )
+            .unwrap();
         assert!(cp.verify(&[c1, c2, c3], b"pub-data", &proof));
     }
 
@@ -94,7 +117,16 @@ mod identity_relation {
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 16);
         let (c1, o1) = scheme.commit(b"a");
         let (c2, o2) = scheme.commit(b"b");
-        let proof = cp.prove(&scheme, &[b"a".as_slice(), b"b"], &[o1, o2], &[c1, c2], b"", &IdentityRelation).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[b"a".as_slice(), b"b"],
+                &[o1, o2],
+                &[c1, c2],
+                b"",
+                &IdentityRelation,
+            )
+            .unwrap();
         assert!(!cp.verify(&[c1], b"", &proof));
     }
 
@@ -104,7 +136,14 @@ mod identity_relation {
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 32);
         let (c, _o) = scheme.commit(b"real");
         let (_, o_fake) = scheme.commit(b"fake");
-        let result = cp.prove(&scheme, &[b"real".as_slice()], &[o_fake], &[c], b"", &IdentityRelation);
+        let result = cp.prove(
+            &scheme,
+            &[b"real".as_slice()],
+            &[o_fake],
+            &[c],
+            b"",
+            &IdentityRelation,
+        );
         assert!(result.is_none());
     }
 
@@ -113,17 +152,28 @@ mod identity_relation {
         let scheme = HashCommitment::new();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 16);
         let (c, o) = scheme.commit(b"x");
-        assert!(cp.prove(&scheme, &[b"x".as_slice()], &[o], &[c], b"", &IdentityRelation).is_none());
+        assert!(cp
+            .prove(
+                &scheme,
+                &[b"x".as_slice()],
+                &[o],
+                &[c],
+                b"",
+                &IdentityRelation
+            )
+            .is_none());
     }
 }
 
 mod preimage_relation {
     use super::*;
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     fn hash_concat(parts: &[&[u8]]) -> [u8; 32] {
         let mut h = Sha256::new();
-        for p in parts { h.update(p); }
+        for p in parts {
+            h.update(p);
+        }
         h.finalize().into()
     }
 
@@ -136,7 +186,16 @@ mod preimage_relation {
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 8);
         let (c1, o1) = scheme.commit(m1);
         let (c2, o2) = scheme.commit(m2);
-        let proof = cp.prove(&scheme, &[m1.as_slice(), m2.as_slice()], &[o1, o2], &[c1, c2], &digest, &PreimageRelation).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[m1.as_slice(), m2.as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                &digest,
+                &PreimageRelation,
+            )
+            .unwrap();
         assert!(cp.verify(&[c1, c2], &digest, &proof));
     }
 
@@ -146,7 +205,16 @@ mod preimage_relation {
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
         let (c, o) = scheme.commit(b"data");
         let wrong = [0xFFu8; 32];
-        assert!(cp.prove(&scheme, &[b"data".as_slice()], &[o], &[c], &wrong, &PreimageRelation).is_none());
+        assert!(cp
+            .prove(
+                &scheme,
+                &[b"data".as_slice()],
+                &[o],
+                &[c],
+                &wrong,
+                &PreimageRelation
+            )
+            .is_none());
     }
 
     #[test]
@@ -156,7 +224,16 @@ mod preimage_relation {
         let digest = hash_concat(&[msg.as_slice()]);
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
         let (c, o) = scheme.commit(msg);
-        let proof = cp.prove(&scheme, &[msg.as_slice()], &[o], &[c], &digest, &PreimageRelation).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[msg.as_slice()],
+                &[o],
+                &[c],
+                &digest,
+                &PreimageRelation,
+            )
+            .unwrap();
         assert!(cp.verify(&[c], &digest, &proof));
     }
 }
@@ -177,8 +254,19 @@ mod transcript_relation_tests {
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 32);
         let (c1, o1) = scheme.commit(m1);
         let (c2, o2) = scheme.commit(m2);
-        let relation = TranscriptRelation { domain: b"my-protocol".to_vec() };
-        let proof = cp.prove(&scheme, &[m1.as_slice(), m2.as_slice()], &[o1, o2], &[c1, c2], &expected, &relation).unwrap();
+        let relation = TranscriptRelation {
+            domain: b"my-protocol".to_vec(),
+        };
+        let proof = cp
+            .prove(
+                &scheme,
+                &[m1.as_slice(), m2.as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                &expected,
+                &relation,
+            )
+            .unwrap();
         assert!(cp.verify(&[c1, c2], &expected, &proof));
     }
 
@@ -192,8 +280,19 @@ mod transcript_relation_tests {
         tr.challenge_bytes(b"relation-output", &mut expected);
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
         let (c, o) = scheme.commit(m);
-        let wrong_relation = TranscriptRelation { domain: b"wrong-domain".to_vec() };
-        assert!(cp.prove(&scheme, &[m.as_slice()], &[o], &[c], &expected, &wrong_relation).is_none());
+        let wrong_relation = TranscriptRelation {
+            domain: b"wrong-domain".to_vec(),
+        };
+        assert!(cp
+            .prove(
+                &scheme,
+                &[m.as_slice()],
+                &[o],
+                &[c],
+                &expected,
+                &wrong_relation
+            )
+            .is_none());
     }
 
     #[test]
@@ -201,8 +300,12 @@ mod transcript_relation_tests {
         let scheme = HashCommitment::new();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
         let (c, o) = scheme.commit(b"x");
-        let relation = TranscriptRelation { domain: b"d".to_vec() };
-        let proof = cp.prove(&scheme, &[b"x".as_slice()], &[o], &[c], b"", &relation).unwrap();
+        let relation = TranscriptRelation {
+            domain: b"d".to_vec(),
+        };
+        let proof = cp
+            .prove(&scheme, &[b"x".as_slice()], &[o], &[c], b"", &relation)
+            .unwrap();
         assert!(cp.verify(&[c], b"", &proof));
     }
 }
@@ -215,16 +318,24 @@ mod fn_relation_tests {
         let scheme = HashCommitment::new();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(3, 8);
         let vals: Vec<u64> = vec![10, 20, 70];
-        let committed: Vec<_> = vals.iter().map(|v| scheme.commit(&v.to_le_bytes())).collect();
+        let committed: Vec<_> = vals
+            .iter()
+            .map(|v| scheme.commit(&v.to_le_bytes()))
+            .collect();
         let cs: Vec<_> = committed.iter().map(|(c, _)| *c).collect();
         let os: Vec<_> = committed.iter().map(|(_, o)| *o).collect();
         let msgs: Vec<Vec<u8>> = vals.iter().map(|v| v.to_le_bytes().to_vec()).collect();
         let msg_refs: Vec<&[u8]> = msgs.iter().map(|m| m.as_slice()).collect();
         let sum_is_100 = FnRelation(|ms: &[&[u8]], _| {
-            let s: u64 = ms.iter().map(|m| u64::from_le_bytes(m[..8].try_into().unwrap())).sum();
+            let s: u64 = ms
+                .iter()
+                .map(|m| u64::from_le_bytes(m[..8].try_into().unwrap()))
+                .sum();
             s == 100
         });
-        let proof = cp.prove(&scheme, &msg_refs, &os, &cs, b"", &sum_is_100).unwrap();
+        let proof = cp
+            .prove(&scheme, &msg_refs, &os, &cs, b"", &sum_is_100)
+            .unwrap();
         assert!(cp.verify(&cs, b"", &proof));
     }
 
@@ -243,7 +354,16 @@ mod fn_relation_tests {
             let expected = u64::from_le_bytes(stmt[..8].try_into().unwrap());
             x * y == expected
         });
-        let proof = cp.prove(&scheme, &[&a.to_le_bytes(), &b.to_le_bytes()], &[oa, ob], &[ca, cb], &expected_product, &product_rel).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[&a.to_le_bytes(), &b.to_le_bytes()],
+                &[oa, ob],
+                &[ca, cb],
+                &expected_product,
+                &product_rel,
+            )
+            .unwrap();
         assert!(cp.verify(&[ca, cb], &expected_product, &proof));
     }
 
@@ -256,7 +376,16 @@ mod fn_relation_tests {
             let v = u64::from_le_bytes(ms[0][..8].try_into().unwrap());
             v % 2 == 0
         });
-        assert!(cp.prove(&scheme, &[&5u64.to_le_bytes()], &[o], &[c], b"", &must_be_even).is_none());
+        assert!(cp
+            .prove(
+                &scheme,
+                &[&5u64.to_le_bytes()],
+                &[o],
+                &[c],
+                b"",
+                &must_be_even
+            )
+            .is_none());
     }
 
     #[test]
@@ -269,7 +398,9 @@ mod fn_relation_tests {
             let s = std::str::from_utf8(ms[0]).unwrap_or("");
             s.contains("fox")
         });
-        let proof = cp.prove(&scheme, &[msg.as_slice()], &[o], &[c], b"", &contains_fox).unwrap();
+        let proof = cp
+            .prove(&scheme, &[msg.as_slice()], &[o], &[c], b"", &contains_fox)
+            .unwrap();
         assert!(cp.verify(&[c], b"", &proof));
     }
 }
@@ -306,7 +437,7 @@ mod builder_tests {
 
     #[test]
     fn builder_preimage() {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let scheme = HashCommitment::new();
         let m1 = b"x";
         let m2 = b"y";
@@ -336,9 +467,30 @@ mod soundness_tests {
         let (c1, o1) = scheme.commit(b"msg-A");
         let (c2, o2) = scheme.commit(b"msg-B");
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
-        let p1 = cp.prove(&scheme, &[b"msg-A".as_slice()], &[o1], &[c1], b"", &IdentityRelation).unwrap();
-        let p2 = cp.prove(&scheme, &[b"msg-B".as_slice()], &[o2], &[c2], b"", &IdentityRelation).unwrap();
-        assert_ne!(p1.transcript_digest, p2.transcript_digest, "different commitments must produce different transcript digests");
+        let p1 = cp
+            .prove(
+                &scheme,
+                &[b"msg-A".as_slice()],
+                &[o1],
+                &[c1],
+                b"",
+                &IdentityRelation,
+            )
+            .unwrap();
+        let p2 = cp
+            .prove(
+                &scheme,
+                &[b"msg-B".as_slice()],
+                &[o2],
+                &[c2],
+                b"",
+                &IdentityRelation,
+            )
+            .unwrap();
+        assert_ne!(
+            p1.transcript_digest, p2.transcript_digest,
+            "different commitments must produce different transcript digests"
+        );
     }
 
     #[test]
@@ -346,9 +498,30 @@ mod soundness_tests {
         let scheme = HashCommitment::new();
         let (c, o) = scheme.commit(b"data");
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
-        let p1 = cp.prove(&scheme, &[b"data".as_slice()], &[o], &[c], b"stmt-A", &IdentityRelation).unwrap();
-        let p2 = cp.prove(&scheme, &[b"data".as_slice()], &[o], &[c], b"stmt-B", &IdentityRelation).unwrap();
-        assert_ne!(p1.transcript_digest, p2.transcript_digest, "different public statements must produce different transcript digests");
+        let p1 = cp
+            .prove(
+                &scheme,
+                &[b"data".as_slice()],
+                &[o],
+                &[c],
+                b"stmt-A",
+                &IdentityRelation,
+            )
+            .unwrap();
+        let p2 = cp
+            .prove(
+                &scheme,
+                &[b"data".as_slice()],
+                &[o],
+                &[c],
+                b"stmt-B",
+                &IdentityRelation,
+            )
+            .unwrap();
+        assert_ne!(
+            p1.transcript_digest, p2.transcript_digest,
+            "different public statements must produce different transcript digests"
+        );
     }
 
     #[test]
@@ -356,7 +529,9 @@ mod soundness_tests {
         let scheme = HashCommitment::new();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(0, 0);
         let always_true = FnRelation(|_: &[&[u8]], _| true);
-        let proof = cp.prove(&scheme, &[], &[], &[], b"ok", &always_true).unwrap();
+        let proof = cp
+            .prove(&scheme, &[], &[], &[], b"ok", &always_true)
+            .unwrap();
         assert!(cp.verify(&[], b"ok", &proof));
     }
 
@@ -365,12 +540,16 @@ mod soundness_tests {
         let scheme = HashCommitment::new();
         let n = 16;
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(n, 4);
-        let committed: Vec<_> = (0..n).map(|i| scheme.commit(&(i as u32).to_le_bytes())).collect();
+        let committed: Vec<_> = (0..n)
+            .map(|i| scheme.commit(&(i as u32).to_le_bytes()))
+            .collect();
         let cs: Vec<_> = committed.iter().map(|(c, _)| *c).collect();
         let os: Vec<_> = committed.iter().map(|(_, o)| *o).collect();
         let msgs: Vec<Vec<u8>> = (0..n).map(|i| (i as u32).to_le_bytes().to_vec()).collect();
         let msg_refs: Vec<&[u8]> = msgs.iter().map(|m| m.as_slice()).collect();
-        let proof = cp.prove(&scheme, &msg_refs, &os, &cs, b"", &IdentityRelation).unwrap();
+        let proof = cp
+            .prove(&scheme, &msg_refs, &os, &cs, b"", &IdentityRelation)
+            .unwrap();
         assert!(cp.verify(&cs, b"", &proof));
     }
 
@@ -380,9 +559,30 @@ mod soundness_tests {
         let msg = b"deterministic";
         let (c, o) = scheme.commit(msg);
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 16);
-        let p1 = cp.prove(&scheme, &[msg.as_slice()], &[o], &[c], b"s", &IdentityRelation).unwrap();
-        let p2 = cp.prove(&scheme, &[msg.as_slice()], &[o], &[c], b"s", &IdentityRelation).unwrap();
-        assert_eq!(p1.transcript_digest, p2.transcript_digest, "same inputs should produce identical transcript digests");
+        let p1 = cp
+            .prove(
+                &scheme,
+                &[msg.as_slice()],
+                &[o],
+                &[c],
+                b"s",
+                &IdentityRelation,
+            )
+            .unwrap();
+        let p2 = cp
+            .prove(
+                &scheme,
+                &[msg.as_slice()],
+                &[o],
+                &[c],
+                b"s",
+                &IdentityRelation,
+            )
+            .unwrap();
+        assert_eq!(
+            p1.transcript_digest, p2.transcript_digest,
+            "same inputs should produce identical transcript digests"
+        );
     }
 }
 
@@ -392,9 +592,9 @@ mod pipeline_integration {
     #[test]
     fn symphony_style_folding_transcript() {
         let scheme = HashCommitment::new();
-        let round_msgs: Vec<Vec<u8>> = (0..4).map(|i| {
-            format!("folding-round-{i}-data-with-sumcheck-evals").into_bytes()
-        }).collect();
+        let round_msgs: Vec<Vec<u8>> = (0..4)
+            .map(|i| format!("folding-round-{i}-data-with-sumcheck-evals").into_bytes())
+            .collect();
         let mut tr = Transcript::new(b"symphony-v1");
         for (i, msg) in round_msgs.iter().enumerate() {
             tr.append_bytes(format!("round-{i}").as_bytes(), msg);
@@ -405,9 +605,13 @@ mod pipeline_integration {
         let cs: Vec<_> = committed.iter().map(|(c, _)| *c).collect();
         let os: Vec<_> = committed.iter().map(|(_, o)| *o).collect();
         let msg_refs: Vec<&[u8]> = round_msgs.iter().map(|m| m.as_slice()).collect();
-        let relation = TranscriptRelation { domain: b"symphony-v1".to_vec() };
+        let relation = TranscriptRelation {
+            domain: b"symphony-v1".to_vec(),
+        };
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(4, 64);
-        let proof = cp.prove(&scheme, &msg_refs, &os, &cs, &expected, &relation).unwrap();
+        let proof = cp
+            .prove(&scheme, &msg_refs, &os, &cs, &expected, &relation)
+            .unwrap();
         assert!(cp.verify(&cs, &expected, &proof));
     }
 
@@ -422,7 +626,18 @@ mod pipeline_integration {
         tr.challenge_bytes(b"relation-output", &mut expected);
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 32);
         let (c, o) = scheme.commit(wrong_msg);
-        let relation = TranscriptRelation { domain: b"proto".to_vec() };
-        assert!(cp.prove(&scheme, &[wrong_msg.as_slice()], &[o], &[c], &expected, &relation).is_none());
+        let relation = TranscriptRelation {
+            domain: b"proto".to_vec(),
+        };
+        assert!(cp
+            .prove(
+                &scheme,
+                &[wrong_msg.as_slice()],
+                &[o],
+                &[c],
+                &expected,
+                &relation
+            )
+            .is_none());
     }
 }

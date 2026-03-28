@@ -221,16 +221,23 @@ mod tests {
     #[test]
     fn test_ntt_mul_matches_schoolbook() {
         let ctx = NttContext::new(TEST_Q);
-        let a = RingElement { coeffs: {
-            let mut c = [0i64; D];
-            c[0] = 3; c[1] = 5; c[2] = -2;
-            c
-        }};
-        let b = RingElement { coeffs: {
-            let mut c = [0i64; D];
-            c[0] = 7; c[1] = -1;
-            c
-        }};
+        let a = RingElement {
+            coeffs: {
+                let mut c = [0i64; D];
+                c[0] = 3;
+                c[1] = 5;
+                c[2] = -2;
+                c
+            },
+        };
+        let b = RingElement {
+            coeffs: {
+                let mut c = [0i64; D];
+                c[0] = 7;
+                c[1] = -1;
+                c
+            },
+        };
         let schoolbook = a.mul(&b, TEST_Q);
         let ntt_result = ctx.ring_mul(&a, &b);
         assert_eq!(schoolbook, ntt_result);

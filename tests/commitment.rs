@@ -94,7 +94,13 @@ mod commitment_core {
 
         let bad_s = RingElement::from_constant(2);
         let bad_relaxed = opening::RelaxedOpening { f, s: bad_s };
-        assert!(!opening::verify_relaxed(&ajtai, &c, &m, &bad_relaxed, u128::MAX));
+        assert!(!opening::verify_relaxed(
+            &ajtai,
+            &c,
+            &m,
+            &bad_relaxed,
+            u128::MAX
+        ));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Full SNARK prover — orchestrates folding, CP-SNARK, and backend SNARK.
 
 use crate::commitment::{AjtaiParams, Commitment};
+use crate::fiat_shamir::hash_commitment::HashCommitment;
 use crate::fiat_shamir::transcript::Transcript;
+use crate::fiat_shamir::FSCommitment;
 use crate::folding::FoldingStatement;
 use crate::params::SymphonyParams;
 use crate::r1cs::R1CSMatrices;
@@ -68,16 +70,24 @@ pub fn generate_proof<S: BackendSnark>(
     let rp = range_proof_params(params);
     let ext_ctx = crate::ring::extension::ExtFieldContext::new(params.q);
 
-    let (folding_proof, folded_witness) = crate::folding::prove(
-        &folding_statements, r1cs, ajtai, &rp, &ext_ctx,
-    );
+    let (folding_proof, folded_witness) =
+        crate::folding::prove(&folding_statements, r1cs, ajtai, &rp, &ext_ctx);
 
-    // Step 3: Collect Fiat-Shamir commitments
-    let fs_commitments: Vec<Vec<u8>> = folding_proof.gr1cs_proofs.iter().enumerate().map(|(i, _)| {
-        let mut msg = format!("round-{i}").into_bytes();
-        msg.extend_from_slice(&(i as u64).to_le_bytes());
-        msg
-    }).collect();
+    // Step 3: Commit to actual folding round messages.
+    // Each message is a deterministic encoding of the corresponding GR1CS proof.
+    let fs_messages: Vec<Vec<u8>> = folding_proof
+        .gr1cs_proofs
+        .iter()
+        .map(cp_snark::encode_gr1cs_round_message)
+        .collect();
+    let fs_scheme = HashCommitment::new();
+    let mut fs_commitments = Vec::with_capacity(fs_messages.len());
+    let mut fs_openings = Vec::with_capacity(fs_messages.len());
+    for message in &fs_messages {
+        let (commitment, opening) = fs_scheme.commit(message);
+        fs_commitments.push(commitment.to_vec());
+        fs_openings.push(opening.to_vec());
+    }
 
     // Step 4: Generate CP-SNARK proof via S::prove
     // Build the instance (public) and witness (private) for the CP relation
@@ -95,14 +105,17 @@ pub fn generate_proof<S: BackendSnark>(
     for fs_comm in &fs_commitments {
         cp_transcript.append_bytes(b"fs-commitment", fs_comm);
     }
-    let cp_instance = cp_snark::encode_cp_instance(&fs_commitments, &mut cp_transcript);
+    let cp_instance = cp_snark::encode_cp_instance(
+        &fs_commitments,
+        &folding_proof.folded_instance,
+        &mut cp_transcript,
+    );
 
     // The CP witness contains the folding transcript bytes so that the
     // CP-SNARK can prove the transcript was computed correctly.
-    let folding_transcript_bytes = cp_snark::encode_folded_instance(
-        &folding_proof.folded_instance,
-    );
-    let cp_witness = cp_snark::encode_cp_witness(&fs_commitments, &folding_transcript_bytes);
+    let folding_transcript_bytes =
+        cp_snark::encode_folding_transcript_witness(&folding_proof, &fs_messages);
+    let cp_witness = cp_snark::encode_cp_witness(&fs_openings, &folding_transcript_bytes);
     let cp_proof = S::prove(cp_pk, &cp_instance, &cp_witness);
 
     // Step 5: Generate backend SNARK proof for the folded statement via S::prove

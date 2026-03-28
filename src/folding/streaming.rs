@@ -49,10 +49,17 @@ impl StreamingProver {
     /// Initialize the streaming prover.
     pub fn new(ajtai: AjtaiParams, ell_np: usize) -> Self {
         let n = ajtai.n;
-        let log_n = if n <= 1 { 1 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
-        let log_log_n = if log_n <= 1 { 1 } else {
+        let log_n = if n <= 1 {
+            1
+        } else {
+            (usize::BITS - (n - 1).leading_zeros()) as usize
+        };
+        let log_log_n = if log_n <= 1 {
+            1
+        } else {
             (usize::BITS - (log_n - 1).leading_zeros()) as usize
-        }.max(1);
+        }
+        .max(1);
         Self {
             ajtai,
             ell_np,
@@ -89,7 +96,11 @@ impl StreamingProver {
     /// Initialize the evaluation table for the sumcheck phase.
     fn init_eval_table(&mut self) {
         let n = self.ajtai.n;
-        let num_vars = if n <= 1 { 0 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
+        let num_vars = if n <= 1 {
+            0
+        } else {
+            (usize::BITS - (n - 1).leading_zeros()) as usize
+        };
         let table_size = 1usize << num_vars;
         let zero = ExtFieldElement { c0: 0, c1: 0 };
         self.eval_table = vec![zero; table_size];
@@ -107,7 +118,10 @@ impl StreamingProver {
     pub fn feed_witness_sumcheck(&mut self, witness: &RingVector, statement_idx: usize) {
         assert!(matches!(self.phase, StreamingPhase::Sumcheck { .. }));
 
-        let ctx = self.ext_ctx.as_ref().expect("ext context required for sumcheck");
+        let ctx = self
+            .ext_ctx
+            .as_ref()
+            .expect("ext context required for sumcheck");
         let q = ctx.q;
         let beta_ct = self.beta[statement_idx].coeffs[0];
 
@@ -206,7 +220,8 @@ impl StreamingProver {
 
     /// Derive folding challenges from commitments via Fiat-Shamir.
     fn derive_challenges(&mut self) {
-        let mut transcript = crate::fiat_shamir::transcript::Transcript::new(b"symphony-fold-streaming");
+        let mut transcript =
+            crate::fiat_shamir::transcript::Transcript::new(b"symphony-fold-streaming");
         for c in &self.commitments {
             for elem in &c.value.elements {
                 let bytes: Vec<u8> = elem.coeffs.iter().flat_map(|v| v.to_le_bytes()).collect();

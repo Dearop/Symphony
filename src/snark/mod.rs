@@ -19,6 +19,7 @@
 
 pub mod cp_snark;
 pub mod prover;
+pub mod sumcheck_snark;
 
 use std::marker::PhantomData;
 
@@ -139,10 +140,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
     }
 
     /// Commit to a single R1CS witness (streaming-friendly).
-    pub fn commit_witness(
-        &self,
-        witness: &RingVector,
-    ) -> (Commitment, crate::commitment::Opening) {
+    pub fn commit_witness(&self, witness: &RingVector) -> (Commitment, crate::commitment::Opening) {
         self.ajtai.commit(witness)
     }
 
@@ -152,7 +150,14 @@ impl<S: BackendSnark> SymphonyProver<S> {
         statements: &[(Commitment, Vec<i64>, RingVector)],
         r1cs: &R1CSMatrices,
     ) -> SymphonyProof<S> {
-        prover::generate_proof::<S>(&self.params, &self.ajtai, &self.cp_pk, &self.snark_pk, statements, r1cs)
+        prover::generate_proof::<S>(
+            &self.params,
+            &self.ajtai,
+            &self.cp_pk,
+            &self.snark_pk,
+            statements,
+            r1cs,
+        )
     }
 }
 
@@ -189,7 +194,11 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         }
 
         // Step 2: Verify CP-SNARK
-        let cp_instance = cp_snark::encode_cp_instance(&proof.fs_commitments, &mut transcript);
+        let cp_instance = cp_snark::encode_cp_instance(
+            &proof.fs_commitments,
+            &proof.folded_instance,
+            &mut transcript,
+        );
         if !S::verify(&self.cp_vk, &cp_instance, &proof.cp_proof) {
             return false;
         }
@@ -237,8 +246,12 @@ impl BackendSnark for DummySnark {
 
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
         (
-            DummyProvingKey { relation: relation.clone() },
-            DummyVerifyingKey { relation: relation.clone() },
+            DummyProvingKey {
+                relation: relation.clone(),
+            },
+            DummyVerifyingKey {
+                relation: relation.clone(),
+            },
         )
     }
 

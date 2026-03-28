@@ -4,7 +4,7 @@ mod common;
 
 use common::Q;
 use symphony::commitment::Commitment;
-use symphony::params::{D, SymphonyParams};
+use symphony::params::{SymphonyParams, D};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::{RingElement, RingVector};
 
@@ -18,17 +18,28 @@ fn multi_r1cs() -> (R1CSMatrices, Vec<i64>) {
 mod cp_snark_encoding {
     use super::*;
     use symphony::fiat_shamir::transcript::Transcript;
-    use symphony::snark::cp_snark;
     use symphony::folding::FoldedInstance;
     use symphony::ring::tensor::TensorElement;
+    use symphony::snark::cp_snark;
+
+    fn dummy_folded_instance() -> FoldedInstance {
+        FoldedInstance {
+            commitment: Commitment {
+                value: RingVector::zero(1),
+            },
+            public_input: vec![RingElement::from_constant(0)],
+            evaluation_values: vec![TensorElement::zero()],
+        }
+    }
 
     #[test]
     fn encode_cp_instance_deterministic() {
         let comms = vec![b"comm-0".to_vec(), b"comm-1".to_vec()];
         let mut t1 = Transcript::new(b"test");
         let mut t2 = Transcript::new(b"test");
-        let e1 = cp_snark::encode_cp_instance(&comms, &mut t1);
-        let e2 = cp_snark::encode_cp_instance(&comms, &mut t2);
+        let folded = dummy_folded_instance();
+        let e1 = cp_snark::encode_cp_instance(&comms, &folded, &mut t1);
+        let e2 = cp_snark::encode_cp_instance(&comms, &folded, &mut t2);
         assert_eq!(e1, e2);
         assert!(!e1.is_empty());
     }
@@ -44,7 +55,9 @@ mod cp_snark_encoding {
     #[test]
     fn encode_folded_instance_nonempty() {
         let fi = FoldedInstance {
-            commitment: Commitment { value: RingVector::zero(2) },
+            commitment: Commitment {
+                value: RingVector::zero(2),
+            },
             public_input: vec![RingElement::from_constant(1)],
             evaluation_values: vec![TensorElement::zero()],
         };
@@ -100,7 +113,10 @@ mod snark_pipeline {
         };
         let (c, _) = prover.commit_witness(&full_ring);
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         (c, z[..n_in].to_vec(), witness_part)
     }
@@ -135,9 +151,18 @@ mod snark_pipeline {
         let statements = vec![s1, s2];
         let proof = prover.prove(&statements, &r1cs);
 
-        assert!(!proof.fs_commitments.is_empty(), "should have FS commitments");
-        assert!(!proof.cp_proof.data.is_empty(), "CP proof should be non-empty");
-        assert!(!proof.snark_proof.data.is_empty(), "SNARK proof should be non-empty");
+        assert!(
+            !proof.fs_commitments.is_empty(),
+            "should have FS commitments"
+        );
+        assert!(
+            !proof.cp_proof.data.is_empty(),
+            "CP proof should be non-empty"
+        );
+        assert!(
+            !proof.snark_proof.data.is_empty(),
+            "SNARK proof should be non-empty"
+        );
     }
 
     // Note: These DummySnark tamper tests verify pipeline wiring (that the verifier
@@ -160,7 +185,10 @@ mod snark_pipeline {
         proof.cp_proof.data = b"garbage".to_vec();
 
         let public_inputs = vec![pi1, pi2];
-        assert!(!verifier.verify(&public_inputs, &proof, &r1cs), "tampered CP proof should be rejected");
+        assert!(
+            !verifier.verify(&public_inputs, &proof, &r1cs),
+            "tampered CP proof should be rejected"
+        );
     }
 
     #[test]
@@ -180,7 +208,10 @@ mod snark_pipeline {
         proof.snark_proof.data = b"garbage".to_vec();
 
         let public_inputs = vec![pi1, pi2];
-        assert!(!verifier.verify(&public_inputs, &proof, &r1cs), "tampered SNARK proof should be rejected");
+        assert!(
+            !verifier.verify(&public_inputs, &proof, &r1cs),
+            "tampered SNARK proof should be rejected"
+        );
     }
 }
 
@@ -189,7 +220,20 @@ mod snark_pipeline {
 // =========================================================================
 mod cp_snark_extended {
     use symphony::fiat_shamir::transcript::Transcript;
+    use symphony::folding::FoldedInstance;
+    use symphony::ring::tensor::TensorElement;
+    use symphony::ring::{RingElement, RingVector};
     use symphony::snark::cp_snark;
+
+    fn dummy_folded_instance() -> FoldedInstance {
+        FoldedInstance {
+            commitment: symphony::commitment::Commitment {
+                value: RingVector::zero(1),
+            },
+            public_input: vec![RingElement::from_constant(0)],
+            evaluation_values: vec![TensorElement::zero()],
+        }
+    }
 
     #[test]
     fn different_commitments_different_encoding() {
@@ -197,15 +241,31 @@ mod cp_snark_extended {
         let c2 = vec![b"comm-B".to_vec()];
         let mut t1 = Transcript::new(b"test");
         let mut t2 = Transcript::new(b"test");
-        let e1 = cp_snark::encode_cp_instance(&c1, &mut t1);
-        let e2 = cp_snark::encode_cp_instance(&c2, &mut t2);
+        let folded = dummy_folded_instance();
+        let e1 = cp_snark::encode_cp_instance(&c1, &folded, &mut t1);
+        let e2 = cp_snark::encode_cp_instance(&c2, &folded, &mut t2);
+        assert_ne!(e1, e2);
+    }
+
+    #[test]
+    fn folded_instance_affects_encoding() {
+        let commitments = vec![b"comm-A".to_vec()];
+        let mut t1 = Transcript::new(b"test");
+        let mut t2 = Transcript::new(b"test");
+        let folded1 = dummy_folded_instance();
+        let mut folded2 = dummy_folded_instance();
+        folded2.public_input = vec![RingElement::from_constant(7)];
+
+        let e1 = cp_snark::encode_cp_instance(&commitments, &folded1, &mut t1);
+        let e2 = cp_snark::encode_cp_instance(&commitments, &folded2, &mut t2);
         assert_ne!(e1, e2);
     }
 
     #[test]
     fn empty_commitments_still_encodes() {
         let mut t = Transcript::new(b"test");
-        let encoded = cp_snark::encode_cp_instance(&[], &mut t);
+        let folded = dummy_folded_instance();
+        let encoded = cp_snark::encode_cp_instance(&[], &folded, &mut t);
         assert!(!encoded.is_empty());
     }
 }
@@ -223,17 +283,32 @@ mod snark_pipeline_extended {
         use symphony::snark::cp_snark;
 
         let params = SymphonyParams {
-            q: Q, d: D, kappa: 2, ell_np: 2, ell_h: D,
-            lambda_pj: 4, n_bar: 4, m: 4, b: 16, k_cs: 1,
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
         };
         let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
         let mk = |p: &SymphonyProver<DummySnark>| {
-            let full = RingVector { elements: z.iter().map(|&v| RingElement::from_constant(v)).collect() };
+            let full = RingVector {
+                elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+            };
             let (c, _) = p.commit_witness(&full);
-            let wp = RingVector { elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect() };
+            let wp = RingVector {
+                elements: z[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
+            };
             (c, z[..n_in].to_vec(), wp)
         };
 
@@ -245,7 +320,8 @@ mod snark_pipeline_extended {
         for c in &proof.fs_commitments {
             t1.append_bytes(b"fs-commitment", c);
         }
-        let honest_instance = cp_snark::encode_cp_instance(&proof.fs_commitments, &mut t1);
+        let honest_instance =
+            cp_snark::encode_cp_instance(&proof.fs_commitments, &proof.folded_instance, &mut t1);
 
         // Tampered CP instance — a real BackendSnark would reject this
         let mut tampered_comms = proof.fs_commitments.clone();
@@ -254,26 +330,44 @@ mod snark_pipeline_extended {
         for c in &tampered_comms {
             t2.append_bytes(b"fs-commitment", c);
         }
-        let tampered_instance = cp_snark::encode_cp_instance(&tampered_comms, &mut t2);
+        let tampered_instance =
+            cp_snark::encode_cp_instance(&tampered_comms, &proof.folded_instance, &mut t2);
 
-        assert_ne!(honest_instance, tampered_instance,
-            "tampered FS commitments must produce a different CP instance");
+        assert_ne!(
+            honest_instance, tampered_instance,
+            "tampered FS commitments must produce a different CP instance"
+        );
     }
 
     #[test]
     fn different_r1cs_different_proofs() {
         let params = SymphonyParams {
-            q: Q, d: D, kappa: 2, ell_np: 2, ell_h: D,
-            lambda_pj: 4, n_bar: 4, m: 4, b: 16, k_cs: 1,
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
         };
         let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
         let mk = |p: &SymphonyProver<DummySnark>| {
-            let full = RingVector { elements: z.iter().map(|&v| RingElement::from_constant(v)).collect() };
+            let full = RingVector {
+                elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+            };
             let (c, _) = p.commit_witness(&full);
-            let wp = RingVector { elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect() };
+            let wp = RingVector {
+                elements: z[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
+            };
             (c, z[..n_in].to_vec(), wp)
         };
 
@@ -293,8 +387,16 @@ mod snark_public_input_binding {
 
     fn small_params() -> SymphonyParams {
         SymphonyParams {
-            q: Q, d: D, kappa: 2, ell_np: 2, ell_h: D,
-            lambda_pj: 4, n_bar: 4, m: 4, b: 16, k_cs: 1,
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
         }
     }
 
@@ -308,7 +410,10 @@ mod snark_public_input_binding {
         };
         let (c, _) = prover.commit_witness(&full_ring);
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         (c, z[..n_in].to_vec(), witness_part)
     }
@@ -376,7 +481,10 @@ mod snark_public_input_binding {
         let mut c2 = [0u8; 32];
         t2.challenge_bytes(b"check", &mut c2);
 
-        assert_ne!(c1, c2, "different R1CS metadata must produce different transcript states");
+        assert_ne!(
+            c1, c2,
+            "different R1CS metadata must produce different transcript states"
+        );
     }
 }
 
@@ -390,17 +498,32 @@ mod cp_snark_witness_fix {
     #[test]
     fn cp_witness_is_nonempty_in_pipeline() {
         let params = SymphonyParams {
-            q: Q, d: D, kappa: 2, ell_np: 2, ell_h: D,
-            lambda_pj: 4, n_bar: 4, m: 4, b: 16, k_cs: 1,
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
         };
         let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
         let mk = |p: &SymphonyProver<DummySnark>| {
-            let full = RingVector { elements: z.iter().map(|&v| RingElement::from_constant(v)).collect() };
+            let full = RingVector {
+                elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+            };
             let (c, _) = p.commit_witness(&full);
-            let wp = RingVector { elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect() };
+            let wp = RingVector {
+                elements: z[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
+            };
             (c, z[..n_in].to_vec(), wp)
         };
 

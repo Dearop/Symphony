@@ -45,7 +45,12 @@ pub fn verify_relaxed(
         }
     }
 
-    let sc: Vec<RingElement> = c.value.elements.iter().map(|ci| ci.mul(&opening.s, q)).collect();
+    let sc: Vec<RingElement> = c
+        .value
+        .elements
+        .iter()
+        .map(|ci| ci.mul(&opening.s, q))
+        .collect();
 
     af.elements.iter().zip(sc.iter()).all(|(a, b)| a == b)
 }

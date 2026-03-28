@@ -1,9 +1,9 @@
 //! Reductions of Knowledge (RoK) — the protocol building blocks.
 
+pub mod gr1cs;
 pub mod hadamard;
 pub mod monomial;
 pub mod range_proof;
-pub mod gr1cs;
 
 use crate::commitment::Commitment;
 use crate::ring::extension::ExtFieldElement;

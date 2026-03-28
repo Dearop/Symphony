@@ -68,7 +68,7 @@ mod tests {
         let z_orig = [1i64, 5, 25];
         let z_expanded: Vec<i64> = z_orig
             .iter()
-            .flat_map(|&v| crate::decomposition::decompose(v, b, k_cs as usize))
+            .flat_map(|&v| crate::decomposition::decompose(v, b, k_cs))
             .collect();
 
         // Check: Az_exp * Bz_exp = Cz_exp

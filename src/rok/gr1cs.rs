@@ -86,13 +86,8 @@ pub fn prove(
         alpha: challenges.alpha,
         sumcheck_challenges: challenges.hadamard_sumcheck_challenges.clone(),
     };
-    let hadamard_proof = super::hadamard::prove(
-        commitment,
-        &witness_matrix,
-        r1cs,
-        &had_challenges,
-        ctx,
-    );
+    let hadamard_proof =
+        super::hadamard::prove(commitment, &witness_matrix, r1cs, &had_challenges, ctx);
 
     // Run Πrg
     // Build full ring witness for range proof
@@ -106,7 +101,9 @@ pub fn prove(
     while full_witness_elems.len() < n {
         full_witness_elems.push(RingElement::zero());
     }
-    let full_witness = RingVector { elements: full_witness_elems };
+    let full_witness = RingVector {
+        elements: full_witness_elems,
+    };
 
     let rg_challenges = RangeProofChallenges {
         projection: challenges.projection.clone(),
@@ -147,12 +144,9 @@ pub fn verify(
         alpha: challenges.alpha,
         sumcheck_challenges: challenges.hadamard_sumcheck_challenges.clone(),
     };
-    let linear_rel = super::hadamard::verify(
-        commitment,
-        &proof.hadamard_proof,
-        &had_challenges,
-        ctx,
-    ).map_err(|_| GR1CSError::HadamardFailed)?;
+    let linear_rel =
+        super::hadamard::verify(commitment, &proof.hadamard_proof, &had_challenges, ctx)
+            .map_err(|_| GR1CSError::HadamardFailed)?;
 
     // Verify Πrg
     let rg_challenges = RangeProofChallenges {
@@ -169,7 +163,8 @@ pub fn verify(
         range_params,
         &rg_challenges,
         ctx,
-    ).map_err(|_| GR1CSError::RangeProofFailed)?;
+    )
+    .map_err(|_| GR1CSError::RangeProofFailed)?;
 
     Ok((linear_rel, batched_rel))
 }

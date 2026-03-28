@@ -17,24 +17,28 @@
 //! - **Post-quantum:** LaBRADOR, WHIR (50–100 KB proofs)
 //! - **Pairing-based:** HyperPlonk + KZG (< 50 KB proofs, not PQ)
 //!
-//! A [`snark::DummySnark`] is provided for testing.
+//! [`snark::DummySnark`] and [`snark::sumcheck_snark::SumcheckSnark`] are
+//! provided for testing and integration checks.
 
-pub mod ring;
 pub mod commitment;
-pub mod decomposition;
-pub mod sumcheck;
-pub mod rok;
-pub mod folding;
-pub mod fiat_shamir;
-pub mod snark;
-pub mod r1cs;
-pub mod params;
 pub mod cp_snark;
+pub mod decomposition;
+pub mod fiat_shamir;
+pub mod folding;
+pub mod params;
+pub mod r1cs;
+pub mod ring;
+pub mod rok;
+pub mod snark;
+pub mod sumcheck;
 
-pub use params::SymphonyParams;
 pub use commitment::{AjtaiParams, Commitment};
-pub use r1cs::R1CSMatrices;
-pub use snark::{BackendSnark, SymphonyProver, SymphonyVerifier, SymphonyProof};
-pub use snark::{DummySnark, DummySymphonyProver, DummySymphonyVerifier, DummySymphonyProof};
-pub use cp_snark::{CPSnark, CPProof, CommittedRelation};
+pub use cp_snark::{CPProof, CPSnark, CommittedRelation};
 pub use fiat_shamir::hash_commitment::HashCommitment;
+pub use params::SymphonyParams;
+pub use r1cs::R1CSMatrices;
+pub use snark::sumcheck_snark::{
+    SumcheckProofData, SumcheckProvingKey, SumcheckSnark, SumcheckVerifyingKey,
+};
+pub use snark::{BackendSnark, SymphonyProof, SymphonyProver, SymphonyVerifier};
+pub use snark::{DummySnark, DummySymphonyProof, DummySymphonyProver, DummySymphonyVerifier};

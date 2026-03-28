@@ -654,7 +654,7 @@ MSIS parameters are set for 117-bit security using the lattice estimator. Both |
 
 ## 13. Open Problems and Caveats
 
-1. **No reference implementation exists yet.** The paper provides parameter estimates but leaves concrete implementation to future work.
+1. **Reference implementations exist, but production hardening remains open.** This crate includes an end-to-end implementation and demo backends; deploying in production still requires a concrete audited backend SNARK integration.
 2. **Approximate range proofs** mean extracted witnesses have slightly larger norms (B' vs B). This is fine for depth ≤ 2 but requires care if extending to deeper folding.
 3. **Concrete probability analysis for folded witness norms** is left to future work (Remark 4.2). The worst-case bound (Eq. 50) is conservative.
 4. **Two-layer folding** requires the structured MSIS matrix assumption (Eq. 56), which is slightly stronger than standard MSIS.

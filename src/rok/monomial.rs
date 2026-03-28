@@ -16,8 +16,8 @@ use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
 use crate::ring::tensor::TensorElement;
 use crate::ring::RingElement;
 use crate::rok::BatchedLinearRelation;
-use crate::sumcheck::{self, SumcheckClaim, SumcheckProof, SumcheckRoundMessage};
 use crate::sumcheck::prover;
+use crate::sumcheck::{self, SumcheckClaim, SumcheckProof, SumcheckRoundMessage};
 
 /// Proof for the monomial relation check.
 #[derive(Debug, Clone)]
@@ -58,7 +58,11 @@ pub fn prove(
     let k_g = monomial_vectors.len();
     assert!(!monomial_vectors.is_empty());
     let n = monomial_vectors[0].len();
-    let num_vars = if n <= 1 { 0 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
+    let num_vars = if n <= 1 {
+        0
+    } else {
+        (usize::BITS - (n - 1).leading_zeros()) as usize
+    };
     let table_size = 1 << num_vars;
 
     // We need k_g * D α powers for per-coefficient checks, plus k_g for at-most-one checks.
@@ -117,7 +121,10 @@ pub fn prove(
         let mut evals = vec![ctx.zero(); deg + 1];
 
         for (eval_idx, eval_slot) in evals.iter_mut().enumerate() {
-            let t = ExtFieldElement { c0: eval_idx as i64, c1: 0 };
+            let t = ExtFieldElement {
+                c0: eval_idx as i64,
+                c1: 0,
+            };
             let one_minus_t = ctx.sub(&ctx.one(), &t);
             let one = ctx.one();
 
@@ -255,18 +262,16 @@ pub fn verify(
         &claim,
         &challenges.sumcheck_challenges,
         ctx,
-    ).map_err(|_| MonomialError::SumcheckFailed)?;
+    )
+    .map_err(|_| MonomialError::SumcheckFailed)?;
 
     // Verify consistency against both checks:
     //   eq(s, r) · [
     //     Σ_{i,j} α^{i*D+j} · eval[i][j] · (eval[i][j]-1) · (eval[i][j]+1)   // per-coeff
     //     + Σ_i α^{k_g*D+i} · sq_eval[i] · (sq_eval[i] - 1)                    // at-most-one
     //   ]
-    let eq_val = sumcheck::eq_eval_ext_sumcheck(
-        &challenges.s,
-        &sumcheck_result.evaluation_point,
-        ctx,
-    );
+    let eq_val =
+        sumcheck::eq_eval_ext_sumcheck(&challenges.s, &sumcheck_result.evaluation_point, ctx);
 
     let one = ctx.one();
     let num_coeff_terms = k_g * D;
@@ -333,8 +338,8 @@ mod tests {
         // Create monomial vectors of length 2 (smallest power of 2)
         let n = 2;
         let g = vec![
-            exp_map(3),   // X^3
-            exp_map(-1),  // -X
+            exp_map(3),  // X^3
+            exp_map(-1), // -X
         ];
         for gi in &g {
             assert!(crate::decomposition::monomial::is_monomial(gi));
@@ -342,7 +347,9 @@ mod tests {
 
         let kappa = 2;
         let ajtai = crate::commitment::AjtaiParams::setup(kappa, n, q);
-        let ring_vec = crate::ring::RingVector { elements: g.clone() };
+        let ring_vec = crate::ring::RingVector {
+            elements: g.clone(),
+        };
         let (commitment, _) = ajtai.commit(&ring_vec);
 
         let challenges = MonomialChallenges {
@@ -351,7 +358,7 @@ mod tests {
             sumcheck_challenges: vec![ExtFieldElement { c0: 7, c1: 3 }],
         };
 
-        let proof = prove(&[commitment.clone()], &[g], &challenges, &ctx);
+        let proof = prove(std::slice::from_ref(&commitment), &[g], &challenges, &ctx);
         let result = verify(&[commitment], &proof, &challenges, &ctx);
         assert!(result.is_ok(), "Πmon verify failed: {:?}", result.err());
     }

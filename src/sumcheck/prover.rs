@@ -80,7 +80,10 @@ pub fn prove_bookkeeping(
         let mut evals = vec![ctx.zero(); degree + 1];
 
         for (eval_idx, eval) in evals.iter_mut().enumerate() {
-            let t = ExtFieldElement { c0: eval_idx as i64, c1: 0 };
+            let t = ExtFieldElement {
+                c0: eval_idx as i64,
+                c1: 0,
+            };
             let one_minus_t = ctx.sub(&ctx.one(), &t);
 
             let mut sum = ctx.zero();
@@ -92,10 +95,7 @@ pub fn prove_bookkeeping(
                 for table in factor_tables.iter() {
                     let v0 = table[idx0];
                     let v1 = table[idx1];
-                    let interp = ctx.add(
-                        &ctx.mul(&one_minus_t, &v0),
-                        &ctx.mul(&t, &v1),
-                    );
+                    let interp = ctx.add(&ctx.mul(&one_minus_t, &v0), &ctx.mul(&t, &v1));
                     factor_vals.push(interp);
                 }
 
@@ -115,10 +115,7 @@ pub fn prove_bookkeeping(
             for rest_idx in 0..half {
                 let v0 = table[rest_idx];
                 let v1 = table[half + rest_idx];
-                let folded = ctx.add(
-                    &ctx.mul(&one_minus_r, &v0),
-                    &ctx.mul(&r, &v1),
-                );
+                let folded = ctx.add(&ctx.mul(&one_minus_r, &v0), &ctx.mul(&r, &v1));
                 new_table.push(folded);
             }
             *table = new_table;
@@ -129,10 +126,7 @@ pub fn prove_bookkeeping(
 }
 
 /// Build the eq(s, ·) bookkeeping table over {0,1}^n.
-pub fn build_eq_table(
-    s: &[ExtFieldElement],
-    ctx: &ExtFieldContext,
-) -> Vec<ExtFieldElement> {
+pub fn build_eq_table(s: &[ExtFieldElement], ctx: &ExtFieldContext) -> Vec<ExtFieldElement> {
     let n = s.len();
     let size = 1 << n;
     let mut table = vec![ctx.one(); size];
@@ -146,8 +140,8 @@ pub fn build_eq_table(
         let one_minus_si = ctx.sub(&ctx.one(), si);
         for j in (0..stride).rev() {
             let base = table[j];
-            table[j + stride] = ctx.mul(&base, si);   // b_i = 1
-            table[j] = ctx.mul(&base, &one_minus_si);     // b_i = 0
+            table[j + stride] = ctx.mul(&base, si); // b_i = 1
+            table[j] = ctx.mul(&base, &one_minus_si); // b_i = 0
         }
     }
 
@@ -169,10 +163,10 @@ mod tests {
         let table = build_eq_table(&s, &ctx);
         assert_eq!(table.len(), 4);
 
-        for idx in 0..4 {
+        for (idx, actual) in table.iter().enumerate().take(4) {
             let bits = sumcheck::index_to_bits(idx, 2);
             let expected = sumcheck::eq_eval(&s, &bits, &ctx);
-            assert_eq!(table[idx], expected, "mismatch at idx={idx}");
+            assert_eq!(*actual, expected, "mismatch at idx={idx}");
         }
     }
 
@@ -221,6 +215,10 @@ mod tests {
             claimed_sum,
         };
         let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
-        assert!(result.is_ok(), "sumcheck verification failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "sumcheck verification failed: {:?}",
+            result.err()
+        );
     }
 }

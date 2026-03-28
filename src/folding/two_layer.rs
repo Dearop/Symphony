@@ -47,10 +47,7 @@ pub struct TwoLayerProof {
 ///
 /// Given f* and A = [r_1·A', ..., r_ℓ·A'], decompose f* into ℓ blocks
 /// of size n/ℓ each.
-fn split_witness(
-    witness: &RingVector,
-    num_blocks: usize,
-) -> Vec<RingVector> {
+fn split_witness(witness: &RingVector, num_blocks: usize) -> Vec<RingVector> {
     let block_size = witness.len() / num_blocks;
     let mut blocks = Vec::with_capacity(num_blocks);
     for b in 0..num_blocks {
@@ -64,12 +61,7 @@ fn split_witness(
 }
 
 /// Gadget-decompose each block to reduce norms.
-fn decompose_blocks(
-    blocks: &[RingVector],
-    base: i64,
-    k_b: usize,
-    _q: u64,
-) -> Vec<RingVector> {
+fn decompose_blocks(blocks: &[RingVector], base: i64, k_b: usize, _q: u64) -> Vec<RingVector> {
     let mut decomposed = Vec::with_capacity(blocks.len() * k_b);
     for block in blocks {
         // For each ring element in the block, decompose each coefficient
@@ -98,7 +90,9 @@ fn decompose_blocks(
                 }
                 layer_elems.push(RingElement { coeffs: new_coeffs });
             }
-            decomposed.push(RingVector { elements: layer_elems });
+            decomposed.push(RingVector {
+                elements: layer_elems,
+            });
         }
     }
     decomposed
@@ -116,9 +110,8 @@ pub fn prove_two_layer(
     let q = ctx.q;
 
     // Layer 1: Standard high-arity fold
-    let (layer1_proof, layer1_witness) = crate::folding::prove(
-        statements, r1cs, ajtai, range_params, ctx,
-    );
+    let (layer1_proof, layer1_witness) =
+        crate::folding::prove(statements, r1cs, ajtai, range_params, ctx);
     let layer1_instance = layer1_proof.folded_instance.clone();
 
     // Split the folded witness into ℓ blocks
@@ -133,7 +126,11 @@ pub fn prove_two_layer(
     );
 
     // Create statements for Layer 2 (linear only, no Hadamard)
-    let layer2_n = if decomposed_blocks.is_empty() { 1 } else { decomposed_blocks[0].len() };
+    let layer2_n = if decomposed_blocks.is_empty() {
+        1
+    } else {
+        decomposed_blocks[0].len()
+    };
     let layer2_ajtai = AjtaiParams::setup(ajtai.kappa, layer2_n, ajtai.q);
 
     let mut layer2_statements = Vec::with_capacity(decomposed_blocks.len());
@@ -150,7 +147,11 @@ pub fn prove_two_layer(
     let layer2_r1cs = R1CSMatrices::new(1, layer2_n, 0);
 
     let (layer2_proof, layer2_witness) = crate::folding::prove(
-        &layer2_statements, &layer2_r1cs, &layer2_ajtai, range_params, ctx,
+        &layer2_statements,
+        &layer2_r1cs,
+        &layer2_ajtai,
+        range_params,
+        ctx,
     );
     let final_instance = layer2_proof.folded_instance.clone();
 
@@ -183,7 +184,8 @@ pub fn verify_two_layer(
         ajtai,
         range_params,
         ctx,
-    ).map_err(|_| TwoLayerError::Layer1Failed)?;
+    )
+    .map_err(|_| TwoLayerError::Layer1Failed)?;
 
     // Cross-layer consistency: the Layer 1 folded instance must match the
     // claimed layer1_instance in the proof.
@@ -205,7 +207,8 @@ pub fn verify_two_layer(
         &layer2_ajtai,
         range_params,
         ctx,
-    ).map_err(|_| TwoLayerError::Layer2Failed)?;
+    )
+    .map_err(|_| TwoLayerError::Layer2Failed)?;
 
     Ok(proof.final_instance.clone())
 }

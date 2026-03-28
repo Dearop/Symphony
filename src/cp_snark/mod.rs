@@ -60,8 +60,8 @@
 
 use std::marker::PhantomData;
 
-use crate::fiat_shamir::FSCommitment;
 use crate::fiat_shamir::transcript::Transcript;
+use crate::fiat_shamir::FSCommitment;
 use crate::snark::{BackendSnark, RelationDescription};
 
 // -----------------------------------------------------------------------
@@ -102,7 +102,7 @@ pub struct PreimageRelation;
 
 impl CommittedRelation for PreimageRelation {
     fn check(&self, messages: &[&[u8]], public_statement: &[u8]) -> bool {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         for msg in messages {
             hasher.update(msg);
@@ -125,10 +125,7 @@ impl CommittedRelation for TranscriptRelation {
     fn check(&self, messages: &[&[u8]], public_statement: &[u8]) -> bool {
         let mut transcript = Transcript::new(&self.domain);
         for (i, msg) in messages.iter().enumerate() {
-            transcript.append_bytes(
-                format!("round-{i}").as_bytes(),
-                msg,
-            );
+            transcript.append_bytes(format!("round-{i}").as_bytes(), msg);
         }
         if public_statement.is_empty() {
             return true;
@@ -455,6 +452,12 @@ impl<S: BackendSnark, C: FSCommitment> CPSnarkBuilder<S, C> {
     }
 }
 
+impl<S: BackendSnark, C: FSCommitment> Default for CPSnarkBuilder<S, C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,14 +482,16 @@ mod tests {
         let (c1, o1) = scheme.commit(b"msg-1");
         let (c2, o2) = scheme.commit(b"msg-2");
 
-        let proof = cp.prove(
-            &scheme,
-            &[b"msg-1".as_slice(), b"msg-2".as_slice()],
-            &[o1, o2],
-            &[c1, c2],
-            b"",
-            &IdentityRelation,
-        ).expect("proof should succeed");
+        let proof = cp
+            .prove(
+                &scheme,
+                &[b"msg-1".as_slice(), b"msg-2".as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                b"",
+                &IdentityRelation,
+            )
+            .expect("proof should succeed");
 
         assert!(cp.verify(&[c1, c2], b"", &proof));
     }
@@ -519,20 +524,13 @@ mod tests {
 
         let never = FnRelation(|_msgs: &[&[u8]], _stmt: &[u8]| false);
 
-        let result = cp.prove(
-            &scheme,
-            &[b"data".as_slice()],
-            &[o],
-            &[c],
-            b"",
-            &never,
-        );
+        let result = cp.prove(&scheme, &[b"data".as_slice()], &[o], &[c], b"", &never);
         assert!(result.is_none(), "should reject failing relation");
     }
 
     #[test]
     fn preimage_relation() {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let scheme = HashCommitment::new();
         let m1 = b"hello";
@@ -547,14 +545,16 @@ mod tests {
         let (c1, o1) = scheme.commit(m1);
         let (c2, o2) = scheme.commit(m2);
 
-        let proof = cp.prove(
-            &scheme,
-            &[m1.as_slice(), m2.as_slice()],
-            &[o1, o2],
-            &[c1, c2],
-            &digest,
-            &PreimageRelation,
-        ).expect("proof should succeed");
+        let proof = cp
+            .prove(
+                &scheme,
+                &[m1.as_slice(), m2.as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                &digest,
+                &PreimageRelation,
+            )
+            .expect("proof should succeed");
 
         assert!(cp.verify(&[c1, c2], &digest, &proof));
     }
@@ -597,14 +597,16 @@ mod tests {
             domain: b"test-domain".to_vec(),
         };
 
-        let proof = cp.prove(
-            &scheme,
-            &[m1.as_slice(), m2.as_slice()],
-            &[o1, o2],
-            &[c1, c2],
-            &expected,
-            &relation,
-        ).expect("proof should succeed");
+        let proof = cp
+            .prove(
+                &scheme,
+                &[m1.as_slice(), m2.as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                &expected,
+                &relation,
+            )
+            .expect("proof should succeed");
 
         assert!(cp.verify(&[c1, c2], &expected, &proof));
     }
@@ -633,14 +635,16 @@ mod tests {
         let (c1, o1) = scheme.commit(b"a");
         let (c2, o2) = scheme.commit(b"b");
 
-        let proof = cp.prove(
-            &scheme,
-            &[b"a".as_slice(), b"b".as_slice()],
-            &[o1, o2],
-            &[c1, c2],
-            b"",
-            &IdentityRelation,
-        ).unwrap();
+        let proof = cp
+            .prove(
+                &scheme,
+                &[b"a".as_slice(), b"b".as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                b"",
+                &IdentityRelation,
+            )
+            .unwrap();
 
         assert!(!cp.verify(&[c1], b"", &proof), "wrong count should fail");
     }
@@ -656,20 +660,23 @@ mod tests {
         let (c2, o2) = scheme.commit(&v2);
 
         let sum_is_100 = FnRelation(|msgs: &[&[u8]], _| {
-            let sum: u64 = msgs.iter()
+            let sum: u64 = msgs
+                .iter()
                 .map(|m| u64::from_le_bytes(m[..8].try_into().unwrap()))
                 .sum();
             sum == 100
         });
 
-        let proof = cp.prove(
-            &scheme,
-            &[v1.as_slice(), v2.as_slice()],
-            &[o1, o2],
-            &[c1, c2],
-            b"",
-            &sum_is_100,
-        ).expect("proof should succeed");
+        let proof = cp
+            .prove(
+                &scheme,
+                &[v1.as_slice(), v2.as_slice()],
+                &[o1, o2],
+                &[c1, c2],
+                b"",
+                &sum_is_100,
+            )
+            .expect("proof should succeed");
 
         assert!(cp.verify(&[c1, c2], b"", &proof));
     }

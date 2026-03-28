@@ -180,10 +180,7 @@ mod ring_edge_cases {
     #[test]
     fn norm_sq_of_vector() {
         let v = RingVector {
-            elements: vec![
-                RingElement::from_constant(3),
-                RingElement::from_constant(4),
-            ],
+            elements: vec![RingElement::from_constant(3), RingElement::from_constant(4)],
         };
         assert_eq!(v.norm_sq(), 25);
     }
@@ -207,10 +204,16 @@ mod ring_edge_cases {
     #[test]
     fn ring_vector_add() {
         let a = RingVector {
-            elements: vec![RingElement::from_constant(10), RingElement::from_constant(20)],
+            elements: vec![
+                RingElement::from_constant(10),
+                RingElement::from_constant(20),
+            ],
         };
         let b = RingVector {
-            elements: vec![RingElement::from_constant(30), RingElement::from_constant(40)],
+            elements: vec![
+                RingElement::from_constant(30),
+                RingElement::from_constant(40),
+            ],
         };
         let sum = a.add(&b, Q);
         assert_eq!(sum.elements[0].ct(), 40);
@@ -343,8 +346,14 @@ mod ext_field_overflow_fix {
         let p = SymphonyParams::default_from_paper();
         let ctx = ExtFieldContext::new(p.q);
         let q_half = (p.q / 2) as i64;
-        let a = ExtFieldElement { c0: q_half, c1: q_half };
-        let b = ExtFieldElement { c0: q_half, c1: q_half };
+        let a = ExtFieldElement {
+            c0: q_half,
+            c1: q_half,
+        };
+        let b = ExtFieldElement {
+            c0: q_half,
+            c1: q_half,
+        };
         let result = ctx.mul(&a, &b);
         assert!(result.c0.unsigned_abs() <= p.q / 2);
         assert!(result.c1.unsigned_abs() <= p.q / 2);
@@ -354,7 +363,10 @@ mod ext_field_overflow_fix {
     fn mul_inverse_with_large_q() {
         let p = SymphonyParams::default_from_paper();
         let ctx = ExtFieldContext::new(p.q);
-        let a = ExtFieldElement { c0: 12345, c1: 67890 };
+        let a = ExtFieldElement {
+            c0: 12345,
+            c1: 67890,
+        };
         let a_inv = ctx.inv(&a).unwrap();
         let product = ctx.mul(&a, &a_inv);
         assert_eq!(product, ctx.one());
@@ -364,9 +376,18 @@ mod ext_field_overflow_fix {
     fn mul_associativity_large_q() {
         let p = SymphonyParams::default_from_paper();
         let ctx = ExtFieldContext::new(p.q);
-        let a = ExtFieldElement { c0: 99999, c1: 88888 };
-        let b = ExtFieldElement { c0: 77777, c1: 66666 };
-        let c = ExtFieldElement { c0: 55555, c1: 44444 };
+        let a = ExtFieldElement {
+            c0: 99999,
+            c1: 88888,
+        };
+        let b = ExtFieldElement {
+            c0: 77777,
+            c1: 66666,
+        };
+        let c = ExtFieldElement {
+            c0: 55555,
+            c1: 44444,
+        };
         let ab_c = ctx.mul(&ctx.mul(&a, &b), &c);
         let a_bc = ctx.mul(&a, &ctx.mul(&b, &c));
         assert_eq!(ab_c, a_bc);
@@ -492,13 +513,18 @@ mod tensor_extended {
 // Parameter safety (audit C1)
 // =========================================================================
 mod params_q_cap {
-    use symphony::params::SymphonyParams;
     use super::*;
+    use symphony::params::SymphonyParams;
 
     #[test]
     fn default_q_fits_in_i64() {
         let p = SymphonyParams::default_from_paper();
-        assert!(p.q <= i64::MAX as u64, "q = {} exceeds i64::MAX = {}", p.q, i64::MAX);
+        assert!(
+            p.q <= i64::MAX as u64,
+            "q = {} exceeds i64::MAX = {}",
+            p.q,
+            i64::MAX
+        );
     }
 
     #[test]

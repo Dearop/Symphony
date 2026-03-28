@@ -5,8 +5,8 @@
 //! - Rq^T (each row is an Rq-element) — useful for folding
 
 use crate::params::{D, T};
-use crate::ring::RingElement;
 use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
+use crate::ring::RingElement;
 
 /// Element of the tensor ring E = K ⊗ Rq.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +23,9 @@ impl TensorElement {
     /// View as Rq^T: extract the i-th row as a RingElement.
     pub fn row(&self, i: usize) -> RingElement {
         assert!(i < T);
-        RingElement { coeffs: self.data[i] }
+        RingElement {
+            coeffs: self.data[i],
+        }
     }
 
     /// View as K^D: extract the j-th column as an ExtFieldElement.
@@ -60,8 +62,14 @@ impl TensorElement {
     pub fn add(&self, other: &Self, q: u64) -> Self {
         let q_half = (q / 2) as i64;
         let mut data = [[0i64; D]; T];
-        for ((out_row, self_row), other_row) in data.iter_mut().zip(self.data.iter()).zip(other.data.iter()) {
-            for ((out, &s), &o) in out_row.iter_mut().zip(self_row.iter()).zip(other_row.iter()) {
+        for ((out_row, self_row), other_row) in
+            data.iter_mut().zip(self.data.iter()).zip(other.data.iter())
+        {
+            for ((out, &s), &o) in out_row
+                .iter_mut()
+                .zip(self_row.iter())
+                .zip(other_row.iter())
+            {
                 let sum = s as i128 + o as i128;
                 let mut r = (sum % q as i128) as i64;
                 if r > q_half {

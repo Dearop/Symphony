@@ -75,9 +75,8 @@ impl ExtFieldContext {
 
     /// Multiplicative inverse in K using the norm: a^{-1} = conj(a) / N(a).
     pub fn inv(&self, a: &ExtFieldElement) -> Option<ExtFieldElement> {
-        let norm = self.reduce(
-            a.c0 as i128 * a.c0 as i128 - self.alpha as i128 * a.c1 as i128 * a.c1 as i128,
-        );
+        let norm = self
+            .reduce(a.c0 as i128 * a.c0 as i128 - self.alpha as i128 * a.c1 as i128 * a.c1 as i128);
         if norm == 0 {
             return None;
         }

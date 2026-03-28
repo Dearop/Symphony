@@ -6,7 +6,6 @@ use common::Q;
 use symphony::fiat_shamir::transcript::Transcript;
 use symphony::params::SymphonyParams;
 
-
 mod fiat_shamir_core {
     use super::*;
 
@@ -98,7 +97,10 @@ mod fiat_shamir_extended {
         for len in [1, 8, 16, 32, 48, 64, 128] {
             let mut buf = vec![0u8; len];
             t.challenge_bytes(b"ch", &mut buf);
-            assert!(!buf.iter().all(|&b| b == 0), "all-zero challenge at len={len}");
+            assert!(
+                !buf.iter().all(|&b| b == 0),
+                "all-zero challenge at len={len}"
+            );
         }
     }
 
@@ -123,7 +125,10 @@ mod fiat_shamir_extended {
         let mut c2 = [0u8; 32];
         t.challenge_bytes(b"same-label", &mut c1);
         t.challenge_bytes(b"same-label", &mut c2);
-        assert_ne!(c1, c2, "same label squeezed twice must differ due to state update");
+        assert_ne!(
+            c1, c2,
+            "same label squeezed twice must differ due to state update"
+        );
     }
 }
 
@@ -137,7 +142,10 @@ mod fiat_shamir_bias_fix {
         for i in 0..50 {
             let label = format!("scalar-{i}");
             let s = t.challenge_scalar(label.as_bytes(), Q);
-            assert!(s >= -q_half && s <= q_half, "challenge_scalar out of centered range: {s}");
+            assert!(
+                s >= -q_half && s <= q_half,
+                "challenge_scalar out of centered range: {s}"
+            );
         }
     }
 
@@ -160,8 +168,18 @@ mod fiat_shamir_bias_fix {
         for i in 0..20 {
             let label = format!("ext-{i}");
             let e = t.challenge_ext_field(label.as_bytes(), p.q);
-            assert!(e.c0.abs() <= q_half, "c0 out of range: {} (q_half={})", e.c0, q_half);
-            assert!(e.c1.abs() <= q_half, "c1 out of range: {} (q_half={})", e.c1, q_half);
+            assert!(
+                e.c0.abs() <= q_half,
+                "c0 out of range: {} (q_half={})",
+                e.c0,
+                q_half
+            );
+            assert!(
+                e.c1.abs() <= q_half,
+                "c1 out of range: {} (q_half={})",
+                e.c1,
+                q_half
+            );
         }
     }
 
@@ -177,7 +195,7 @@ mod fiat_shamir_bias_fix {
 
 mod challenge_rejection_sampling {
     use super::*;
-    use symphony::folding::challenge::{ChallengeSet, derive_challenge_vector};
+    use symphony::folding::challenge::{derive_challenge_vector, ChallengeSet};
 
     #[test]
     fn derived_challenges_in_set_s() {
@@ -210,7 +228,10 @@ mod challenge_rejection_sampling {
         let c1 = derive_challenge_vector(&mut t1, Q, 3);
         let c2 = derive_challenge_vector(&mut t2, Q, 3);
         let all_same = c1.iter().zip(c2.iter()).all(|(a, b)| a.coeffs == b.coeffs);
-        assert!(!all_same, "different transcripts should produce different challenges");
+        assert!(
+            !all_same,
+            "different transcripts should produce different challenges"
+        );
     }
 
     #[test]
@@ -227,7 +248,11 @@ mod challenge_rejection_sampling {
             }
         }
         for (i, &s) in seen.iter().enumerate() {
-            assert!(s, "value {} never appeared in 50*64 = 3200 coefficients", i as i64 - 2);
+            assert!(
+                s,
+                "value {} never appeared in 50*64 = 3200 coefficients",
+                i as i64 - 2
+            );
         }
     }
 }

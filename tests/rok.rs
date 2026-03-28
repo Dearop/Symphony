@@ -31,9 +31,19 @@ mod monomial_check {
 
     fn mon_challenges(num_vars: usize) -> MonomialChallenges {
         MonomialChallenges {
-            s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+            s: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 3, c1: 2 },
-            sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+            sumcheck_challenges: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
         }
     }
 
@@ -49,11 +59,13 @@ mod monomial_check {
         }
 
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let ring_vec = RingVector { elements: g.clone() };
+        let ring_vec = RingVector {
+            elements: g.clone(),
+        };
         let (commitment, _) = ajtai.commit(&ring_vec);
 
         let challenges = mon_challenges(3); // log2(8) = 3
-        let proof = monomial::prove(&[commitment.clone()], &[g], &challenges, &ctx);
+        let proof = monomial::prove(std::slice::from_ref(&commitment), &[g], &challenges, &ctx);
         let result = monomial::verify(&[commitment], &proof, &challenges, &ctx);
         assert!(result.is_ok(), "Πmon (n=8) failed: {:?}", result.err());
     }
@@ -69,13 +81,21 @@ mod monomial_check {
         }
 
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let (c1, _) = ajtai.commit(&RingVector { elements: g1.clone() });
-        let (c2, _) = ajtai.commit(&RingVector { elements: g2.clone() });
+        let (c1, _) = ajtai.commit(&RingVector {
+            elements: g1.clone(),
+        });
+        let (c2, _) = ajtai.commit(&RingVector {
+            elements: g2.clone(),
+        });
 
         let challenges = mon_challenges(2);
         let proof = monomial::prove(&[c1.clone(), c2.clone()], &[g1, g2], &challenges, &ctx);
         let result = monomial::verify(&[c1, c2], &proof, &challenges, &ctx);
-        assert!(result.is_ok(), "Πmon (k_g=2, n=4) failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Πmon (k_g=2, n=4) failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -90,12 +110,17 @@ mod monomial_check {
 
         let g = vec![bad, exp_map(1)];
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let (c, _) = ajtai.commit(&RingVector { elements: g.clone() });
+        let (c, _) = ajtai.commit(&RingVector {
+            elements: g.clone(),
+        });
 
         let challenges = mon_challenges(1);
-        let proof = monomial::prove(&[c.clone()], &[g], &challenges, &ctx);
+        let proof = monomial::prove(std::slice::from_ref(&c), &[g], &challenges, &ctx);
         let result = monomial::verify(&[c], &proof, &challenges, &ctx);
-        assert!(result.is_err(), "coefficient outside {{-1,0,1}} should be rejected by Πmon");
+        assert!(
+            result.is_err(),
+            "coefficient outside {{-1,0,1}} should be rejected by Πmon"
+        );
     }
 
     #[test]
@@ -108,12 +133,17 @@ mod monomial_check {
 
         let g = vec![exp_map(0), bad];
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let (c, _) = ajtai.commit(&RingVector { elements: g.clone() });
+        let (c, _) = ajtai.commit(&RingVector {
+            elements: g.clone(),
+        });
 
         let challenges = mon_challenges(1);
-        let proof = monomial::prove(&[c.clone()], &[g], &challenges, &ctx);
+        let proof = monomial::prove(std::slice::from_ref(&c), &[g], &challenges, &ctx);
         let result = monomial::verify(&[c], &proof, &challenges, &ctx);
-        assert!(result.is_err(), "coefficient = 5 should be rejected by Πmon");
+        assert!(
+            result.is_err(),
+            "coefficient = 5 should be rejected by Πmon"
+        );
     }
 }
 
@@ -126,17 +156,30 @@ mod hadamard_check {
 
     fn had_challenges(num_vars: usize) -> HadamardChallenges {
         HadamardChallenges {
-            s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+            s: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 3, c1: 2 },
-            sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+            sumcheck_challenges: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
         }
     }
 
     fn build_witness_matrix(z: &[i64], n: usize) -> Vec<Vec<i64>> {
         let mut wm = Vec::with_capacity(D);
         for j in 0..D {
-            if j == 0 { wm.push(z.to_vec()); }
-            else { wm.push(vec![0i64; n]); }
+            if j == 0 {
+                wm.push(z.to_vec());
+            } else {
+                wm.push(vec![0i64; n]);
+            }
         }
         wm
     }
@@ -170,7 +213,10 @@ mod hadamard_check {
         let wm = build_witness_matrix(&bad_z, bad_z.len());
         let ajtai = AjtaiParams::setup(2, bad_z.len(), Q);
         let ring_w = RingVector {
-            elements: bad_z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: bad_z
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         let (c, _) = ajtai.commit(&ring_w);
 
@@ -189,7 +235,9 @@ mod hadamard_check {
 mod range_proof {
     use super::*;
     use symphony::rok::monomial::MonomialChallenges;
-    use symphony::rok::range_proof::{self, ProjectionMatrix, RangeProofChallenges, RangeProofParams};
+    use symphony::rok::range_proof::{
+        self, ProjectionMatrix, RangeProofChallenges, RangeProofParams,
+    };
 
     #[test]
     fn larger_witness() {
@@ -220,9 +268,19 @@ mod range_proof {
         let challenges = RangeProofChallenges {
             projection: proj,
             monomial_challenges: MonomialChallenges {
-                s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+                s: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 5 + i as i64,
+                        c1: 1,
+                    })
+                    .collect(),
                 alpha: ExtFieldElement { c0: 3, c1: 2 },
-                sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+                sumcheck_challenges: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 7 + i as i64,
+                        c1: 3,
+                    })
+                    .collect(),
             },
         };
         let proof = range_proof::prove(&c, &witness, &ajtai, &params, &challenges, &ctx);
@@ -250,11 +308,31 @@ mod gr1cs {
     fn gr1cs_challenges(num_vars_had: usize, num_vars_mon: usize) -> GR1CSChallenges {
         GR1CSChallenges {
             projection: ProjectionMatrix::sample(4, D, b"gr1cs-test-seed-1234567890ab"),
-            sumcheck_seed_had: (0..num_vars_had).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+            sumcheck_seed_had: (0..num_vars_had)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 3, c1: 2 },
-            hadamard_sumcheck_challenges: (0..num_vars_had).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
-            sumcheck_seed_mon: (0..num_vars_mon).map(|i| ExtFieldElement { c0: 11 + i as i64, c1: 4 }).collect(),
-            monomial_sumcheck_challenges: (0..num_vars_mon).map(|i| ExtFieldElement { c0: 13 + i as i64, c1: 5 }).collect(),
+            hadamard_sumcheck_challenges: (0..num_vars_had)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
+            sumcheck_seed_mon: (0..num_vars_mon)
+                .map(|i| ExtFieldElement {
+                    c0: 11 + i as i64,
+                    c1: 4,
+                })
+                .collect(),
+            monomial_sumcheck_challenges: (0..num_vars_mon)
+                .map(|i| ExtFieldElement {
+                    c0: 13 + i as i64,
+                    c1: 5,
+                })
+                .collect(),
         }
     }
 
@@ -266,8 +344,13 @@ mod gr1cs {
 
         let n_in = 1;
         let public_input = &z[..n_in];
-        let witness_elems: Vec<RingElement> = z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect();
-        let witness = RingVector { elements: witness_elems };
+        let witness_elems: Vec<RingElement> = z[n_in..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect();
+        let witness = RingVector {
+            elements: witness_elems,
+        };
 
         let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
         let full_ring_w = RingVector {
@@ -287,8 +370,25 @@ mod gr1cs {
         // n_blocks = 3*64/64 = 3, projected_len = 3*4 = 12, padded to 16, num_vars_mon = 4
         let challenges = gr1cs_challenges(1, 4);
 
-        let proof = gr1cs::prove(&c, public_input, &witness, &r1cs, &ajtai, &range_params, &challenges, &ctx);
-        let result = gr1cs::verify(&c, public_input, &proof, &r1cs, &range_params, &challenges, &ctx);
+        let proof = gr1cs::prove(
+            &c,
+            public_input,
+            &witness,
+            &r1cs,
+            &ajtai,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+        let result = gr1cs::verify(
+            &c,
+            public_input,
+            &proof,
+            &r1cs,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
         assert!(result.is_ok(), "Πgr1cs failed: {:?}", result.err());
     }
 }
@@ -311,8 +411,16 @@ mod generalized_r1cs {
             matrices,
         };
         let public_input = vec![RingElement::from_constant(z[0])];
-        let witness: Vec<RingElement> = z[1..].iter().map(|&v| RingElement::from_constant(v)).collect();
-        assert!(generalized::check_hadamard(&params, &public_input, &witness, Q));
+        let witness: Vec<RingElement> = z[1..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect();
+        assert!(generalized::check_hadamard(
+            &params,
+            &public_input,
+            &witness,
+            Q
+        ));
     }
 
     #[test]
@@ -330,7 +438,12 @@ mod generalized_r1cs {
             RingElement::from_constant(3),
             RingElement::from_constant(10), // 3*3 ≠ 10
         ];
-        assert!(!generalized::check_hadamard(&params, &public_input, &witness, Q));
+        assert!(!generalized::check_hadamard(
+            &params,
+            &public_input,
+            &witness,
+            Q
+        ));
     }
 }
 
@@ -344,8 +457,11 @@ mod hadamard_extended {
     fn build_witness_matrix(z: &[i64], n: usize) -> Vec<Vec<i64>> {
         let mut wm = Vec::with_capacity(D);
         for j in 0..D {
-            if j == 0 { wm.push(z.to_vec()); }
-            else { wm.push(vec![0i64; n]); }
+            if j == 0 {
+                wm.push(z.to_vec());
+            } else {
+                wm.push(vec![0i64; n]);
+            }
         }
         wm
     }
@@ -371,7 +487,11 @@ mod hadamard_extended {
         };
         let proof = hadamard::prove(&c, &wm, &r1cs, &challenges, &ctx);
         let result = hadamard::verify(&c, &proof, &challenges, &ctx);
-        assert!(result.is_ok(), "Single constraint Πhad failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Single constraint Πhad failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -397,13 +517,27 @@ mod hadamard_extended {
 
         let num_vars = 3; // log2(8)
         let challenges = HadamardChallenges {
-            s: (0..num_vars).map(|i| ExtFieldElement { c0: 3 + i as i64, c1: 1 }).collect(),
+            s: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 3 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 7, c1: 2 },
-            sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 11 + i as i64, c1: 3 }).collect(),
+            sumcheck_challenges: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 11 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
         };
         let proof = hadamard::prove(&c, &wm, &r1cs, &challenges, &ctx);
         let result = hadamard::verify(&c, &proof, &challenges, &ctx);
-        assert!(result.is_ok(), "8-constraint Πhad failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "8-constraint Πhad failed: {:?}",
+            result.err()
+        );
     }
 }
 
@@ -417,9 +551,19 @@ mod monomial_extended {
 
     fn mon_challenges(num_vars: usize) -> MonomialChallenges {
         MonomialChallenges {
-            s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+            s: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 3, c1: 2 },
-            sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+            sumcheck_challenges: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
         }
     }
 
@@ -433,12 +577,18 @@ mod monomial_extended {
         }
 
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let (c, _) = ajtai.commit(&RingVector { elements: g.clone() });
+        let (c, _) = ajtai.commit(&RingVector {
+            elements: g.clone(),
+        });
 
         let challenges = mon_challenges(2);
-        let proof = monomial::prove(&[c.clone()], &[g], &challenges, &ctx);
+        let proof = monomial::prove(std::slice::from_ref(&c), &[g], &challenges, &ctx);
         let result = monomial::verify(&[c], &proof, &challenges, &ctx);
-        assert!(result.is_ok(), "All-zero monomial failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "All-zero monomial failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -451,12 +601,18 @@ mod monomial_extended {
         }
 
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let (c, _) = ajtai.commit(&RingVector { elements: g.clone() });
+        let (c, _) = ajtai.commit(&RingVector {
+            elements: g.clone(),
+        });
 
         let challenges = mon_challenges(2);
-        let proof = monomial::prove(&[c.clone()], &[g], &challenges, &ctx);
+        let proof = monomial::prove(std::slice::from_ref(&c), &[g], &challenges, &ctx);
         let result = monomial::verify(&[c], &proof, &challenges, &ctx);
-        assert!(result.is_ok(), "All-identity monomial failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "All-identity monomial failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -468,10 +624,12 @@ mod monomial_extended {
             .collect();
 
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let (c, _) = ajtai.commit(&RingVector { elements: g.clone() });
+        let (c, _) = ajtai.commit(&RingVector {
+            elements: g.clone(),
+        });
 
         let challenges = mon_challenges(4); // log2(16)
-        let proof = monomial::prove(&[c.clone()], &[g], &challenges, &ctx);
+        let proof = monomial::prove(std::slice::from_ref(&c), &[g], &challenges, &ctx);
         let result = monomial::verify(&[c], &proof, &challenges, &ctx);
         assert!(result.is_ok(), "Πmon (n=16) failed: {:?}", result.err());
     }
@@ -489,17 +647,19 @@ mod monomial_extended {
             .collect();
 
         let ajtai = AjtaiParams::setup(2, n, Q);
-        let commitments: Vec<_> = layers.iter()
-            .map(|g| ajtai.commit(&RingVector { elements: g.clone() }).0)
+        let commitments: Vec<_> = layers
+            .iter()
+            .map(|g| {
+                ajtai
+                    .commit(&RingVector {
+                        elements: g.clone(),
+                    })
+                    .0
+            })
             .collect();
 
         let challenges = mon_challenges(2);
-        let proof = monomial::prove(
-            &commitments,
-            &layers,
-            &challenges,
-            &ctx,
-        );
+        let proof = monomial::prove(&commitments, &layers, &challenges, &ctx);
         let result = monomial::verify(&commitments, &proof, &challenges, &ctx);
         assert!(result.is_ok(), "3-layer Πmon failed: {:?}", result.err());
     }
@@ -562,9 +722,9 @@ mod generalized_r1cs_extended {
 // =========================================================================
 mod integer_log2_fix {
     use super::*;
+    use symphony::decomposition::monomial::exp_map;
     use symphony::rok::hadamard::{self, HadamardChallenges};
     use symphony::rok::monomial::{self, MonomialChallenges};
-    use symphony::decomposition::monomial::exp_map;
 
     #[test]
     fn hadamard_power_of_two_constraints() {
@@ -581,11 +741,18 @@ mod integer_log2_fix {
             z[1] = 1;
             assert!(r1cs.is_satisfied_mod(&z, Q));
 
-            let num_vars = if m <= 1 { 0 } else { (usize::BITS - (m - 1).leading_zeros()) as usize };
+            let num_vars = if m <= 1 {
+                0
+            } else {
+                (usize::BITS - (m - 1).leading_zeros()) as usize
+            };
             let mut wm = Vec::with_capacity(D);
             for j in 0..D {
-                if j == 0 { wm.push(z.clone()); }
-                else { wm.push(vec![0i64; n]); }
+                if j == 0 {
+                    wm.push(z.clone());
+                } else {
+                    wm.push(vec![0i64; n]);
+                }
             }
 
             let ajtai = AjtaiParams::setup(2, n, Q);
@@ -595,14 +762,28 @@ mod integer_log2_fix {
             let (c, _) = ajtai.commit(&ring_w);
 
             let challenges = HadamardChallenges {
-                s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+                s: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 5 + i as i64,
+                        c1: 1,
+                    })
+                    .collect(),
                 alpha: ExtFieldElement { c0: 3, c1: 2 },
-                sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+                sumcheck_challenges: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 7 + i as i64,
+                        c1: 3,
+                    })
+                    .collect(),
             };
 
             let proof = hadamard::prove(&c, &wm, &r1cs, &challenges, &ctx);
             let result = hadamard::verify(&c, &proof, &challenges, &ctx);
-            assert!(result.is_ok(), "Πhad (m={m}) failed with integer log2: {:?}", result.err());
+            assert!(
+                result.is_ok(),
+                "Πhad (m={m}) failed with integer log2: {:?}",
+                result.err()
+            );
         }
     }
 
@@ -613,18 +794,38 @@ mod integer_log2_fix {
             let g: Vec<RingElement> = (0..n as i64).map(|i| exp_map(i % 30)).collect();
 
             let ajtai = AjtaiParams::setup(2, n, Q);
-            let (c, _) = ajtai.commit(&RingVector { elements: g.clone() });
+            let (c, _) = ajtai.commit(&RingVector {
+                elements: g.clone(),
+            });
 
-            let num_vars = if n <= 1 { 0 } else { (usize::BITS - (n - 1).leading_zeros()) as usize };
+            let num_vars = if n <= 1 {
+                0
+            } else {
+                (usize::BITS - (n - 1).leading_zeros()) as usize
+            };
             let challenges = MonomialChallenges {
-                s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+                s: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 5 + i as i64,
+                        c1: 1,
+                    })
+                    .collect(),
                 alpha: ExtFieldElement { c0: 3, c1: 2 },
-                sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+                sumcheck_challenges: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 7 + i as i64,
+                        c1: 3,
+                    })
+                    .collect(),
             };
 
-            let proof = monomial::prove(&[c.clone()], &[g], &challenges, &ctx);
+            let proof = monomial::prove(std::slice::from_ref(&c), &[g], &challenges, &ctx);
             let result = monomial::verify(&[c], &proof, &challenges, &ctx);
-            assert!(result.is_ok(), "Πmon (n={n}) failed with integer log2: {:?}", result.err());
+            assert!(
+                result.is_ok(),
+                "Πmon (n={n}) failed with integer log2: {:?}",
+                result.err()
+            );
         }
     }
 }
@@ -635,7 +836,9 @@ mod integer_log2_fix {
 mod range_proof_tolerance_fix {
     use super::*;
     use symphony::rok::monomial::MonomialChallenges;
-    use symphony::rok::range_proof::{self, ProjectionMatrix, RangeProofChallenges, RangeProofParams};
+    use symphony::rok::range_proof::{
+        self, ProjectionMatrix, RangeProofChallenges, RangeProofParams,
+    };
 
     #[test]
     fn exact_projection_match_accepted() {
@@ -662,15 +865,29 @@ mod range_proof_tolerance_fix {
         let challenges = RangeProofChallenges {
             projection: proj,
             monomial_challenges: MonomialChallenges {
-                s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+                s: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 5 + i as i64,
+                        c1: 1,
+                    })
+                    .collect(),
                 alpha: ExtFieldElement { c0: 3, c1: 2 },
-                sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+                sumcheck_challenges: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 7 + i as i64,
+                        c1: 3,
+                    })
+                    .collect(),
             },
         };
 
         let proof = range_proof::prove(&c, &witness, &ajtai, &params, &challenges, &ctx);
         let result = range_proof::verify(&c, &proof, &params, &challenges, &ctx);
-        assert!(result.is_ok(), "honest range proof should pass exact check: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "honest range proof should pass exact check: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -698,9 +915,19 @@ mod range_proof_tolerance_fix {
         let challenges = RangeProofChallenges {
             projection: proj,
             monomial_challenges: MonomialChallenges {
-                s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+                s: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 5 + i as i64,
+                        c1: 1,
+                    })
+                    .collect(),
                 alpha: ExtFieldElement { c0: 3, c1: 2 },
-                sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+                sumcheck_challenges: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 7 + i as i64,
+                        c1: 3,
+                    })
+                    .collect(),
             },
         };
 
@@ -710,6 +937,9 @@ mod range_proof_tolerance_fix {
             proof.projected_values[0] += 1;
         }
         let result = range_proof::verify(&c, &proof, &params, &challenges, &ctx);
-        assert!(result.is_err(), "tampered projected value should be rejected with exact tolerance");
+        assert!(
+            result.is_err(),
+            "tampered projected value should be rejected with exact tolerance"
+        );
     }
 }

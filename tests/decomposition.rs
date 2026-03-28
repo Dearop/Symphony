@@ -9,9 +9,9 @@ use symphony::params::D;
 // Core decomposition
 // =========================================================================
 mod decomposition_core {
+    use super::*;
     use symphony::decomposition;
     use symphony::decomposition::monomial;
-    use super::*;
 
     #[test]
     fn recompose_all_small_values() {

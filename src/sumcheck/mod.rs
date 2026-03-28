@@ -44,20 +44,12 @@ pub struct SumcheckResult {
 /// at a specific point in the boolean hypercube.
 ///
 /// For b ∈ {0,1}^n, eq(s, b) = Π_i s_i^{b_i} · (1 - s_i)^{1 - b_i}.
-pub fn eq_eval(
-    s: &[ExtFieldElement],
-    b: &[bool],
-    ctx: &ExtFieldContext,
-) -> ExtFieldElement {
+pub fn eq_eval(s: &[ExtFieldElement], b: &[bool], ctx: &ExtFieldContext) -> ExtFieldElement {
     assert_eq!(s.len(), b.len());
     let one = ctx.one();
     let mut result = ctx.one();
     for (si, &bi) in s.iter().zip(b.iter()) {
-        let factor = if bi {
-            *si
-        } else {
-            ctx.sub(&one, si)
-        };
+        let factor = if bi { *si } else { ctx.sub(&one, si) };
         result = ctx.mul(&result, &factor);
     }
     result

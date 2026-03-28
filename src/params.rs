@@ -99,13 +99,12 @@ impl SymphonyParams {
 /// within range, and that `q as i64` never wraps.
 fn find_suitable_prime() -> u64 {
     let two_d = 2 * D as u64; // 128
-    // Start near 2^60 so q fits comfortably in i64 and schoolbook
-    // accumulator stays within i128.
+                              // Start near 2^60 so q fits comfortably in i64 and schoolbook
+                              // accumulator stays within i128.
     let start = (1u64 << 60) - ((1u64 << 60) % two_d) + 1;
     let mut candidate = start;
     while !is_probably_prime(candidate) {
-        candidate = candidate.checked_add(two_d)
-            .expect("prime search overflow");
+        candidate = candidate.checked_add(two_d).expect("prime search overflow");
     }
     assert!(candidate <= i64::MAX as u64, "q must fit in i64");
     candidate

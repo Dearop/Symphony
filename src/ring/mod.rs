@@ -1,7 +1,7 @@
 //! Cyclotomic ring Rq = Zq[X] / <X^d + 1> arithmetic with NTT acceleration.
 
-pub mod ntt;
 pub mod extension;
+pub mod ntt;
 pub mod tensor;
 
 use crate::params::D;
@@ -52,7 +52,10 @@ impl RingElement {
     pub fn add(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];
         let q_half = (q / 2) as i64;
-        for (out, (&a, &b)) in coeffs.iter_mut().zip(self.coeffs.iter().zip(other.coeffs.iter())) {
+        for (out, (&a, &b)) in coeffs
+            .iter_mut()
+            .zip(self.coeffs.iter().zip(other.coeffs.iter()))
+        {
             let sum = a as i128 + b as i128;
             let mut r = (sum % q as i128) as i64;
             if r > q_half {
@@ -69,7 +72,10 @@ impl RingElement {
     pub fn sub(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];
         let q_half = (q / 2) as i64;
-        for (out, (&a, &b)) in coeffs.iter_mut().zip(self.coeffs.iter().zip(other.coeffs.iter())) {
+        for (out, (&a, &b)) in coeffs
+            .iter_mut()
+            .zip(self.coeffs.iter().zip(other.coeffs.iter()))
+        {
             let diff = a as i128 - b as i128;
             let mut r = (diff % q as i128) as i64;
             if r > q_half {
@@ -131,12 +137,19 @@ impl RingElement {
 
     /// Infinity norm: max |coefficient|.
     pub fn norm_inf(&self) -> u64 {
-        self.coeffs.iter().map(|c| c.unsigned_abs()).max().unwrap_or(0)
+        self.coeffs
+            .iter()
+            .map(|c| c.unsigned_abs())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Squared Euclidean norm: sum of squares of coefficients.
     pub fn norm_sq(&self) -> u128 {
-        self.coeffs.iter().map(|c| (*c as i128 * *c as i128) as u128).sum()
+        self.coeffs
+            .iter()
+            .map(|c| (*c as i128 * *c as i128) as u128)
+            .sum()
     }
 }
 

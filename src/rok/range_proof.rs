@@ -150,7 +150,9 @@ pub fn prove(
 
     // Step 2: Apply structured projection H := (I_{n/ℓ_h} ⊗ J) × cf(f)
     let n_blocks = (n * D) / params.ell_h;
-    let projected = challenges.projection.apply_structured(&flat_coeffs, n_blocks.max(1));
+    let projected = challenges
+        .projection
+        .apply_structured(&flat_coeffs, n_blocks.max(1));
 
     // Step 3: Decompose H into k_g layers: H = H^(1) + d'·H^(2) + ... + d'^{k_g-1}·H^(k_g)
     let d_prime = params.d_prime;
@@ -169,14 +171,17 @@ pub fn prove(
     let mut monomial_commitments = Vec::with_capacity(k_g);
 
     for layer in &layers {
-        let monomial_vec: Vec<RingElement> = layer.iter().map(|&val| {
-            assert!(
-                val > -(half_d) && val < half_d,
-                "decomposition digit {val} out of monomial range (−{half_d}, {half_d}); \
+        let monomial_vec: Vec<RingElement> = layer
+            .iter()
+            .map(|&val| {
+                assert!(
+                    val > -(half_d) && val < half_d,
+                    "decomposition digit {val} out of monomial range (−{half_d}, {half_d}); \
                  check that d_prime ({d_prime}) and k_g ({k_g}) are sufficient for the input norm"
-            );
-            exp_map(val)
-        }).collect();
+                );
+                exp_map(val)
+            })
+            .collect();
 
         // Pad to power of 2 for sumcheck
         let target_len = monomial_vec.len().next_power_of_two();
@@ -184,7 +189,9 @@ pub fn prove(
         padded.resize(target_len, RingElement::zero());
 
         let mon_len = padded.len();
-        let ring_vec = RingVector { elements: padded.clone() };
+        let ring_vec = RingVector {
+            elements: padded.clone(),
+        };
         // Create a commitment for monomial vectors (may differ in size from main witness)
         let mon_ajtai = AjtaiParams::setup(ajtai.kappa, mon_len, ajtai.q);
         let (c, _) = mon_ajtai.commit(&ring_vec);
@@ -222,7 +229,8 @@ pub fn verify(
         &proof.monomial_proof,
         &challenges.monomial_challenges,
         ctx,
-    ).map_err(|_| RangeProofError::MonomialCheckFailed)?;
+    )
+    .map_err(|_| RangeProofError::MonomialCheckFailed)?;
 
     // Step 2: Verify consistency via the table polynomial.
     // For each monomial g^(i)[b], check that ct(g^(i)[b] · t(X)) gives
@@ -303,9 +311,19 @@ mod tests {
         // num_vars = log2(8) = 3
         let num_vars = 3;
         let mon_challenges = MonomialChallenges {
-            s: (0..num_vars).map(|i| ExtFieldElement { c0: 5 + i as i64, c1: 1 }).collect(),
+            s: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
             alpha: ExtFieldElement { c0: 3, c1: 2 },
-            sumcheck_challenges: (0..num_vars).map(|i| ExtFieldElement { c0: 7 + i as i64, c1: 3 }).collect(),
+            sumcheck_challenges: (0..num_vars)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
         };
         let challenges = RangeProofChallenges {
             projection: proj,

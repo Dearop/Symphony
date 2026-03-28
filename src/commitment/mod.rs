@@ -1,7 +1,7 @@
 //! Module-Ajtai commitment scheme — the core replacement for Merkle trees.
 
-pub mod params;
 pub mod opening;
+pub mod params;
 
 use crate::ring::{RingElement, RingVector};
 
@@ -43,7 +43,11 @@ impl AjtaiParams {
                         let mut coeffs = [0i64; crate::params::D];
                         for c in coeffs.iter_mut() {
                             let v: u64 = rng.random_range(0..q);
-                            *c = if v > q / 2 { v as i64 - q as i64 } else { v as i64 };
+                            *c = if v > q / 2 {
+                                v as i64 - q as i64
+                            } else {
+                                v as i64
+                            };
                         }
                         RingElement { coeffs }
                     })

@@ -3,8 +3,8 @@
 //! The transcript accumulates (statement, committed messages) and derives
 //! verifier challenges deterministically via SHA-256.
 
-use sha2::{Sha256, Digest};
 use crate::ring::extension::ExtFieldElement;
+use sha2::{Digest, Sha256};
 
 /// A Fiat-Shamir transcript that accumulates committed messages.
 pub struct Transcript {
@@ -26,7 +26,8 @@ impl Transcript {
     /// Append raw bytes to the transcript.
     pub fn append_bytes(&mut self, label: &[u8], data: &[u8]) {
         self.state.extend_from_slice(label);
-        self.state.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        self.state
+            .extend_from_slice(&(data.len() as u64).to_le_bytes());
         self.state.extend_from_slice(data);
     }
 
@@ -75,7 +76,11 @@ impl Transcript {
         let wide = u128::from_le_bytes(bytes);
         let val = (wide % q as u128) as u64;
         let q_half = q / 2;
-        if val > q_half { val as i64 - q as i64 } else { val as i64 }
+        if val > q_half {
+            val as i64 - q as i64
+        } else {
+            val as i64
+        }
     }
 
     /// Squeeze a challenge as an extension field element.
@@ -91,8 +96,16 @@ impl Transcript {
         let c1 = (w1 % q as u128) as u64;
         let q_half = q / 2;
         ExtFieldElement {
-            c0: if c0 > q_half { c0 as i64 - q as i64 } else { c0 as i64 },
-            c1: if c1 > q_half { c1 as i64 - q as i64 } else { c1 as i64 },
+            c0: if c0 > q_half {
+                c0 as i64 - q as i64
+            } else {
+                c0 as i64
+            },
+            c1: if c1 > q_half {
+                c1 as i64 - q as i64
+            } else {
+                c1 as i64
+            },
         }
     }
 

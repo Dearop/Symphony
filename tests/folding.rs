@@ -35,7 +35,10 @@ mod folding {
         };
         let (c, _) = ajtai.commit(&full_ring);
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         FoldingStatement {
             commitment: c,
@@ -84,8 +87,8 @@ mod folding {
         let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         // Folded public input[i] = Σ β[ℓ] · cf^{-1}(x_in[i])
-        for i in 0..n_in {
-            let x_ring = RingElement::from_constant(z[i]);
+        for (i, &z_i) in z.iter().enumerate().take(n_in) {
+            let x_ring = RingElement::from_constant(z_i);
             let term0 = x_ring.mul(&proof.beta[0], Q);
             let term1 = x_ring.mul(&proof.beta[1], Q);
             let expected = term0.add(&term1, Q);
@@ -102,7 +105,10 @@ mod folding {
             let s = cs.sample(&mut rng);
             assert!(ChallengeSet::is_in_set(&s), "sampled element not in set");
             assert!(s.norm_inf() <= 2, "coefficient out of {{0,±1,±2}}");
-            assert!(ChallengeSet::operator_norm_bound() <= 15, "operator norm too large");
+            assert!(
+                ChallengeSet::operator_norm_bound() <= 15,
+                "operator norm too large"
+            );
         }
     }
 
@@ -115,7 +121,10 @@ mod folding {
             let a = cs.sample(&mut rng);
             let b = cs.sample(&mut rng);
             let diff = a.sub(&b, Q);
-            assert!(ChallengeSet::is_in_difference_set(&diff), "difference not in S-S");
+            assert!(
+                ChallengeSet::is_in_difference_set(&diff),
+                "difference not in S-S"
+            );
         }
     }
 }
@@ -141,7 +150,10 @@ mod folding_extended {
         };
         let (c, _) = ajtai.commit(&full_ring);
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         FoldingStatement {
             commitment: c,
@@ -168,7 +180,11 @@ mod folding_extended {
         assert!(!folded_w.witness.is_empty());
 
         let result = folding::verify(&proof, &pis, &r1cs, &ajtai, &rp, &ctx);
-        assert!(result.is_ok(), "3-statement fold failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "3-statement fold failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -215,9 +231,11 @@ mod streaming {
         let mut prover = StreamingProver::new(ajtai, ell_np);
         prover.set_ext_context(ctx());
 
-        let witnesses: Vec<RingVector> = (1..=ell_np as i64).map(|v| RingVector {
-            elements: vec![RingElement::from_constant(v); n],
-        }).collect();
+        let witnesses: Vec<RingVector> = (1..=ell_np as i64)
+            .map(|v| RingVector {
+                elements: vec![RingElement::from_constant(v); n],
+            })
+            .collect();
 
         // Commitment phase
         for w in &witnesses {
@@ -283,9 +301,11 @@ mod streaming_extended {
         let mut prover = StreamingProver::new(ajtai, ell_np);
         prover.set_ext_context(ctx());
 
-        let witnesses: Vec<RingVector> = (1..=ell_np as i64).map(|v| RingVector {
-            elements: vec![RingElement::from_constant(v); n],
-        }).collect();
+        let witnesses: Vec<RingVector> = (1..=ell_np as i64)
+            .map(|v| RingVector {
+                elements: vec![RingElement::from_constant(v); n],
+            })
+            .collect();
 
         for w in &witnesses {
             prover.feed_witness_commitment(w);
@@ -374,11 +394,17 @@ mod projection_seed_fix {
         // Statement 1: z = [1, 3, 9]
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
-                elements: z_vals.iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             let (c, _) = ajtai.commit(&full_ring);
             let witness_part = RingVector {
-                elements: z_vals[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             FoldingStatement {
                 commitment: c,
@@ -401,11 +427,24 @@ mod projection_seed_fix {
 
         // The projection seed is transcript-derived, so different commitments
         // should lead to different GR1CS proofs
-        let p1_bytes: Vec<u8> = proof1.gr1cs_proofs[0].hadamard_proof.sumcheck_proof.round_messages
-            .iter().flat_map(|m| m.evaluations.iter().flat_map(|e| e.c0.to_le_bytes())).collect();
-        let p2_bytes: Vec<u8> = proof2.gr1cs_proofs[0].hadamard_proof.sumcheck_proof.round_messages
-            .iter().flat_map(|m| m.evaluations.iter().flat_map(|e| e.c0.to_le_bytes())).collect();
-        assert_ne!(p1_bytes, p2_bytes, "different witnesses should produce different proof data");
+        let p1_bytes: Vec<u8> = proof1.gr1cs_proofs[0]
+            .hadamard_proof
+            .sumcheck_proof
+            .round_messages
+            .iter()
+            .flat_map(|m| m.evaluations.iter().flat_map(|e| e.c0.to_le_bytes()))
+            .collect();
+        let p2_bytes: Vec<u8> = proof2.gr1cs_proofs[0]
+            .hadamard_proof
+            .sumcheck_proof
+            .round_messages
+            .iter()
+            .flat_map(|m| m.evaluations.iter().flat_map(|e| e.c0.to_le_bytes()))
+            .collect();
+        assert_ne!(
+            p1_bytes, p2_bytes,
+            "different witnesses should produce different proof data"
+        );
 
         // Both should still verify
         let r1 = folding::verify(&proof1, &pis1, &r1cs, &ajtai, &rp, &ctx);
@@ -439,11 +478,17 @@ mod transcript_binding_fix {
 
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
-                elements: z_vals.iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             let (c, _) = ajtai.commit(&full_ring);
             let witness_part = RingVector {
-                elements: z_vals[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             FoldingStatement {
                 commitment: c,
@@ -496,11 +541,17 @@ mod eval_folding_ring_mul {
 
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
-                elements: z_vals.iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             let (c, _) = ajtai.commit(&full_ring);
             let witness_part = RingVector {
-                elements: z_vals[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             FoldingStatement {
                 commitment: c,
@@ -520,9 +571,11 @@ mod eval_folding_ring_mul {
 
         // With ring mul folding, evaluation values should generally be
         // non-trivial (not all zeros) when β is non-trivial.
-        let all_zero = proof.folded_instance.evaluation_values.iter().all(|te| {
-            te.data.iter().all(|row| row.iter().all(|&v| v == 0))
-        });
+        let all_zero = proof
+            .folded_instance
+            .evaluation_values
+            .iter()
+            .all(|te| te.data.iter().all(|row| row.iter().all(|&v| v == 0)));
         assert!(!all_zero, "folded eval values should not all be zero");
     }
 
@@ -535,11 +588,17 @@ mod eval_folding_ring_mul {
 
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
-                elements: z_vals.iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             let (c, _) = ajtai.commit(&full_ring);
             let witness_part = RingVector {
-                elements: z_vals[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+                elements: z_vals[n_in..]
+                    .iter()
+                    .map(|&v| RingElement::from_constant(v))
+                    .collect(),
             };
             FoldingStatement {
                 commitment: c,
@@ -555,7 +614,11 @@ mod eval_folding_ring_mul {
 
         // The verifier should still accept with ring-mul-based folding
         let result = folding::verify(&proof, &pis, &r1cs, &ajtai, &rp, &ctx);
-        assert!(result.is_ok(), "folding with ring mul eval folding should verify: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "folding with ring mul eval folding should verify: {:?}",
+            result.err()
+        );
     }
 }
 
@@ -577,14 +640,25 @@ mod two_layer {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         let (c1, _) = ajtai.commit(&full_ring);
         let (c2, _) = ajtai.commit(&full_ring);
 
         let stmts = vec![
-            FoldingStatement { commitment: c1, public_input: z[..n_in].to_vec(), witness: witness_part.clone() },
-            FoldingStatement { commitment: c2, public_input: z[..n_in].to_vec(), witness: witness_part },
+            FoldingStatement {
+                commitment: c1,
+                public_input: z[..n_in].to_vec(),
+                witness: witness_part.clone(),
+            },
+            FoldingStatement {
+                commitment: c2,
+                public_input: z[..n_in].to_vec(),
+                witness: witness_part,
+            },
         ];
 
         let rp = RangeProofParams {
@@ -601,12 +675,25 @@ mod two_layer {
             block_scalars: vec![RingElement::from_constant(1)],
         };
 
-        let (proof, folded_w) = two_layer::prove_two_layer(&stmts, &r1cs, &ajtai, &rp, &two_params, &ctx);
+        let (proof, folded_w) =
+            two_layer::prove_two_layer(&stmts, &r1cs, &ajtai, &rp, &two_params, &ctx);
         assert!(!folded_w.witness.is_empty());
 
         let public_inputs: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
-        let result = two_layer::verify_two_layer(&proof, &public_inputs, &r1cs, &ajtai, &rp, &two_params, &ctx);
-        assert!(result.is_ok(), "Two-layer verify failed: {:?}", result.err());
+        let result = two_layer::verify_two_layer(
+            &proof,
+            &public_inputs,
+            &r1cs,
+            &ajtai,
+            &rp,
+            &two_params,
+            &ctx,
+        );
+        assert!(
+            result.is_ok(),
+            "Two-layer verify failed: {:?}",
+            result.err()
+        );
     }
 }
 
@@ -628,22 +715,39 @@ mod two_layer_consistency_fix {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         let (c1, _) = ajtai.commit(&full_ring);
         let (c2, _) = ajtai.commit(&full_ring);
 
         let stmts = vec![
-            FoldingStatement { commitment: c1, public_input: z[..n_in].to_vec(), witness: witness_part.clone() },
-            FoldingStatement { commitment: c2, public_input: z[..n_in].to_vec(), witness: witness_part },
+            FoldingStatement {
+                commitment: c1,
+                public_input: z[..n_in].to_vec(),
+                witness: witness_part.clone(),
+            },
+            FoldingStatement {
+                commitment: c2,
+                public_input: z[..n_in].to_vec(),
+                witness: witness_part,
+            },
         ];
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
 
         let rp = RangeProofParams {
-            lambda_pj: 4, ell_h: D, d_prime: 62, k_g: 2, input_bound: 1024,
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
         };
         let tp = TwoLayerParams {
-            num_blocks: 1, decomp_base: 16, k_b: 2,
+            num_blocks: 1,
+            decomp_base: 16,
+            k_b: 2,
             block_scalars: vec![RingElement::from_constant(1)],
         };
 
@@ -651,7 +755,11 @@ mod two_layer_consistency_fix {
 
         // Verify that layer1_instance matches what layer1 folding produced
         let result = two_layer::verify_two_layer(&proof, &pis, &r1cs, &ajtai, &rp, &tp, &ctx);
-        assert!(result.is_ok(), "cross-layer consistency check should pass: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "cross-layer consistency check should pass: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -666,22 +774,39 @@ mod two_layer_consistency_fix {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
         let witness_part = RingVector {
-            elements: z[n_in..].iter().map(|&v| RingElement::from_constant(v)).collect(),
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
         };
         let (c1, _) = ajtai.commit(&full_ring);
         let (c2, _) = ajtai.commit(&full_ring);
 
         let stmts = vec![
-            FoldingStatement { commitment: c1, public_input: z[..n_in].to_vec(), witness: witness_part.clone() },
-            FoldingStatement { commitment: c2, public_input: z[..n_in].to_vec(), witness: witness_part },
+            FoldingStatement {
+                commitment: c1,
+                public_input: z[..n_in].to_vec(),
+                witness: witness_part.clone(),
+            },
+            FoldingStatement {
+                commitment: c2,
+                public_input: z[..n_in].to_vec(),
+                witness: witness_part,
+            },
         ];
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
 
         let rp = RangeProofParams {
-            lambda_pj: 4, ell_h: D, d_prime: 62, k_g: 2, input_bound: 1024,
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
         };
         let tp = TwoLayerParams {
-            num_blocks: 1, decomp_base: 16, k_b: 2,
+            num_blocks: 1,
+            decomp_base: 16,
+            k_b: 2,
             block_scalars: vec![RingElement::from_constant(1)],
         };
 
@@ -691,6 +816,9 @@ mod two_layer_consistency_fix {
         proof.layer1_instance.commitment.value.elements[0] = RingElement::from_constant(999);
 
         let result = two_layer::verify_two_layer(&proof, &pis, &r1cs, &ajtai, &rp, &tp, &ctx);
-        assert!(result.is_err(), "tampered layer1_instance should be rejected by cross-layer check");
+        assert!(
+            result.is_err(),
+            "tampered layer1_instance should be rejected by cross-layer check"
+        );
     }
 }

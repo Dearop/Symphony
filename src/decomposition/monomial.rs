@@ -65,9 +65,14 @@ pub fn verify_monomial_property(a: i64, q: u64) -> bool {
 
 /// Check if a ring element is in the monomial set M.
 pub fn is_monomial(f: &RingElement) -> bool {
-    let nonzero: Vec<_> = f.coeffs.iter().enumerate().filter(|(_, &c)| c != 0).collect();
+    let nonzero: Vec<_> = f
+        .coeffs
+        .iter()
+        .enumerate()
+        .filter(|(_, &c)| c != 0)
+        .collect();
     match nonzero.len() {
-        0 => true,  // zero is in M
+        0 => true, // zero is in M
         1 => {
             let (_, &c) = nonzero[0];
             c == 1 || c == -1

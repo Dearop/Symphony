@@ -75,7 +75,11 @@ fn derive_shared_challenges(
     q: u64,
 ) -> GR1CSChallenges {
     let m = r1cs.num_constraints;
-    let num_vars_had = if m <= 1 { 0 } else { (usize::BITS - (m - 1).leading_zeros()) as usize };
+    let num_vars_had = if m <= 1 {
+        0
+    } else {
+        (usize::BITS - (m - 1).leading_zeros()) as usize
+    };
 
     // Derive challenges from transcript
     let alpha = transcript.challenge_ext_field(b"alpha", q);
@@ -98,7 +102,9 @@ fn derive_shared_challenges(
     let n_blocks = (n * D) / range_params.ell_h;
     let projected_len = n_blocks.max(1) * range_params.lambda_pj;
     let monomial_vec_len = projected_len.next_power_of_two();
-    let num_vars_mon = if monomial_vec_len <= 1 { 0 } else {
+    let num_vars_mon = if monomial_vec_len <= 1 {
+        0
+    } else {
         (usize::BITS - (monomial_vec_len - 1).leading_zeros()) as usize
     };
     let sumcheck_seed_mon: Vec<ExtFieldElement> = (0..num_vars_mon)
@@ -119,11 +125,8 @@ fn derive_shared_challenges(
     // matrix is bound to the committed statement.
     let mut projection_seed = [0u8; 32];
     transcript.challenge_bytes(b"projection-seed", &mut projection_seed);
-    let projection = ProjectionMatrix::sample(
-        range_params.lambda_pj,
-        range_params.ell_h,
-        &projection_seed,
-    );
+    let projection =
+        ProjectionMatrix::sample(range_params.lambda_pj, range_params.ell_h, &projection_seed);
 
     GR1CSChallenges {
         projection,
@@ -191,7 +194,11 @@ pub fn prove(
         batched_relations.push(BatchedLinearRelation {
             commitments: gr1cs_proofs[i].range_proof.monomial_commitments.clone(),
             evaluation_point: shared_challenges.monomial_sumcheck_challenges.clone(),
-            evaluation_values: gr1cs_proofs[i].range_proof.monomial_proof.evaluations.clone(),
+            evaluation_values: gr1cs_proofs[i]
+                .range_proof
+                .monomial_proof
+                .evaluations
+                .clone(),
         });
     }
 
@@ -226,7 +233,9 @@ pub fn prove(
         }
     }
     let folded_commitment = Commitment {
-        value: RingVector { elements: folded_commitment_elems },
+        value: RingVector {
+            elements: folded_commitment_elems,
+        },
     };
 
     // Fold public inputs: x*_in = Σ β_ℓ · cf^{-1}(X^ℓ_in)
@@ -263,9 +272,13 @@ pub fn prove(
         for (ell, lin) in linear_relations.iter().enumerate() {
             for (i, f_elem) in folded.iter_mut().enumerate() {
                 for t in 0..crate::params::T {
-                    let row = RingElement { coeffs: lin.evaluation_values[i].data[t] };
+                    let row = RingElement {
+                        coeffs: lin.evaluation_values[i].data[t],
+                    };
                     let scaled = row.mul(&beta[ell], q);
-                    let current = RingElement { coeffs: f_elem.data[t] };
+                    let current = RingElement {
+                        coeffs: f_elem.data[t],
+                    };
                     let sum = current.add(&scaled, q);
                     f_elem.data[t] = sum.coeffs;
                 }
@@ -283,7 +296,10 @@ pub fn prove(
             let mut folded = vec![RingElement::zero(); vec_len];
             for (ell, proof) in gr1cs_proofs.iter().enumerate() {
                 if layer < proof.range_proof.monomial_vectors.len() {
-                    for (f_elem, mono_elem) in folded.iter_mut().zip(proof.range_proof.monomial_vectors[layer].iter()) {
+                    for (f_elem, mono_elem) in folded
+                        .iter_mut()
+                        .zip(proof.range_proof.monomial_vectors[layer].iter())
+                    {
                         let scaled = mono_elem.mul(&beta[ell], q);
                         *f_elem = f_elem.add(&scaled, q);
                     }
@@ -300,7 +316,9 @@ pub fn prove(
     };
 
     let folded_witness = FoldedWitness {
-        witness: RingVector { elements: folded_witness_elems },
+        witness: RingVector {
+            elements: folded_witness_elems,
+        },
         monomial_vectors: folded_monomial_vecs,
     };
 
@@ -380,7 +398,8 @@ pub fn verify(
             range_params,
             &shared_challenges,
             ctx,
-        ).map_err(|_| FoldingError::GR1CSFailed(i))?;
+        )
+        .map_err(|_| FoldingError::GR1CSFailed(i))?;
     }
 
     // Bind the GR1CS proofs to the transcript (must match prover's binding).
