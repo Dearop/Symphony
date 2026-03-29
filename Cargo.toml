@@ -4,10 +4,40 @@ version = "0.1.0"
 edition = "2021"
 description = "Scalable SNARKs from lattice-based high-arity folding (Symphony)"
 
+[features]
+default = []
+whir = [
+    "whir-p3",
+    "p3-baby-bear",
+    "p3-field",
+    "p3-challenger",
+    "p3-merkle-tree",
+    "p3-keccak",
+    "p3-symmetric",
+    "p3-dft",
+    "p3-matrix",
+    "p3-util",
+    "p3-maybe-rayon",
+]
+
 [dependencies]
 rand = "0.10.0"
 sha2 = "0.11.0"
+zeroize = { version = "1", features = ["derive"] }
 curve25519-dalek = { version = "4.1", features = ["digest"] }
+
+# WHIR backend (feature-gated, post-quantum)
+whir-p3 = { git = "https://github.com/tcoratger/whir-p3", optional = true }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

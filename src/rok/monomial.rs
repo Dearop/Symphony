@@ -244,6 +244,10 @@ pub fn verify(
     challenges: &MonomialChallenges,
     ctx: &ExtFieldContext,
 ) -> Result<BatchedLinearRelation, MonomialError> {
+    if commitments.is_empty() || proof.evaluations.is_empty() {
+        return Err(MonomialError::EvaluationInconsistent);
+    }
+
     let num_vars = proof.sumcheck_proof.round_messages.len();
     let k_g = proof.evaluations.len();
 
@@ -297,7 +301,14 @@ pub fn verify(
         }
     }
 
-    // Part 2: at-most-one-nonzero checks via sum-of-squares
+    // Part 2: at-most-one-nonzero checks via sum-of-squares.
+    //
+    // Note: sq_evaluations[i] is the MLE of (Σ_j c_{i,j}^2) evaluated at the sumcheck
+    // point. This is NOT the same as Σ_j eval[i][j]^2 (which would be the sum-of-squares
+    // of the MLE evaluations). The consistency between sq_evaluations and the coefficient
+    // evaluations is enforced by the sumcheck protocol itself: the combined polynomial
+    // includes both the per-coefficient cubic checks and the sum-of-squares quadratic
+    // checks, all batched under the same α powers.
     for i in 0..k_g {
         let sq_val = proof.sq_evaluations[i];
         let sq_minus_1 = ctx.sub(&sq_val, &one);
@@ -346,7 +357,8 @@ mod tests {
         }
 
         let kappa = 2;
-        let ajtai = crate::commitment::AjtaiParams::setup(kappa, n, q);
+        let ntt = crate::ring::ntt::NttContext::new(q);
+        let ajtai = crate::commitment::AjtaiParams::setup(kappa, n, q, &ntt);
         let ring_vec = crate::ring::RingVector {
             elements: g.clone(),
         };

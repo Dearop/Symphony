@@ -302,6 +302,13 @@ impl<S: BackendSnark, C: FSCommitment> CPSnark<S, C> {
 
         let instance = Self::encode_instance(commitments, public_statement, &mut transcript);
 
+        // Verify the transcript digest matches (binding check)
+        let mut digest = [0u8; 32];
+        transcript.challenge_bytes(b"proof-digest", &mut digest);
+        if digest.to_vec() != proof.transcript_digest {
+            return false;
+        }
+
         S::verify(&self.vk, &instance, &proof.backend_proof)
     }
 

@@ -36,6 +36,9 @@ pub struct SpartanProvingKey {
     pub pedersen_key: PedersenKey,
     pub seed: [u8; 32],
     pub context: Option<SpartanContext>,
+    /// SHA-256 hash of the relation context (R1CS), bound at setup time.
+    /// Used to detect context swaps between setup and prove/verify.
+    pub context_hash: [u8; 32],
 }
 
 /// Verifying key for the Spartan backend.
@@ -44,6 +47,8 @@ pub struct SpartanVerifyingKey {
     pub pedersen_key: PedersenKey,
     pub seed: [u8; 32],
     pub context: Option<SpartanContext>,
+    /// SHA-256 hash of the relation context, must match the proving key.
+    pub context_hash: [u8; 32],
 }
 
 /// Proof produced by the Spartan backend.
@@ -102,22 +107,50 @@ impl BackendSnark for SpartanSnark {
 
         let pedersen_key = PedersenKey::setup(witness_size, &seed);
 
+        // Compute a hash of the relation context so we can detect context swaps.
+        let context_hash: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update(b"spartan-context-binding");
+            if let Some(ref ctx_bytes) = relation.context {
+                h.update((ctx_bytes.len() as u64).to_le_bytes());
+                h.update(ctx_bytes);
+            } else {
+                h.update(0u64.to_le_bytes());
+            }
+            h.finalize().into()
+        };
+
         (
             SpartanProvingKey {
                 pedersen_key: pedersen_key.clone(),
                 seed,
                 context: context.clone(),
+                context_hash,
             },
             SpartanVerifyingKey {
                 pedersen_key,
                 seed,
                 context,
+                context_hash,
             },
         )
     }
 
     fn prove(pk: &Self::ProvingKey, instance: &[u8], witness: &[u8]) -> Self::Proof {
+        // Verify that the context hasn't been swapped since setup
         if let Some(ref ctx) = pk.context {
+            let mut h = Sha256::new();
+            h.update(b"spartan-context-binding");
+            // Re-serialize and check against stored hash
+            let ctx_bytes = serialize::serialize_context(ctx);
+            h.update((ctx_bytes.len() as u64).to_le_bytes());
+            h.update(&ctx_bytes);
+            let hash: [u8; 32] = h.finalize().into();
+            assert_eq!(
+                hash, pk.context_hash,
+                "Spartan: context was modified after setup (relation confusion attack)"
+            );
+
             if ctx.is_output_snark {
                 return prove_output(pk, instance, witness, ctx);
             }
@@ -126,7 +159,18 @@ impl BackendSnark for SpartanSnark {
     }
 
     fn verify(vk: &Self::VerifyingKey, instance: &[u8], proof: &Self::Proof) -> bool {
+        // Verify that the context hasn't been swapped since setup
         if let Some(ref ctx) = vk.context {
+            let mut h = Sha256::new();
+            h.update(b"spartan-context-binding");
+            let ctx_bytes = serialize::serialize_context(ctx);
+            h.update((ctx_bytes.len() as u64).to_le_bytes());
+            h.update(&ctx_bytes);
+            let hash: [u8; 32] = h.finalize().into();
+            if hash != vk.context_hash {
+                return false;
+            }
+
             if ctx.is_output_snark {
                 return verify_output(vk, instance, proof, ctx);
             }
@@ -499,7 +543,9 @@ fn sha256_scalars(table: &[Scalar]) -> [u8; 32] {
 }
 
 fn bytes_to_scalars(data: &[u8]) -> Vec<Scalar> {
-    // Each 8 bytes → one i64 → one Scalar
+    // Each 8 bytes → one i64 → one Scalar.
+    // Partial trailing chunks are zero-padded with a length sentinel to ensure
+    // injectivity: different-length inputs always produce different scalar sequences.
     let mut scalars = Vec::new();
     let mut i = 0;
     while i + 8 <= data.len() {
@@ -507,13 +553,17 @@ fn bytes_to_scalars(data: &[u8]) -> Vec<Scalar> {
         scalars.push(scalar_field::from_i64(val));
         i += 8;
     }
-    // Handle remaining bytes
+    // Handle remaining bytes: pad AND append the original byte count as a sentinel
+    // so that [0x42] and [0x42, 0x00, ..., 0x00] produce different outputs.
     if i < data.len() {
         let mut buf = [0u8; 8];
         buf[..data.len() - i].copy_from_slice(&data[i..]);
         let val = i64::from_le_bytes(buf);
         scalars.push(scalar_field::from_i64(val));
     }
+    // Length sentinel: always append the total byte count so different-length
+    // inputs that happen to share 8-byte-aligned prefixes are distinguished.
+    scalars.push(scalar_field::from_i64(data.len() as i64));
     scalars
 }
 

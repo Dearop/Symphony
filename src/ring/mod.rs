@@ -5,9 +5,10 @@ pub mod ntt;
 pub mod tensor;
 
 use crate::params::D;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A polynomial in Rq, stored as d coefficients in centered representation [−q/2, q/2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct RingElement {
     pub coeffs: [i64; D],
 }
@@ -135,6 +136,11 @@ impl RingElement {
         Self { coeffs }
     }
 
+    /// NTT-accelerated polynomial multiplication mod (X^d + 1, q).
+    pub fn mul_ntt(&self, other: &Self, ntt: &ntt::NttContext) -> Self {
+        ntt.ring_mul(self, other)
+    }
+
     /// Infinity norm: max |coefficient|.
     pub fn norm_inf(&self) -> u64 {
         self.coeffs
@@ -154,7 +160,7 @@ impl RingElement {
 }
 
 /// A vector of ring elements (e.g., commitment output, witness vector).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct RingVector {
     pub elements: Vec<RingElement>,
 }
@@ -194,6 +200,37 @@ impl RingVector {
     pub fn ring_scalar_mul(&self, scalar: &RingElement, q: u64) -> Self {
         Self {
             elements: self.elements.iter().map(|e| e.mul(scalar, q)).collect(),
+        }
+    }
+
+    /// NTT-accelerated inner product: sum_i a[i] * b[i] over Rq.
+    /// Accumulates in NTT domain (n forward + n pointwise + 1 inverse).
+    pub fn inner_product_ntt(&self, other: &Self, ntt: &ntt::NttContext) -> RingElement {
+        assert_eq!(self.len(), other.len());
+        let mut acc = [0u64; D];
+        for (a, b) in self.elements.iter().zip(other.elements.iter()) {
+            let a_ntt = ntt.forward(a);
+            let b_ntt = ntt.forward(b);
+            let prod = ntt.pointwise_mul(&a_ntt, &b_ntt);
+            acc = ntt.pointwise_add(&acc, &prod);
+        }
+        ntt.inverse(&acc)
+    }
+
+    /// NTT-accelerated scalar multiplication by a ring element.
+    /// Converts scalar to NTT domain once, then pointwise for each element.
+    pub fn ring_scalar_mul_ntt(&self, scalar: &RingElement, ntt: &ntt::NttContext) -> Self {
+        let scalar_ntt = ntt.forward(scalar);
+        Self {
+            elements: self
+                .elements
+                .iter()
+                .map(|e| {
+                    let e_ntt = ntt.forward(e);
+                    let prod_ntt = ntt.pointwise_mul(&e_ntt, &scalar_ntt);
+                    ntt.inverse(&prod_ntt)
+                })
+                .collect(),
         }
     }
 

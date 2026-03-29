@@ -6,6 +6,7 @@ use common::Q;
 use symphony::commitment::AjtaiParams;
 use symphony::params::D;
 use symphony::ring::extension::ExtFieldContext;
+use symphony::ring::ntt::NttContext;
 use symphony::ring::{RingElement, RingVector};
 
 fn ctx() -> ExtFieldContext {
@@ -52,7 +53,8 @@ mod folding {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let s1 = make_statement(&z, n_in, &ajtai);
         let s2 = make_statement(&z, n_in, &ajtai);
@@ -77,7 +79,8 @@ mod folding {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let s1 = make_statement(&z, n_in, &ajtai);
         let s2 = make_statement(&z, n_in, &ajtai);
@@ -167,7 +170,8 @@ mod folding_extended {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let stmts: Vec<_> = (0..3).map(|_| make_statement(&z, n_in, &ajtai)).collect();
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
@@ -193,7 +197,8 @@ mod folding_extended {
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
         let n_w = r1cs.num_variables - n_in;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
         let rp = range_params();
@@ -208,7 +213,8 @@ mod folding_extended {
         let kappa = 3;
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(kappa, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(kappa, r1cs.num_variables, Q, &ntt);
 
         let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
         let rp = range_params();
@@ -227,7 +233,8 @@ mod streaming {
     fn full_lifecycle() {
         let n = 4;
         let ell_np = 3;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let mut prover = StreamingProver::new(ajtai, ell_np);
         prover.set_ext_context(ctx());
 
@@ -270,7 +277,8 @@ mod streaming_extended {
     fn single_statement() {
         let n = 2;
         let ell_np = 1;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let mut prover = StreamingProver::new(ajtai, ell_np);
         prover.set_ext_context(ctx());
 
@@ -297,7 +305,8 @@ mod streaming_extended {
     fn five_statements() {
         let n = 4;
         let ell_np = 5;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let mut prover = StreamingProver::new(ajtai, ell_np);
         prover.set_ext_context(ctx());
 
@@ -335,7 +344,8 @@ mod streaming_integer_log {
     fn streaming_with_various_witness_sizes() {
         for &n in &[1usize, 2, 4, 8, 16] {
             let ell_np = 2;
-            let ajtai = AjtaiParams::setup(2, n, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
             let mut prover = StreamingProver::new(ajtai, ell_np);
             prover.set_ext_context(ctx());
 
@@ -389,7 +399,8 @@ mod projection_seed_fix {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         // Statement 1: z = [1, 3, 9]
         let mk = |z_vals: &[i64]| {
@@ -474,7 +485,8 @@ mod transcript_binding_fix {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
@@ -537,7 +549,8 @@ mod eval_folding_ring_mul {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
@@ -584,7 +597,8 @@ mod eval_folding_ring_mul {
         let ctx = ctx();
         let (r1cs, z) = common::simple_r1cs();
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
 
         let mk = |z_vals: &[i64]| {
             let full_ring = RingVector {
@@ -634,7 +648,8 @@ mod two_layer {
         let (r1cs, z) = common::simple_r1cs();
         let n = r1cs.num_variables;
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
 
         let full_ring = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
@@ -709,7 +724,8 @@ mod two_layer_consistency_fix {
         let (r1cs, z) = common::simple_r1cs();
         let n = r1cs.num_variables;
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
 
         let full_ring = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
@@ -768,7 +784,8 @@ mod two_layer_consistency_fix {
         let (r1cs, z) = common::simple_r1cs();
         let n = r1cs.num_variables;
         let n_in = r1cs.num_public;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
 
         let full_ring = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),

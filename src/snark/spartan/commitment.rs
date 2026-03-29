@@ -45,7 +45,13 @@ impl PedersenKey {
     }
 
     /// Extend the key to support n generators (if currently shorter).
+    ///
+    /// Panics if `n > 2^24` to prevent accidental memory exhaustion.
     pub fn extend_to(&mut self, n: usize, seed: &[u8]) {
+        assert!(
+            n <= (1 << 24),
+            "PedersenKey::extend_to: n={n} exceeds maximum 2^24 generators"
+        );
         let current = self.generators.len();
         if n > current {
             for i in current..n {

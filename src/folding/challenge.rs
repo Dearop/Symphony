@@ -68,9 +68,12 @@ impl ChallengeSet {
 /// ~0.4% more likely than 2, 3, 4).
 pub fn derive_challenge_vector(
     transcript: &mut crate::fiat_shamir::transcript::Transcript,
-    _q: u64,
+    q: u64,
     len: usize,
 ) -> Vec<RingElement> {
+    // Validate that challenge coefficients {-2..2} are representable mod q
+    debug_assert!(q > 4, "q must be > 4 for challenge set S coefficients");
+    let _ = q;
     (0..len)
         .map(|i| {
             let label = format!("beta_{i}");

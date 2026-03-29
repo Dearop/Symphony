@@ -1,5 +1,7 @@
 //! Global parameters matching Table 1 of the Symphony paper.
 
+use crate::ring::ntt::NttContext;
+
 /// Ring dimension d = 64 (power-of-two cyclotomic ring X^64 + 1).
 pub const D: usize = 64;
 
@@ -29,10 +31,21 @@ pub struct SymphonyParams {
     pub b: usize,
     /// Gadget decomposition factor (default 16).
     pub k_cs: usize,
+    /// Precomputed NTT context for O(d log d) ring multiplication.
+    /// `None` only for deliberately invalid parameter sets in tests.
+    pub ntt: Option<NttContext>,
 }
 
 impl SymphonyParams {
-    /// Validate that runtime `d` matches the compile-time constant `D`.
+    /// Validate all parameter constraints required for correctness and security.
+    ///
+    /// Checks:
+    /// - `d == D` (compile-time ring dimension)
+    /// - `q` is prime
+    /// - `q ≡ 1 (mod 2d)` (NTT compatibility)
+    /// - `q < 2^61` (i128 overflow safety)
+    /// - `b >= 2` and `k_cs >= 1` (decomposition sanity)
+    /// - `kappa >= 1`, `ell_np >= 1` (structural)
     ///
     /// Must be called before using the params in any protocol step.
     pub fn validate(&self) {
@@ -41,6 +54,27 @@ impl SymphonyParams {
             "SymphonyParams.d ({}) does not match compile-time D ({D})",
             self.d
         );
+        assert!(
+            is_probably_prime(self.q),
+            "SymphonyParams.q ({}) is not prime",
+            self.q
+        );
+        assert_eq!(
+            self.q % (2 * self.d as u64),
+            1,
+            "SymphonyParams.q ({}) does not satisfy q ≡ 1 (mod 2d = {})",
+            self.q,
+            2 * self.d
+        );
+        assert!(
+            self.q < (1u64 << 61),
+            "SymphonyParams.q ({}) must be < 2^61 for i128 overflow safety",
+            self.q
+        );
+        assert!(self.kappa >= 1, "kappa must be >= 1");
+        assert!(self.ell_np >= 1, "ell_np must be >= 1");
+        assert!(self.b >= 2, "decomposition base b must be >= 2");
+        assert!(self.k_cs >= 1, "decomposition factor k_cs must be >= 1");
     }
 
     /// Generalized witness length: n = n_bar * k_cs.
@@ -48,10 +82,26 @@ impl SymphonyParams {
         self.n_bar * self.k_cs
     }
 
+    /// Get the NTT context, panicking if unavailable (invalid params).
+    pub fn ntt(&self) -> &NttContext {
+        self.ntt.as_ref().expect("NTT context unavailable (invalid q for NTT)")
+    }
+
+    /// Try to build an NTT context for the given q. Returns None if q
+    /// doesn't satisfy the NTT precondition (q ≡ 1 mod 2d).
+    pub fn try_ntt(q: u64, d: usize) -> Option<NttContext> {
+        if q >= 2 && q % (2 * d as u64) == 1 {
+            Some(NttContext::new(q))
+        } else {
+            None
+        }
+    }
+
     /// Construct default parameters from Table 1.
     pub fn default_from_paper() -> Self {
+        let q = find_suitable_prime();
         let params = Self {
-            q: find_suitable_prime(),
+            q,
             d: D,
             kappa: 12,
             ell_np: 1024,
@@ -61,6 +111,7 @@ impl SymphonyParams {
             m: 1 << 16,
             b: 16,
             k_cs: 16,
+            ntt: Self::try_ntt(q, D),
         };
         params.validate();
         params
@@ -71,14 +122,17 @@ impl SymphonyParams {
         1u64 << 37
     }
 
-    /// Relaxed opening norm bound B_rbnd = β_SIS / (4 * ‖S‖_op) ≈ 2^31.
+    /// Relaxed opening norm bound B_rbnd = β_SIS / (4 * ‖S‖_op).
+    ///
+    /// ‖S‖_op ≤ 15 for the LaBRADOR challenge set.
+    /// B_rbnd = 2^37 / 60 ≈ 2,290,649,225.
     pub fn b_rbnd(&self) -> u64 {
-        1u64 << 31
+        self.beta_sis() / (4 * 15)
     }
 
-    /// Strict opening norm bound B_bnd = B_rbnd / 2 = 2^30.
+    /// Strict opening norm bound B_bnd = B_rbnd / 2.
     pub fn b_bnd(&self) -> u64 {
-        1u64 << 30
+        self.b_rbnd() / 2
     }
 
     /// Input witness norm bound B = 2^10.
@@ -110,8 +164,9 @@ fn find_suitable_prime() -> u64 {
     candidate
 }
 
-/// Simple Miller-Rabin primality test (sufficient for parameter generation).
-fn is_probably_prime(n: u64) -> bool {
+/// Miller-Rabin primality test. Deterministic for all n < 3.317×10^24 with
+/// the first 12 primes as witnesses (sufficient for all 64-bit values).
+pub(crate) fn is_probably_prime(n: u64) -> bool {
     if n < 2 {
         return false;
     }

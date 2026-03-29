@@ -97,6 +97,7 @@ mod snark_pipeline {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         }
     }
 
@@ -293,6 +294,7 @@ mod snark_pipeline_extended {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         };
         let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
 
@@ -352,6 +354,7 @@ mod snark_pipeline_extended {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         };
         let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
 
@@ -397,6 +400,7 @@ mod snark_public_input_binding {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         }
     }
 
@@ -508,6 +512,7 @@ mod cp_snark_witness_fix {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         };
         let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
 
@@ -563,6 +568,7 @@ mod sumcheck_snark_backend {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         }
     }
 
@@ -679,6 +685,7 @@ mod spartan_snark_backend {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         }
     }
 
@@ -778,5 +785,115 @@ mod spartan_snark_backend {
 
         let wrong_pis = vec![vec![999i64], vec![999i64]];
         assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
+    }
+}
+
+// =========================================================================
+// WHIR backend pipeline
+// =========================================================================
+#[cfg(feature = "whir")]
+mod whir_pipeline {
+    use super::*;
+    use p3_field::PrimeCharacteristicRing;
+    use symphony::snark::{SymphonyProver, whir::WhirSnark};
+
+    fn small_params() -> SymphonyParams {
+        SymphonyParams {
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
+        }
+    }
+
+    fn make_whir_statement(
+        prover: &SymphonyProver<WhirSnark>,
+        z: &[i64],
+        n_in: usize,
+    ) -> (Commitment, Vec<i64>, RingVector) {
+        let full_ring = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = prover.commit_witness(&full_ring);
+        let witness_part = RingVector {
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
+        };
+        (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    #[test]
+    fn whir_end_to_end_prove_verify() {
+        let params = small_params();
+        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
+
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let s1 = make_whir_statement(&prover, &z, n_in);
+        let s2 = make_whir_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let proof = prover.prove(&statements, &r1cs);
+
+        let public_inputs = vec![pi1, pi2];
+        assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+    }
+
+    #[test]
+    fn whir_tampered_cp_proof_rejected() {
+        let params = small_params();
+        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
+
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let s1 = make_whir_statement(&prover, &z, n_in);
+        let s2 = make_whir_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        // Tamper with the CP proof witness hash
+        proof.cp_proof.witness_hash[0] ^= 0xFF;
+
+        let public_inputs = vec![pi1, pi2];
+        assert!(
+            !verifier.verify(&public_inputs, &proof, &r1cs),
+            "tampered WHIR CP proof should be rejected"
+        );
+    }
+
+    #[test]
+    fn whir_tampered_snark_proof_rejected() {
+        let params = small_params();
+        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
+
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let s1 = make_whir_statement(&prover, &z, n_in);
+        let s2 = make_whir_statement(&prover, &z, n_in);
+        let pi1 = s1.1.clone();
+        let pi2 = s2.1.clone();
+        let statements = vec![s1, s2];
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        // Tamper with the SNARK proof evaluations
+        proof.snark_proof.evaluations[0] += p3_baby_bear::BabyBear::ONE;
+
+        let public_inputs = vec![pi1, pi2];
+        assert!(
+            !verifier.verify(&public_inputs, &proof, &r1cs),
+            "tampered WHIR SNARK proof should be rejected"
+        );
     }
 }

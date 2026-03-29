@@ -24,6 +24,7 @@ fn security_params() -> SymphonyParams {
         m: 4,
         b: 16,
         k_cs: 1,
+        ntt: SymphonyParams::try_ntt(Q, D),
     }
 }
 
@@ -282,6 +283,7 @@ fn larger_params_end_to_end() {
         m: 8,
         b: 16,
         k_cs: 1,
+        ntt: SymphonyParams::try_ntt(Q, D),
     };
     let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
 
@@ -340,6 +342,7 @@ mod spartan_soundness {
             m: 4,
             b: 16,
             k_cs: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
         }
     }
 

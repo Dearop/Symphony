@@ -29,14 +29,22 @@ impl SparseMatrix {
         }
     }
 
-    /// Sparse matrix-vector multiply: y = M · x.
+    /// Sparse matrix-vector multiply: y = M · x (over the integers).
+    ///
+    /// Panics if any result overflows i64. Use `mul_vec_mod` for modular arithmetic.
     pub fn mul_vec(&self, x: &[i64]) -> Vec<i64> {
         assert_eq!(x.len(), self.num_cols);
         let mut y = vec![0i128; self.num_rows];
         for &(r, c, v) in &self.entries {
             y[r] += v as i128 * x[c] as i128;
         }
-        y.into_iter().map(|v| v as i64).collect()
+        y.into_iter()
+            .map(|v| {
+                i64::try_from(v).expect(
+                    "SparseMatrix::mul_vec overflow: result exceeds i64; use mul_vec_mod instead",
+                )
+            })
+            .collect()
     }
 
     /// Sparse matrix-vector multiply with modular reduction.
@@ -97,7 +105,10 @@ impl R1CSMatrices {
         }
     }
 
-    /// Check if a full assignment z = (x, w) satisfies the R1CS: (Az) ∘ (Bz) = Cz.
+    /// Check if a full assignment z = (x, w) satisfies the R1CS: (Az) ∘ (Bz) = Cz
+    /// over the integers.
+    ///
+    /// For modular R1CS (over Zq), use `is_satisfied_mod` instead.
     pub fn is_satisfied(&self, z: &[i64]) -> bool {
         assert_eq!(z.len(), self.num_variables);
         let az = self.a.mul_vec(z);

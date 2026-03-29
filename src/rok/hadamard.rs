@@ -74,7 +74,7 @@ pub fn prove(
     }
 
     // Build bookkeeping tables for the sumcheck factors.
-    // The polynomial is: f(X) = eq(s, X) · Σ_j α^{j-1} · (g1j(X) · g2j(X) − g3j(X))
+    // The polynomial is: f(X) = eq(s, X) · Σ_j α^j · (g1j(X) · g2j(X) − g3j(X))
     // Degree 3: eq is degree 1, g1j·g2j is degree 2, g3j is degree 1.
     //
     // Factor tables:
@@ -334,8 +334,9 @@ mod tests {
         }
 
         // Create dummy commitment
+        let ntt = crate::ring::ntt::NttContext::new(q);
         let kappa = 2;
-        let ajtai = AjtaiParams::setup(kappa, n, q);
+        let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
         let ring_witness = RingVector {
             elements: z
                 .iter()
@@ -387,8 +388,9 @@ mod tests {
             }
         }
 
+        let ntt = crate::ring::ntt::NttContext::new(q);
         let kappa = 2;
-        let ajtai = AjtaiParams::setup(kappa, n, q);
+        let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
         let ring_witness = RingVector {
             elements: z
                 .iter()

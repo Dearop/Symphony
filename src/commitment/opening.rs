@@ -1,6 +1,7 @@
 //! Strict, relaxed, and fine-grained opening verification.
 
 use crate::commitment::{AjtaiParams, Commitment};
+use crate::params::D;
 use crate::ring::{RingElement, RingVector};
 
 /// Relaxed opening proof: A·f = s·c with s ∈ S − S and s·m = f.
@@ -25,33 +26,34 @@ pub fn verify_relaxed(
     opening: &RelaxedOpening,
     b_rbnd_sq: u128,
 ) -> bool {
-    let q = params.q;
-
     // Check norm bound on f
     if opening.f.norm_sq() > b_rbnd_sq {
         return false;
     }
 
     // Check s·m = f
-    let sm = m.ring_scalar_mul(&opening.s, q);
+    let sm = m.ring_scalar_mul_ntt(&opening.s, &params.ntt);
     if sm.elements != opening.f.elements {
         return false;
     }
 
-    // Check A·f = s·c
+    // Check A·f = s·c (NTT-accelerated)
+    let f_ntt: Vec<[u64; D]> = opening.f.elements.iter().map(|e| params.ntt.forward(e)).collect();
     let mut af = RingVector::zero(params.kappa);
     for i in 0..params.kappa {
+        let mut acc = [0u64; D];
         for j in 0..params.n {
-            let prod = params.a[i][j].mul(&opening.f.elements[j], q);
-            af.elements[i] = af.elements[i].add(&prod, q);
+            let prod = params.ntt.pointwise_mul(&params.a_ntt[i][j], &f_ntt[j]);
+            acc = params.ntt.pointwise_add(&acc, &prod);
         }
+        af.elements[i] = params.ntt.inverse(&acc);
     }
 
     let sc: Vec<RingElement> = c
         .value
         .elements
         .iter()
-        .map(|ci| ci.mul(&opening.s, q))
+        .map(|ci| ci.mul_ntt(&opening.s, &params.ntt))
         .collect();
 
     af.elements.iter().zip(sc.iter()).all(|(a, b)| a == b)
@@ -66,15 +68,16 @@ pub fn verify_fine_grained(
     block_len: usize,
     block_bound_sq: u128,
 ) -> bool {
-    let q = params.q;
-
-    // Check commitment equation A·f = c
+    // Check commitment equation A·f = c (NTT-accelerated)
+    let f_ntt: Vec<[u64; D]> = f.elements.iter().map(|e| params.ntt.forward(e)).collect();
     let mut af = RingVector::zero(params.kappa);
     for i in 0..params.kappa {
+        let mut acc = [0u64; D];
         for j in 0..params.n {
-            let prod = params.a[i][j].mul(&f.elements[j], q);
-            af.elements[i] = af.elements[i].add(&prod, q);
+            let prod = params.ntt.pointwise_mul(&params.a_ntt[i][j], &f_ntt[j]);
+            acc = params.ntt.pointwise_add(&acc, &prod);
         }
+        af.elements[i] = params.ntt.inverse(&acc);
     }
     if af.elements != c.value.elements {
         return false;

@@ -12,6 +12,22 @@ pub mod transcript;
 /// This is NOT the Ajtai commitment — it's a straightline-extractable scheme
 /// used to commit to protocol messages in the Fiat-Shamir transform.
 /// Both Merkle trees and KZG work here.
+///
+/// # Security requirements
+///
+/// Implementations **must** satisfy:
+///
+/// - **Computational binding**: For all PPT adversaries, the probability of
+///   finding (m, m', o, o') with m ≠ m' such that `commit(m) == commit(m')`
+///   is negligible.
+///
+/// - **Hiding**: The commitment reveals no information about the message.
+///   In the random oracle model, information-theoretic hiding is achieved
+///   when `commit` uses fresh randomness.
+///
+/// - **Straightline extractability** (for Fiat-Shamir soundness): In the
+///   random oracle model, there exists an extractor that recovers
+///   (message, opening) by observing random oracle queries.
 pub trait FSCommitment {
     type Commitment: Clone + AsRef<[u8]>;
     type Opening: Clone;

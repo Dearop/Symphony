@@ -14,6 +14,7 @@ use crate::commitment::{AjtaiParams, Commitment};
 use crate::decomposition::monomial::{exp_map, monomial_decompose};
 use crate::params::D;
 use crate::ring::extension::ExtFieldContext;
+use crate::ring::ntt::NttContext;
 use crate::ring::{RingElement, RingVector};
 use crate::rok::monomial::{MonomialChallenges, MonomialProof};
 use crate::rok::BatchedLinearRelation;
@@ -148,11 +149,17 @@ pub fn prove(
         flat_coeffs.extend_from_slice(&elem.coeffs);
     }
 
-    // Step 2: Apply structured projection H := (I_{n/ℓ_h} ⊗ J) × cf(f)
-    let n_blocks = (n * D) / params.ell_h;
+    // Step 2: Apply structured projection H := (I_{⌈n·D/ℓ_h⌉} ⊗ J) × cf(f)
+    // The identity dimension is the number of ℓ_h-sized blocks in the flattened vector.
+    let total_coeffs = n * D;
+    let n_blocks = if total_coeffs == 0 {
+        1
+    } else {
+        (total_coeffs + params.ell_h - 1) / params.ell_h // ceil division
+    };
     let projected = challenges
         .projection
-        .apply_structured(&flat_coeffs, n_blocks.max(1));
+        .apply_structured(&flat_coeffs, n_blocks);
 
     // Step 3: Decompose H into k_g layers: H = H^(1) + d'·H^(2) + ... + d'^{k_g-1}·H^(k_g)
     let d_prime = params.d_prime;
@@ -193,7 +200,7 @@ pub fn prove(
             elements: padded.clone(),
         };
         // Create a commitment for monomial vectors (may differ in size from main witness)
-        let mon_ajtai = AjtaiParams::setup(ajtai.kappa, mon_len, ajtai.q);
+        let mon_ajtai = AjtaiParams::setup(ajtai.kappa, mon_len, ajtai.q, &ajtai.ntt);
         let (c, _) = mon_ajtai.commit(&ring_vec);
         monomial_commitments.push(c);
         monomial_vectors.push(padded);
@@ -236,21 +243,24 @@ pub fn verify(
     // For each monomial g^(i)[b], check that ct(g^(i)[b] · t(X)) gives
     // the decomposition digit, and that the digits reconstruct the projected values.
     let table_poly = crate::decomposition::monomial::table_polynomial(ctx.q);
+    let ntt = NttContext::new(ctx.q);
     let d_prime = params.d_prime;
 
     for (b, &proj_val) in proof.projected_values.iter().enumerate() {
-        let mut reconstructed = 0i64;
-        let mut d_power = 1i64;
+        let mut reconstructed = 0i128;
+        let mut d_power = 1i128;
         for mvec in proof.monomial_vectors.iter() {
             if b < mvec.len() {
                 let g = &mvec[b];
-                let product = g.mul(&table_poly, ctx.q);
-                let digit = product.ct();
+                let product = g.mul_ntt(&table_poly, &ntt);
+                let digit = product.ct() as i128;
                 reconstructed += digit * d_power;
             }
-            d_power *= d_prime;
+            d_power = d_power.checked_mul(d_prime as i128).unwrap_or_else(|| {
+                panic!("range proof verifier: d_prime^k_g overflow in reconstruction")
+            });
         }
-        if reconstructed != proj_val {
+        if reconstructed != proj_val as i128 {
             return Err(RangeProofError::ProjectionFailed);
         }
     }
@@ -288,7 +298,8 @@ mod tests {
 
         let n = 2;
         let kappa = 2;
-        let ajtai = AjtaiParams::setup(kappa, n, q);
+        let ntt = crate::ring::ntt::NttContext::new(q);
+        let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
 
         let witness = RingVector {
             elements: vec![

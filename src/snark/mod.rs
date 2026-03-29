@@ -21,6 +21,8 @@ pub mod cp_snark;
 pub mod prover;
 pub mod spartan;
 pub mod sumcheck_snark;
+#[cfg(feature = "whir")]
+pub mod whir;
 
 use std::marker::PhantomData;
 
@@ -109,7 +111,8 @@ impl<S: BackendSnark> SymphonyProver<S> {
     /// Calls `S::setup` twice: once for the CP-SNARK relation (folding
     /// correctness) and once for the output relation (folded R1CS).
     pub fn setup(params: SymphonyParams) -> (Self, SymphonyVerifier<S>) {
-        let ajtai = crate::commitment::AjtaiParams::setup(params.kappa, params.n(), params.q);
+        params.validate();
+        let ajtai = crate::commitment::AjtaiParams::setup(params.kappa, params.n(), params.q, params.ntt());
 
         let cp_relation = RelationDescription {
             num_instance_vars: params.ell_np,
@@ -225,8 +228,14 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
 
 /// A trivial SNARK implementation that accepts all proofs.
 ///
-/// **Not secure** — use only for testing the pipeline wiring.
-/// Replace with a real backend (LaBRADOR, WHIR, HyperPlonk+KZG) for production.
+/// # Security
+///
+/// **`DummySnark` provides ZERO soundness.** It accepts any proof with the correct
+/// prefix tag, regardless of instance or witness. It exists solely for testing
+/// pipeline wiring and API integration.
+///
+/// **DO NOT use in production.** Replace with `SpartanSnark`, `SumcheckSnark`,
+/// or a real backend (LaBRADOR, WHIR, HyperPlonk+KZG).
 pub struct DummySnark;
 
 #[derive(Debug, Clone)]

@@ -114,37 +114,33 @@ impl StreamingProver {
     ///
     /// For each witness f_ℓ, the contribution to the evaluation table is:
     ///   table[b] += β_ℓ · value(f_ℓ, b)
-    /// where value(f_ℓ, b) is derived from the witness at hypercube point b.
+    /// where β_ℓ is a full ring element and value(f_ℓ, b) is the extension field
+    /// embedding of the witness element at hypercube point b.
     pub fn feed_witness_sumcheck(&mut self, witness: &RingVector, statement_idx: usize) {
         assert!(matches!(self.phase, StreamingPhase::Sumcheck { .. }));
 
         let ctx = self
             .ext_ctx
             .as_ref()
-            .expect("ext context required for sumcheck");
-        let q = ctx.q;
-        let beta_ct = self.beta[statement_idx].coeffs[0];
+            .expect("ext context required for sumcheck")
+            .clone();
+        let beta = &self.beta[statement_idx];
 
         let n = witness.len().min(self.eval_table.len());
         for b in 0..n {
-            let mut witness_val = 0i64;
-            for coeff in &witness.elements[b].coeffs {
-                witness_val = witness_val.wrapping_add(*coeff);
-            }
-            witness_val = ((witness_val % q as i64) + q as i64) % q as i64;
-            let q_half = (q / 2) as i64;
-            if witness_val > q_half {
-                witness_val -= q as i64;
-            }
+            // Compute β_ℓ · f_ℓ[b] as a ring multiplication, then embed into K
+            let scaled = witness.elements[b].mul_ntt(beta, &self.ajtai.ntt);
+            // Embed into extension field: use ct (constant term) for c0,
+            // and sum of remaining coefficients weighted by the extension structure for c1.
+            // For the sumcheck over K, we use the canonical embedding:
+            //   c0 = cf(scaled)[0], c1 = 0 (base field embedding)
+            // This matches the non-streaming path which evaluates the multilinear extension
+            // of the coefficient tables.
+            let c0 = scaled.coeffs[0];
+            let c1 = 0i64;
 
-            let contribution = ExtFieldElement {
-                c0: ((beta_ct as i128 * witness_val as i128) % q as i128) as i64,
-                c1: 0,
-            };
-            self.eval_table[b] = ExtFieldElement {
-                c0: ((self.eval_table[b].c0 as i128 + contribution.c0 as i128) % q as i128) as i64,
-                c1: self.eval_table[b].c1,
-            };
+            let contribution = ExtFieldElement { c0, c1 };
+            self.eval_table[b] = ctx.add(&self.eval_table[b], &contribution);
         }
 
         if statement_idx == self.ell_np - 1 {
@@ -165,17 +161,14 @@ impl StreamingProver {
             } else {
                 // Fold the evaluation table for the next pass
                 if self.eval_table.len() > 1 {
+                    let ctx = self
+                        .ext_ctx
+                        .as_ref()
+                        .expect("ext context required for sumcheck");
                     let half = self.eval_table.len() / 2;
                     let mut new_table = Vec::with_capacity(half);
                     for i in 0..half {
-                        new_table.push(ExtFieldElement {
-                            c0: ((self.eval_table[i].c0 as i128
-                                + self.eval_table[half + i].c0 as i128)
-                                % self.ajtai.q as i128) as i64,
-                            c1: ((self.eval_table[i].c1 as i128
-                                + self.eval_table[half + i].c1 as i128)
-                                % self.ajtai.q as i128) as i64,
-                        });
+                        new_table.push(ctx.add(&self.eval_table[i], &self.eval_table[half + i]));
                     }
                     self.eval_table = new_table;
                 }
@@ -189,7 +182,7 @@ impl StreamingProver {
     pub fn feed_witness_folding(&mut self, witness: &RingVector, statement_idx: usize) {
         assert_eq!(self.phase, StreamingPhase::Folding);
         let q = self.ajtai.q;
-        let scaled = witness.ring_scalar_mul(&self.beta[statement_idx], q);
+        let scaled = witness.ring_scalar_mul_ntt(&self.beta[statement_idx], &self.ajtai.ntt);
         if let Some(ref mut acc) = self.folded_witness_acc {
             *acc = acc.add(&scaled, q);
         }
@@ -246,7 +239,8 @@ mod tests {
         let kappa = 2;
         let n = 4;
         let ell_np = 2;
-        let ajtai = AjtaiParams::setup(kappa, n, q);
+        let ntt = crate::ring::ntt::NttContext::new(q);
+        let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
         let mut prover = StreamingProver::new(ajtai, ell_np);
 
         assert_eq!(prover.phase(), StreamingPhase::Commitment);
@@ -271,7 +265,8 @@ mod tests {
         let kappa = 2;
         let n = 4;
         let ell_np = 2;
-        let ajtai = AjtaiParams::setup(kappa, n, q);
+        let ntt = crate::ring::ntt::NttContext::new(q);
+        let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
         let mut prover = StreamingProver::new(ajtai, ell_np);
         prover.set_ext_context(ExtFieldContext::new(q));
 

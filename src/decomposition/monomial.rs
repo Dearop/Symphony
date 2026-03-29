@@ -6,6 +6,7 @@
 //! ct(b · t(X)) = a.
 
 use crate::params::D;
+use crate::ring::ntt::NttContext;
 use crate::ring::RingElement;
 
 /// The table polynomial t(X) = Σ_{i ∈ [1, d/2)} i · (X^i + X^{d−i}).
@@ -52,14 +53,14 @@ pub fn exp_map(a: i64) -> RingElement {
 }
 
 /// Verify the monomial property: ct(Exp(a) · t(X)) = a.
-pub fn verify_monomial_property(a: i64, q: u64) -> bool {
+pub fn verify_monomial_property(a: i64, ntt: &NttContext) -> bool {
     if a == 0 {
         // Exp(0) = 0, so ct(0 · t(X)) = 0
         return true;
     }
     let b = exp_map(a);
-    let t = table_polynomial(q);
-    let product = b.mul(&t, q);
+    let t = table_polynomial(ntt.q);
+    let product = b.mul_ntt(&t, ntt);
     product.ct() == a
 }
 
@@ -106,9 +107,10 @@ mod tests {
 
     #[test]
     fn test_monomial_property() {
+        let ntt = crate::ring::ntt::NttContext::new(TEST_Q);
         for a in -((D as i64) / 2 - 1)..((D as i64) / 2) {
             assert!(
-                verify_monomial_property(a, TEST_Q),
+                verify_monomial_property(a, &ntt),
                 "monomial property failed for a={a}"
             );
         }

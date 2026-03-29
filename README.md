@@ -11,7 +11,7 @@ It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Aj
 
 - Core Symphony pipeline is implemented end-to-end in Rust.
 - Standalone CP-SNARK module is implemented (`src/cp_snark/mod.rs`).
-- Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`).
+- Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`; concrete backend: `SpartanSnark`).
 - Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
 - Integration test suite is split into focused files for maintainability and debugging.
 
@@ -48,7 +48,15 @@ symphony/
 │   │   ├── mod.rs         #   BackendSnark trait, SymphonyProver/Verifier/Proof, DummySnark
 │   │   ├── prover.rs      #   Full proof generation orchestration
 │   │   ├── cp_snark.rs    #   Commit-and-prove encoding helpers
-│   │   └── sumcheck_snark.rs # Sumcheck-backed demo backend (consistency/soundness checks)
+│   │   ├── sumcheck_snark.rs # Sumcheck-backed demo backend (consistency/soundness checks)
+│   │   └── spartan/       #   Spartan backend (R1CS-to-sumcheck + Pedersen + IPA)
+│   │       ├── mod.rs     #     SpartanSnark implementing BackendSnark
+│   │       ├── commitment.rs # Pedersen vector commitment
+│   │       ├── ipa.rs     #     Inner Product Argument
+│   │       ├── r1cs_sumcheck.rs # R1CS-to-sumcheck reduction over Fp
+│   │       ├── scalar_field.rs  # Ristretto scalar field ops
+│   │       ├── serialize.rs     # SpartanContext serialization
+│   │       └── sumcheck.rs      # Sumcheck over Fp
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
@@ -63,6 +71,7 @@ symphony/
 │   ├── folding.rs         # Folding, streaming, and two-layer tests
 │   ├── snark.rs           # Full Symphony pipeline tests
 │   ├── cp_snark.rs        # Standalone CP-SNARK tests
+│   ├── security_soundness.rs # Tamper/replay/splice attack detection tests
 │   └── common/mod.rs      # Shared integration test helpers
 ├── benches/
 │   └── folding.rs         # Criterion benchmarks
@@ -83,6 +92,7 @@ use symphony::ring::{RingElement, RingVector};
 let params = SymphonyParams {
     q: 257, d: 64, kappa: 2, ell_np: 2, ell_h: 64,
     lambda_pj: 4, n_bar: 4, m: 4, b: 16, k_cs: 1,
+    ntt: None,
 };
 
 // 2. Setup prover and verifier
@@ -138,7 +148,12 @@ impl BackendSnark for MySnark {
 let (prover, verifier) = SymphonyProver::<MySnark>::setup(params);
 ```
 
-Possible backends:
+Included backends:
+- **`SpartanSnark`** — R1CS-to-sumcheck reduction with Pedersen commitments and IPA over Ristretto (curve25519-dalek). Suitable for integration testing with real cryptographic guarantees.
+- **`SumcheckSnark`** — Demo backend with transcript binding and tamper-detection checks.
+- **`DummySnark`** — Trivial backend for API testing (no soundness).
+
+Possible external backends:
 - **Post-quantum**: LaBRADOR, WHIR (50–100 KB proofs)
 - **Pairing-based**: HyperPlonk + KZG (< 50 KB proofs, not PQ)
 
@@ -190,13 +205,15 @@ The test suite covers every protocol layer:
 | Folding + streaming + two-layer | Consistency, transcript binding, projection seed derivation, cross-layer checks |
 | SNARK pipeline | End-to-end flow, CP encoding consistency, transcript/public-input binding, tamper checks |
 | Standalone CP-SNARK | `HashCommitment`, `Identity`/`Preimage`/`Transcript`/`FnRelation`, builder API, soundness-oriented checks |
+| Security & soundness | Tamper attacks, replay attacks, splice attacks under SumcheckSnark backend |
 
 ## Notes on cryptographic backend
 
 - `DummySnark` is intended for API/testing and does not provide production soundness.
 - `SumcheckSnark` provides stronger tamper-detection and transcript binding checks, but is not a production succinct SNARK backend.
-- The architecture is ready for plugging in a real backend via `BackendSnark`.
-- For production deployment, integrate a concrete backend implementation and run backend-specific security review/benchmarks.
+- `SpartanSnark` implements a full R1CS-to-sumcheck reduction with Pedersen vector commitments and an Inner Product Argument (IPA) over the Ristretto group (`curve25519-dalek`). It provides real cryptographic guarantees and is suitable for CP-SNARK integration testing.
+- The architecture is ready for plugging in additional backends via `BackendSnark`.
+- For production deployment, integrate a concrete post-quantum backend and run backend-specific security review/benchmarks.
 
 ## References
 

@@ -22,6 +22,7 @@ use symphony::folding::{FoldedInstance, FoldingStatement};
 use symphony::params::{SymphonyParams, D};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::extension::{ExtFieldContext, ExtFieldElement};
+use symphony::ring::ntt::NttContext;
 use symphony::ring::{RingElement, RingVector};
 use symphony::rok::range_proof::RangeProofParams;
 use symphony::snark::cp_snark as pipeline_cp_snark;
@@ -229,6 +230,7 @@ fn bench_params(ell_np: usize) -> SymphonyParams {
         m: 4,
         b: 16,
         k_cs: 1,
+        ntt: SymphonyParams::try_ntt(257, D),
     }
 }
 
@@ -478,7 +480,8 @@ fn bench_commitment(c: &mut Criterion) {
     let kappa = 4;
     let n = 64;
     let q = 12289u64;
-    let params = AjtaiParams::setup(kappa, n, q);
+    let ntt = NttContext::new(q);
+    let params = AjtaiParams::setup(kappa, n, q, &ntt);
     let witness = RingVector {
         elements: (0..n)
             .map(|i| RingElement::from_constant(i as i64))
@@ -602,7 +605,8 @@ fn bench_scaling_folding_prove_k_statements(c: &mut Criterion) {
 
     for &k in SCALING_KS {
         let params = bench_params(k);
-        let ajtai = AjtaiParams::setup(params.kappa, params.n(), params.q);
+        let ntt = NttContext::new(params.q);
+        let ajtai = AjtaiParams::setup(params.kappa, params.n(), params.q, &ntt);
         let rp = range_params();
         let ext_ctx = ExtFieldContext::new(params.q);
 
@@ -829,7 +833,8 @@ fn bench_scaling_streaming_passes_memory(c: &mut Criterion) {
 
     for &k in SCALING_KS {
         let params = bench_params(k);
-        let ajtai = AjtaiParams::setup(params.kappa, params.n(), params.q);
+        let ntt = NttContext::new(params.q);
+        let ajtai = AjtaiParams::setup(params.kappa, params.n(), params.q, &ntt);
         let ext_ctx = ExtFieldContext::new(params.q);
 
         let base_witness = RingVector {

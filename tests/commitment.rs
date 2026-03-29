@@ -4,6 +4,7 @@ mod common;
 
 use common::Q;
 use symphony::commitment::AjtaiParams;
+use symphony::ring::ntt::NttContext;
 use symphony::ring::{RingElement, RingVector};
 
 use proptest::prelude::*;
@@ -17,7 +18,8 @@ mod commitment_core {
 
     #[test]
     fn commit_verify_roundtrip() {
-        let ajtai = AjtaiParams::setup(2, 4, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 4, Q, &ntt);
         let w = RingVector {
             elements: vec![RingElement::from_constant(1); 4],
         };
@@ -27,7 +29,8 @@ mod commitment_core {
 
     #[test]
     fn wrong_witness_rejected() {
-        let ajtai = AjtaiParams::setup(2, 4, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 4, Q, &ntt);
         let w = RingVector {
             elements: vec![RingElement::from_constant(1); 4],
         };
@@ -40,7 +43,8 @@ mod commitment_core {
 
     #[test]
     fn norm_bound_enforced() {
-        let ajtai = AjtaiParams::setup(2, 4, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 4, Q, &ntt);
         let w = RingVector {
             elements: vec![RingElement::from_constant(100); 4],
         };
@@ -51,7 +55,8 @@ mod commitment_core {
 
     #[test]
     fn zero_witness_commits_to_zero() {
-        let ajtai = AjtaiParams::setup(3, 5, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(3, 5, Q, &ntt);
         let w = RingVector::zero(5);
         let (c, _) = ajtai.commit(&w);
         for elem in &c.value.elements {
@@ -61,7 +66,8 @@ mod commitment_core {
 
     #[test]
     fn strict_opening() {
-        let ajtai = AjtaiParams::setup(2, 3, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
         let w = RingVector {
             elements: vec![RingElement::from_constant(1); 3],
         };
@@ -72,7 +78,8 @@ mod commitment_core {
 
     #[test]
     fn relaxed_opening() {
-        let ajtai = AjtaiParams::setup(2, 3, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
         let m = RingVector {
             elements: vec![RingElement::from_constant(2); 3],
         };
@@ -86,7 +93,8 @@ mod commitment_core {
 
     #[test]
     fn relaxed_opening_wrong_scalar_rejected() {
-        let ajtai = AjtaiParams::setup(2, 3, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
         let m = RingVector {
             elements: vec![RingElement::from_constant(2); 3],
         };
@@ -107,7 +115,8 @@ mod commitment_core {
 
     #[test]
     fn fine_grained_opening() {
-        let ajtai = AjtaiParams::setup(2, 4, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 4, Q, &ntt);
         let w = RingVector {
             elements: vec![RingElement::from_constant(1); 4],
         };
@@ -125,7 +134,8 @@ mod commitment_advanced {
 
     #[test]
     fn linearity_over_witnesses() {
-        let ajtai = AjtaiParams::setup(3, 4, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(3, 4, Q, &ntt);
         let w1 = RingVector {
             elements: vec![RingElement::from_constant(2); 4],
         };
@@ -144,7 +154,8 @@ mod commitment_advanced {
 
     #[test]
     fn scalar_mul_on_commitment() {
-        let ajtai = AjtaiParams::setup(2, 3, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
         let w = RingVector {
             elements: vec![RingElement::from_constant(5); 3],
         };
@@ -161,7 +172,8 @@ mod commitment_advanced {
     #[test]
     fn different_kappa_values() {
         for kappa in 1..=5 {
-            let ajtai = AjtaiParams::setup(kappa, 3, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(kappa, 3, Q, &ntt);
             let w = RingVector {
                 elements: vec![RingElement::from_constant(1); 3],
             };
@@ -196,7 +208,8 @@ mod commitment_proptest {
 
         #[test]
         fn commit_verify_roundtrip_random(w in arb_small_witness(3)) {
-            let ajtai = AjtaiParams::setup(2, 3, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
             let (c, _) = ajtai.commit(&w);
             prop_assert!(ajtai.verify_open(&c, &w, u128::MAX));
         }
@@ -206,7 +219,8 @@ mod commitment_proptest {
             w in arb_small_witness(3),
             perturbation in 1i64..=50
         ) {
-            let ajtai = AjtaiParams::setup(2, 3, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
             let (c, _) = ajtai.commit(&w);
 
             // Create a different witness by adding a perturbation to the first element
@@ -220,13 +234,14 @@ mod commitment_proptest {
             w1 in arb_small_witness(3),
             w2 in arb_small_witness(3)
         ) {
-            let ajtai = AjtaiParams::setup(2, 3, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(2, 3, Q, &ntt);
             let w_sum = w1.add(&w2, Q);
             let (c1, _) = ajtai.commit(&w1);
             let (c2, _) = ajtai.commit(&w2);
             let (c_sum, _) = ajtai.commit(&w_sum);
             let c1_plus_c2 = c1.value.add(&c2.value, Q);
-            prop_assert_eq!(c1_plus_c2.elements, c_sum.value.elements);
+            prop_assert_eq!(&c1_plus_c2.elements, &c_sum.value.elements);
         }
     }
 }

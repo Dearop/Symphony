@@ -62,25 +62,14 @@ fn split_witness(witness: &RingVector, num_blocks: usize) -> Vec<RingVector> {
 }
 
 /// Gadget-decompose each block to reduce norms.
+///
+/// Each ring element's coefficients are independently decomposed into k_b layers
+/// using the gadget base. This produces `blocks.len() * k_b` output blocks, each
+/// with low-norm ring elements (‖·‖_∞ ≤ base/2).
 fn decompose_blocks(blocks: &[RingVector], base: i64, k_b: usize, _q: u64) -> Vec<RingVector> {
     let mut decomposed = Vec::with_capacity(blocks.len() * k_b);
     for block in blocks {
-        // For each ring element in the block, decompose each coefficient
         let n = block.len();
-        let mut layers: Vec<Vec<RingElement>> = vec![Vec::with_capacity(n); k_b];
-
-        for elem in &block.elements {
-            for (j, coeff) in elem.coeffs.iter().enumerate() {
-                let digits = decomposition::decompose(*coeff, base, k_b);
-                for (layer, &_digit) in layers.iter_mut().zip(digits.iter()) {
-                    if layer.len() <= j / crate::params::D {
-                        layer.push(RingElement::zero());
-                    }
-                }
-            }
-        }
-
-        // Simpler approach: decompose element-wise
         for layer_idx in 0..k_b {
             let mut layer_elems = Vec::with_capacity(n);
             for elem in &block.elements {
@@ -132,7 +121,7 @@ pub fn prove_two_layer(
     } else {
         decomposed_blocks[0].len()
     };
-    let layer2_ajtai = AjtaiParams::setup(ajtai.kappa, layer2_n, ajtai.q);
+    let layer2_ajtai = AjtaiParams::setup(ajtai.kappa, layer2_n, ajtai.q, &ajtai.ntt);
 
     let mut layer2_statements = Vec::with_capacity(decomposed_blocks.len());
     for block in &decomposed_blocks {
@@ -200,7 +189,7 @@ pub fn verify_two_layer(
         .collect();
     let layer2_r1cs = R1CSMatrices::new(1, proof.layer2_n, 0);
 
-    let layer2_ajtai = AjtaiParams::setup(ajtai.kappa, proof.layer2_n, ajtai.q);
+    let layer2_ajtai = AjtaiParams::setup(ajtai.kappa, proof.layer2_n, ajtai.q, &ajtai.ntt);
     let _layer2_result = crate::folding::verify(
         &proof.layer2_proof,
         &empty_inputs,

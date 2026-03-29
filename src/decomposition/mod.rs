@@ -44,7 +44,9 @@ pub fn recompose(digits: &[i64], b: i64) -> i64 {
         result = result
             .checked_add(d as i128 * power)
             .expect("recompose overflow");
-        power = power.checked_mul(b as i128).unwrap_or(power); // last iteration doesn't use updated power
+        power = power
+            .checked_mul(b as i128)
+            .expect("recompose overflow: b^k exceeds i128");
     }
     i64::try_from(result).expect("recompose result exceeds i64 range")
 }

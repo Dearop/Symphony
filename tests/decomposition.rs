@@ -23,11 +23,12 @@ mod decomposition_core {
 
     #[test]
     fn monomial_embedding_full_range() {
+        let ntt = symphony::ring::ntt::NttContext::new(Q);
         for a in -(D as i64 / 2 - 1)..=(D as i64 / 2 - 1) {
             let g = monomial::exp_map(a);
             assert!(monomial::is_monomial(&g), "exp_map({a}) is not a monomial");
             assert!(
-                monomial::verify_monomial_property(a, Q),
+                monomial::verify_monomial_property(a, &ntt),
                 "monomial property failed for a={a}",
             );
         }

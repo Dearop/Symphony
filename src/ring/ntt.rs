@@ -55,13 +55,10 @@ impl NttContext {
     /// Computes the "negacyclic NTT" suitable for multiplication mod X^d + 1.
     pub fn forward(&self, a: &RingElement) -> [u64; D] {
         let mut vals = [0u64; D];
-        // Convert from centered to positive representation
+        // Convert from centered to positive representation (branchless).
+        let q = self.q;
         for (v, &c) in vals.iter_mut().zip(a.coeffs.iter()) {
-            *v = if c < 0 {
-                (c + self.q as i64) as u64
-            } else {
-                c as u64
-            };
+            *v = ((c as i128 + q as i128) % q as i128) as u64;
         }
 
         // Pre-multiply by powers of ω (for negacyclic convolution)
@@ -107,6 +104,15 @@ impl NttContext {
         c
     }
 
+    /// Pointwise addition in NTT domain.
+    pub fn pointwise_add(&self, a: &[u64; D], b: &[u64; D]) -> [u64; D] {
+        let mut c = [0u64; D];
+        for i in 0..D {
+            c[i] = (a[i] + b[i]) % self.q;
+        }
+        c
+    }
+
     /// NTT-accelerated ring multiplication.
     pub fn ring_mul(&self, a: &RingElement, b: &RingElement) -> RingElement {
         let a_ntt = self.forward(a);
@@ -120,7 +126,9 @@ impl NttContext {
         let n = D;
         let q = self.q;
 
-        // Bit-reversal permutation
+        // Bit-reversal permutation.
+        // Note: the swap condition `i < j` depends only on indices (not coefficient
+        // values), so this is constant-time with respect to secret data.
         let mut j = 0usize;
         for i in 1..n {
             let mut bit = n >> 1;
@@ -162,7 +170,9 @@ impl NttContext {
 }
 
 /// Find a primitive n-th root of unity modulo q.
+/// Requires n to be a power of 2 (for the order check via n/2).
 fn find_primitive_root(q: u64, n: u64) -> u64 {
+    assert!(n.is_power_of_two(), "n must be a power of 2, got {n}");
     assert!((q - 1).is_multiple_of(n));
     let cofactor = (q - 1) / n;
     for g in 2..q {

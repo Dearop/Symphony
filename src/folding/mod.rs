@@ -228,7 +228,7 @@ pub fn prove(
     let mut folded_commitment_elems = vec![RingElement::zero(); kappa];
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fc_elem) in folded_commitment_elems.iter_mut().enumerate() {
-            let scaled = stmt.commitment.value.elements[i].mul(&beta[ell], q);
+            let scaled = stmt.commitment.value.elements[i].mul_ntt(&beta[ell], &ajtai.ntt);
             *fc_elem = fc_elem.add(&scaled, q);
         }
     }
@@ -244,7 +244,7 @@ pub fn prove(
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fp_elem) in folded_public_input.iter_mut().enumerate() {
             let x_ring = RingElement::from_constant(stmt.public_input[i]);
-            let scaled = x_ring.mul(&beta[ell], q);
+            let scaled = x_ring.mul_ntt(&beta[ell], &ajtai.ntt);
             *fp_elem = fp_elem.add(&scaled, q);
         }
     }
@@ -254,7 +254,7 @@ pub fn prove(
     let mut folded_witness_elems = vec![RingElement::zero(); n_w];
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fw_elem) in folded_witness_elems.iter_mut().enumerate() {
-            let scaled = stmt.witness.elements[i].mul(&beta[ell], q);
+            let scaled = stmt.witness.elements[i].mul_ntt(&beta[ell], &ajtai.ntt);
             *fw_elem = fw_elem.add(&scaled, q);
         }
     }
@@ -275,7 +275,7 @@ pub fn prove(
                     let row = RingElement {
                         coeffs: lin.evaluation_values[i].data[t],
                     };
-                    let scaled = row.mul(&beta[ell], q);
+                    let scaled = row.mul_ntt(&beta[ell], &ajtai.ntt);
                     let current = RingElement {
                         coeffs: f_elem.data[t],
                     };
@@ -300,7 +300,7 @@ pub fn prove(
                         .iter_mut()
                         .zip(proof.range_proof.monomial_vectors[layer].iter())
                     {
-                        let scaled = mono_elem.mul(&beta[ell], q);
+                        let scaled = mono_elem.mul_ntt(&beta[ell], &ajtai.ntt);
                         *f_elem = f_elem.add(&scaled, q);
                     }
                 }
@@ -365,7 +365,7 @@ pub fn verify(
     proof: &FoldingProof,
     public_inputs: &[Vec<i64>],
     r1cs: &R1CSMatrices,
-    _ajtai: &AjtaiParams,
+    ajtai: &AjtaiParams,
     range_params: &RangeProofParams,
     ctx: &ExtFieldContext,
 ) -> Result<FoldedInstance, FoldingError> {
@@ -434,7 +434,7 @@ pub fn verify(
     let mut expected_folded_commitment = vec![RingElement::zero(); kappa];
     for (ell, commitment) in proof.commitments.iter().enumerate() {
         for (i, efc_elem) in expected_folded_commitment.iter_mut().enumerate() {
-            let scaled = commitment.value.elements[i].mul(&proof.beta[ell], q);
+            let scaled = commitment.value.elements[i].mul_ntt(&proof.beta[ell], &ajtai.ntt);
             *efc_elem = efc_elem.add(&scaled, q);
         }
     }
@@ -452,7 +452,7 @@ pub fn verify(
     for (ell, pi) in public_inputs.iter().enumerate() {
         for (i, efi_elem) in expected_folded_input.iter_mut().enumerate() {
             let x_ring = RingElement::from_constant(pi[i]);
-            let scaled = x_ring.mul(&proof.beta[ell], q);
+            let scaled = x_ring.mul_ntt(&proof.beta[ell], &ajtai.ntt);
             *efi_elem = efi_elem.add(&scaled, q);
         }
     }

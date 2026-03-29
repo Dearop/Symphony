@@ -7,6 +7,7 @@ use symphony::commitment::AjtaiParams;
 use symphony::params::D;
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::extension::{ExtFieldContext, ExtFieldElement};
+use symphony::ring::ntt::NttContext;
 use symphony::ring::{RingElement, RingVector};
 
 fn ctx() -> ExtFieldContext {
@@ -58,7 +59,8 @@ mod monomial_check {
             assert!(is_monomial(gi));
         }
 
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let ring_vec = RingVector {
             elements: g.clone(),
         };
@@ -80,7 +82,8 @@ mod monomial_check {
             assert!(is_monomial(gi));
         }
 
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let (c1, _) = ajtai.commit(&RingVector {
             elements: g1.clone(),
         });
@@ -109,7 +112,8 @@ mod monomial_check {
         assert!(!is_monomial(&bad));
 
         let g = vec![bad, exp_map(1)];
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let (c, _) = ajtai.commit(&RingVector {
             elements: g.clone(),
         });
@@ -132,7 +136,8 @@ mod monomial_check {
         assert!(!is_monomial(&bad));
 
         let g = vec![exp_map(0), bad];
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let (c, _) = ajtai.commit(&RingVector {
             elements: g.clone(),
         });
@@ -191,7 +196,8 @@ mod hadamard_check {
         assert!(r1cs.is_satisfied_mod(&z, Q));
 
         let wm = build_witness_matrix(&z, z.len());
-        let ajtai = AjtaiParams::setup(2, z.len(), Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, z.len(), Q, &ntt);
         let ring_w = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
@@ -211,7 +217,8 @@ mod hadamard_check {
         assert!(!r1cs.is_satisfied_mod(&bad_z, Q));
 
         let wm = build_witness_matrix(&bad_z, bad_z.len());
-        let ajtai = AjtaiParams::setup(2, bad_z.len(), Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, bad_z.len(), Q, &ntt);
         let ring_w = RingVector {
             elements: bad_z
                 .iter()
@@ -243,7 +250,8 @@ mod range_proof {
     fn larger_witness() {
         let ctx = ctx();
         let n = 4;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let witness = RingVector {
             elements: vec![
                 RingElement::from_constant(5),
@@ -352,7 +360,8 @@ mod gr1cs {
             elements: witness_elems,
         };
 
-        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
         let full_ring_w = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
@@ -474,7 +483,8 @@ mod hadamard_extended {
         assert!(r1cs.is_satisfied_mod(&z, Q));
 
         let wm = build_witness_matrix(&z, z.len());
-        let ajtai = AjtaiParams::setup(2, z.len(), Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, z.len(), Q, &ntt);
         let ring_w = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
@@ -509,7 +519,8 @@ mod hadamard_extended {
         assert!(r1cs.is_satisfied_mod(&z, Q));
 
         let wm = build_witness_matrix(&z, n);
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let ring_w = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
@@ -576,7 +587,8 @@ mod monomial_extended {
             assert!(is_monomial(gi));
         }
 
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let (c, _) = ajtai.commit(&RingVector {
             elements: g.clone(),
         });
@@ -600,7 +612,8 @@ mod monomial_extended {
             assert!(is_monomial(gi));
         }
 
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let (c, _) = ajtai.commit(&RingVector {
             elements: g.clone(),
         });
@@ -623,7 +636,8 @@ mod monomial_extended {
             .map(|i| exp_map((i % (D as i64 / 2 - 1)) - D as i64 / 4))
             .collect();
 
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let (c, _) = ajtai.commit(&RingVector {
             elements: g.clone(),
         });
@@ -646,7 +660,8 @@ mod monomial_extended {
             })
             .collect();
 
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let commitments: Vec<_> = layers
             .iter()
             .map(|g| {
@@ -755,7 +770,8 @@ mod integer_log2_fix {
                 }
             }
 
-            let ajtai = AjtaiParams::setup(2, n, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
             let ring_w = RingVector {
                 elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
             };
@@ -793,7 +809,8 @@ mod integer_log2_fix {
         for &n in &[2usize, 4, 8, 16] {
             let g: Vec<RingElement> = (0..n as i64).map(|i| exp_map(i % 30)).collect();
 
-            let ajtai = AjtaiParams::setup(2, n, Q);
+            let ntt = NttContext::new(Q);
+            let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
             let (c, _) = ajtai.commit(&RingVector {
                 elements: g.clone(),
             });
@@ -844,7 +861,8 @@ mod range_proof_tolerance_fix {
     fn exact_projection_match_accepted() {
         let ctx = ctx();
         let n = 2;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let witness = RingVector {
             elements: vec![
                 RingElement::from_constant(1),
@@ -894,7 +912,8 @@ mod range_proof_tolerance_fix {
     fn tampered_projected_values_rejected() {
         let ctx = ctx();
         let n = 2;
-        let ajtai = AjtaiParams::setup(2, n, Q);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let witness = RingVector {
             elements: vec![
                 RingElement::from_constant(1),

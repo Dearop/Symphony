@@ -24,7 +24,13 @@ pub fn kronecker_expand(original: &R1CSMatrices, b: i64, k_cs: usize) -> R1CSMat
             // Original entry M̄[row, col] = val becomes:
             // M[row, col*k_cs + j] = val * g[j]  for j = 0..k_cs
             for (j, &gj) in gadget.iter().enumerate() {
-                expanded.insert(row, col * k_cs + j, val * gj);
+                let product = val.checked_mul(gj).unwrap_or_else(|| {
+                    panic!(
+                        "Kronecker expansion overflow: val={val} * gadget[{j}]={gj} exceeds i64; \
+                         reduce base or decomposition depth"
+                    )
+                });
+                expanded.insert(row, col * k_cs + j, product);
             }
         }
         expanded
