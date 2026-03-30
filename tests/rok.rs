@@ -150,6 +150,25 @@ mod monomial_check {
             "coefficient = 5 should be rejected by Πmon"
         );
     }
+
+    #[test]
+    fn verify_rejects_empty_inputs() {
+        use symphony::sumcheck::SumcheckProof;
+        let ctx = ctx();
+        let empty_proof = monomial::MonomialProof {
+            sumcheck_proof: SumcheckProof {
+                round_messages: vec![],
+            },
+            evaluations: vec![],
+            sq_evaluations: vec![],
+        };
+        let challenges = mon_challenges(0);
+        let result = monomial::verify(&[], &empty_proof, &challenges, &ctx);
+        assert!(
+            result.is_err(),
+            "monomial verifier should reject empty inputs"
+        );
+    }
 }
 
 // =========================================================================
@@ -234,6 +253,36 @@ mod hadamard_check {
         // witness produces a nonzero sumcheck sum, so verify should fail.
         assert!(result.is_err(), "bad witness should be rejected by Πhad");
     }
+
+    #[test]
+    fn prove_verify_alpha_power_consistency() {
+        let ctx = ctx();
+        let m = 2;
+        let n = 3;
+        let mut r1cs = R1CSMatrices::new(m, n, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 1, 1);
+        r1cs.c.insert(0, 2, 1);
+        let z = vec![1i64, 3, 9];
+        assert!(r1cs.is_satisfied_mod(&z, Q));
+
+        let wm = build_witness_matrix(&z, n);
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
+        let ring_w = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = ajtai.commit(&ring_w);
+
+        let challenges = had_challenges(1);
+        let proof = hadamard::prove(&c, &wm, &r1cs, &challenges, &ctx);
+        let result = hadamard::verify(&c, &proof, &challenges, &ctx);
+        assert!(
+            result.is_ok(),
+            "Hadamard prove/verify should agree on alpha power indexing: {:?}",
+            result.err()
+        );
+    }
 }
 
 // =========================================================================
@@ -302,6 +351,70 @@ mod range_proof {
         let coeffs = vec![1i64; 32];
         let result = proj.apply_structured(&coeffs, 2);
         assert_eq!(result.len(), 2 * 8);
+    }
+
+    #[test]
+    fn projection_ceiling_division() {
+        let lambda_pj = 4;
+        let ell_h = 128;
+        let proj = ProjectionMatrix::sample(lambda_pj, ell_h, b"test-seed-1234567890123456");
+        let n = 3;
+        let total_coeffs = n * D;
+        let n_blocks = (total_coeffs + ell_h - 1) / ell_h;
+        assert_eq!(n_blocks, 2, "ceiling division should yield 2 blocks");
+        let flat_coeffs = vec![1i64; total_coeffs];
+        let result = proj.apply_structured(&flat_coeffs, n_blocks);
+        assert_eq!(
+            result.len(),
+            n_blocks * lambda_pj,
+            "projection output should have n_blocks * lambda_pj entries"
+        );
+    }
+
+    #[test]
+    fn end_to_end_with_i128_d_power() {
+        let ctx = ctx();
+        let n = 2;
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
+        let witness = RingVector {
+            elements: vec![RingElement::from_constant(3), RingElement::from_constant(-2)],
+        };
+        let (c, _) = ajtai.commit(&witness);
+        let params = RangeProofParams {
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
+        };
+        let proj = ProjectionMatrix::sample(4, D, b"test-seed-1234567890123456");
+        let num_vars = 3;
+        let challenges = RangeProofChallenges {
+            projection: proj,
+            monomial_challenges: MonomialChallenges {
+                s: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 5 + i as i64,
+                        c1: 1,
+                    })
+                    .collect(),
+                alpha: ExtFieldElement { c0: 3, c1: 2 },
+                sumcheck_challenges: (0..num_vars)
+                    .map(|i| ExtFieldElement {
+                        c0: 7 + i as i64,
+                        c1: 3,
+                    })
+                    .collect(),
+            },
+        };
+        let proof = range_proof::prove(&c, &witness, &ajtai, &params, &challenges, &ctx);
+        let result = range_proof::verify(&c, &proof, &params, &challenges, &ctx);
+        assert!(
+            result.is_ok(),
+            "range proof with i128 d_power should verify: {:?}",
+            result.err()
+        );
     }
 }
 
@@ -959,6 +1072,235 @@ mod range_proof_tolerance_fix {
         assert!(
             result.is_err(),
             "tampered projected value should be rejected with exact tolerance"
+        );
+    }
+}
+
+// =========================================================================
+// Πgr1cs — extended integration tests
+// =========================================================================
+mod gr1cs_extended {
+    use super::*;
+    use symphony::rok::gr1cs::{self, GR1CSChallenges};
+    use symphony::rok::range_proof::{ProjectionMatrix, RangeProofParams};
+
+    fn gr1cs_challenges(num_vars_had: usize, num_vars_mon: usize) -> GR1CSChallenges {
+        GR1CSChallenges {
+            projection: ProjectionMatrix::sample(4, D, b"gr1cs-test-seed-1234567890ab"),
+            sumcheck_seed_had: (0..num_vars_had)
+                .map(|i| ExtFieldElement {
+                    c0: 5 + i as i64,
+                    c1: 1,
+                })
+                .collect(),
+            alpha: ExtFieldElement { c0: 3, c1: 2 },
+            hadamard_sumcheck_challenges: (0..num_vars_had)
+                .map(|i| ExtFieldElement {
+                    c0: 7 + i as i64,
+                    c1: 3,
+                })
+                .collect(),
+            sumcheck_seed_mon: (0..num_vars_mon)
+                .map(|i| ExtFieldElement {
+                    c0: 11 + i as i64,
+                    c1: 4,
+                })
+                .collect(),
+            monomial_sumcheck_challenges: (0..num_vars_mon)
+                .map(|i| ExtFieldElement {
+                    c0: 13 + i as i64,
+                    c1: 5,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn prove_verify_multi_constraint() {
+        let ctx = ctx();
+        let (r1cs, z) = multi_r1cs();
+        assert!(r1cs.is_satisfied_mod(&z, Q));
+
+        let n_in = r1cs.num_public;
+        let public_input = &z[..n_in];
+        let witness_elems: Vec<RingElement> = z[n_in..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect();
+        let witness = RingVector {
+            elements: witness_elems,
+        };
+
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
+        let full_ring_w = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = ajtai.commit(&full_ring_w);
+
+        let range_params = RangeProofParams {
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
+        };
+
+        // num_vars_had = log2(4) = 2, num_vars_mon: n_blocks = 4*64/64=4, proj_len=4*4=16, padded=16, log2=4
+        let challenges = gr1cs_challenges(2, 4);
+
+        let proof = gr1cs::prove(
+            &c,
+            public_input,
+            &witness,
+            &r1cs,
+            &ajtai,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+        let result = gr1cs::verify(
+            &c,
+            public_input,
+            &proof,
+            &r1cs,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+        assert!(
+            result.is_ok(),
+            "Πgr1cs multi-constraint failed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn tampered_hadamard_proof_rejected() {
+        let ctx = ctx();
+        let (r1cs, z) = simple_r1cs();
+
+        let n_in = 1;
+        let public_input = &z[..n_in];
+        let witness_elems: Vec<RingElement> = z[n_in..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect();
+        let witness = RingVector {
+            elements: witness_elems,
+        };
+
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
+        let full_ring_w = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = ajtai.commit(&full_ring_w);
+
+        let range_params = RangeProofParams {
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
+        };
+
+        let challenges = gr1cs_challenges(1, 4);
+
+        let mut proof = gr1cs::prove(
+            &c,
+            public_input,
+            &witness,
+            &r1cs,
+            &ajtai,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+
+        // Tamper with the hadamard proof evaluation matrix
+        proof.hadamard_proof.evaluation_matrix[0].data[0][0] += 1;
+
+        let result = gr1cs::verify(
+            &c,
+            public_input,
+            &proof,
+            &r1cs,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+        assert!(
+            result.is_err(),
+            "tampered hadamard proof should be rejected"
+        );
+    }
+
+    #[test]
+    fn outputs_linear_and_batched_relations() {
+        let ctx = ctx();
+        let (r1cs, z) = simple_r1cs();
+
+        let n_in = 1;
+        let public_input = &z[..n_in];
+        let witness_elems: Vec<RingElement> = z[n_in..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect();
+        let witness = RingVector {
+            elements: witness_elems,
+        };
+
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
+        let full_ring_w = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = ajtai.commit(&full_ring_w);
+
+        let range_params = RangeProofParams {
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
+        };
+
+        let challenges = gr1cs_challenges(1, 4);
+
+        let proof = gr1cs::prove(
+            &c,
+            public_input,
+            &witness,
+            &r1cs,
+            &ajtai,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+        let result = gr1cs::verify(
+            &c,
+            public_input,
+            &proof,
+            &r1cs,
+            &range_params,
+            &challenges,
+            &ctx,
+        );
+        let (linear_rel, batched_rel) = result.unwrap();
+
+        // Linear relation should reference the original commitment
+        assert_eq!(
+            linear_rel.commitment.value.elements.len(),
+            c.value.elements.len()
+        );
+        // Evaluation point should match hadamard sumcheck challenges
+        assert_eq!(linear_rel.evaluation_point.len(), 1);
+
+        // Batched relation should have monomial commitments
+        assert!(
+            !batched_rel.commitments.is_empty(),
+            "batched relation should have monomial commitments"
         );
     }
 }

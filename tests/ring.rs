@@ -394,6 +394,51 @@ mod ext_field_overflow_fix {
         let a_bc = ctx.mul(&a, &ctx.mul(&b, &c));
         assert_eq!(ab_c, a_bc);
     }
+
+    #[test]
+    fn mul_no_overflow_near_q_half() {
+        let p = SymphonyParams::default_from_paper();
+        let q = p.q;
+        let ctx = ExtFieldContext::new(q);
+        let q_half = (q / 2) as i64;
+        let a = ExtFieldElement {
+            c0: q_half - 1,
+            c1: q_half - 1,
+        };
+        let b = ExtFieldElement {
+            c0: q_half - 1,
+            c1: q_half - 1,
+        };
+        let result = ctx.mul(&a, &b);
+        if let Some(b_inv) = ctx.inv(&b) {
+            let roundtrip = ctx.mul(&result, &b_inv);
+            assert_eq!(roundtrip, a, "mul with large q should be consistent");
+        }
+    }
+
+    #[test]
+    fn mul_associativity_varied_signs() {
+        let p = SymphonyParams::default_from_paper();
+        let ctx = ExtFieldContext::new(p.q);
+        let a = ExtFieldElement {
+            c0: 123456789,
+            c1: -987654321,
+        };
+        let b = ExtFieldElement {
+            c0: -111222333,
+            c1: 444555666,
+        };
+        let c = ExtFieldElement {
+            c0: 777888999,
+            c1: -101010101,
+        };
+        let ab_c = ctx.mul(&ctx.mul(&a, &b), &c);
+        let a_bc = ctx.mul(&a, &ctx.mul(&b, &c));
+        assert_eq!(
+            ab_c, a_bc,
+            "multiplication should be associative with large values"
+        );
+    }
 }
 
 // =========================================================================
@@ -402,6 +447,26 @@ mod ext_field_overflow_fix {
 mod ntt_extended {
     use super::*;
     use symphony::ring::ntt::NttContext;
+
+    #[test]
+    fn ntt_roundtrip_linear_coeffs() {
+        let q = 12289u64;
+        let ctx = NttContext::new(q);
+        let mut coeffs = [0i64; D];
+        for i in 0..D {
+            coeffs[i] = (i as i64 * 37 + 13) % (q as i64 / 2);
+        }
+        let a = RingElement { coeffs };
+        let a_ntt = ctx.forward(&a);
+        let a_back = ctx.inverse(&a_ntt);
+        assert_eq!(a, a_back, "NTT roundtrip should be exact");
+    }
+
+    #[test]
+    fn ntt_friendly_primes_accepted() {
+        let _ctx1 = NttContext::new(12289u64);
+        let _ctx2 = NttContext::new(257u64);
+    }
 
     #[test]
     fn ntt_roundtrip_random_poly() {
@@ -671,5 +736,147 @@ mod params_q_cap {
         let a = RingElement::from_constant((p.q / 2) as i64);
         let b = RingElement::from_constant((p.q / 2) as i64);
         let _ = a.mul(&b, p.q);
+    }
+}
+
+// =========================================================================
+// Parameter validation
+// =========================================================================
+mod params_validation {
+    use super::*;
+    use symphony::params::SymphonyParams;
+
+    #[test]
+    fn setup_panics_when_d_wrong() {
+        use symphony::snark::{DummySnark, SymphonyProver};
+        let bad_params = SymphonyParams {
+            q: 257,
+            d: 32,
+            kappa: 12,
+            ell_np: 1024,
+            ell_h: 1 << 14,
+            lambda_pj: 256,
+            n_bar: 1 << 16,
+            m: 1 << 16,
+            b: 16,
+            k_cs: 16,
+            ntt: SymphonyParams::try_ntt(257, D),
+        };
+        let result = std::panic::catch_unwind(|| {
+            SymphonyProver::<DummySnark>::setup(bad_params);
+        });
+        assert!(result.is_err(), "setup() should panic when d != D");
+    }
+
+    #[test]
+    fn validate_rejects_non_prime_q() {
+        let params = SymphonyParams {
+            q: 128,
+            d: D,
+            kappa: 12,
+            ell_np: 1024,
+            ell_h: 1 << 14,
+            lambda_pj: 256,
+            n_bar: 1 << 16,
+            m: 1 << 16,
+            b: 16,
+            k_cs: 16,
+            ntt: SymphonyParams::try_ntt(128, D),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
+        assert!(result.is_err(), "validate should reject non-prime q");
+    }
+
+    #[test]
+    fn validate_rejects_q_not_1_mod_2d() {
+        let params = SymphonyParams {
+            q: 127,
+            d: D,
+            kappa: 12,
+            ell_np: 1024,
+            ell_h: 1 << 14,
+            lambda_pj: 256,
+            n_bar: 1 << 16,
+            m: 1 << 16,
+            b: 16,
+            k_cs: 16,
+            ntt: SymphonyParams::try_ntt(127, D),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
+        assert!(
+            result.is_err(),
+            "validate should reject q not congruent to 1 mod 2d"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_b_less_than_2() {
+        let p = SymphonyParams::default_from_paper();
+        let params = SymphonyParams {
+            q: p.q,
+            d: D,
+            kappa: 12,
+            ell_np: 1024,
+            ell_h: 1 << 14,
+            lambda_pj: 256,
+            n_bar: 1 << 16,
+            m: 1 << 16,
+            b: 1,
+            k_cs: 16,
+            ntt: SymphonyParams::try_ntt(p.q, D),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
+        assert!(result.is_err(), "validate should reject b < 2");
+    }
+
+    #[test]
+    fn validate_rejects_k_cs_zero() {
+        let p = SymphonyParams::default_from_paper();
+        let params = SymphonyParams {
+            q: p.q,
+            d: D,
+            kappa: 12,
+            ell_np: 1024,
+            ell_h: 1 << 14,
+            lambda_pj: 256,
+            n_bar: 1 << 16,
+            m: 1 << 16,
+            b: 16,
+            k_cs: 0,
+            ntt: SymphonyParams::try_ntt(p.q, D),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
+        assert!(result.is_err(), "validate should reject k_cs == 0");
+    }
+
+    #[test]
+    fn validate_accepts_good_params() {
+        let params = SymphonyParams::default_from_paper();
+        assert_eq!(params.q % (2 * D as u64), 1);
+        assert!(params.q < (1u64 << 61));
+    }
+
+    #[test]
+    fn norm_bounds_derived_from_beta_sis() {
+        let params = SymphonyParams::default_from_paper();
+        let beta_sis = params.beta_sis();
+        let b_rbnd = params.b_rbnd();
+        let b_bnd = params.b_bnd();
+        assert_eq!(b_rbnd, beta_sis / 60);
+        assert_eq!(b_bnd, b_rbnd / 2);
+        assert!(beta_sis > b_rbnd);
+        assert!(b_rbnd > b_bnd);
+        assert!(b_bnd > 0);
+    }
+
+    #[test]
+    fn default_params_fully_valid() {
+        let params = SymphonyParams::default_from_paper();
+        params.validate();
+        assert!(params.b_rbnd() > 0);
+        assert!(params.b_bnd() > 0);
+        assert!(params.beta_sis() > params.b_rbnd());
+        use symphony::ring::ntt::NttContext;
+        let _ntt = NttContext::new(params.q);
     }
 }

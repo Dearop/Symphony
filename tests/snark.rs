@@ -786,6 +786,89 @@ mod spartan_snark_backend {
         let wrong_pis = vec![vec![999i64], vec![999i64]];
         assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
     }
+
+    #[test]
+    fn bytes_to_scalars_length_sentinel() {
+        use symphony::snark::{BackendSnark, RelationDescription};
+        let relation = RelationDescription {
+            num_instance_vars: 4,
+            num_witness_vars: 8,
+            num_constraints: 4,
+            context: None,
+        };
+        let (pk, vk) = SpartanSnark::setup(&relation);
+        let w1 = b"AAAA";
+        let w2 = b"AAAA\x00\x00\x00\x00";
+        let proof1 = SpartanSnark::prove(&pk, b"inst", w1);
+        let proof2 = SpartanSnark::prove(&pk, b"inst", w2);
+        assert!(SpartanSnark::verify(&vk, b"inst", &proof1));
+        assert!(SpartanSnark::verify(&vk, b"inst", &proof2));
+        assert_ne!(
+            proof1.witness_hash, proof2.witness_hash,
+            "different-length inputs must produce different witness hashes"
+        );
+    }
+
+    #[test]
+    fn context_hash_differs_per_relation() {
+        use symphony::snark::{BackendSnark, RelationDescription};
+        let relation1 = RelationDescription {
+            num_instance_vars: 4,
+            num_witness_vars: 8,
+            num_constraints: 4,
+            context: Some(b"context-A".to_vec()),
+        };
+        let relation2 = RelationDescription {
+            num_instance_vars: 4,
+            num_witness_vars: 8,
+            num_constraints: 4,
+            context: Some(b"context-B".to_vec()),
+        };
+        let (pk1, _) = SpartanSnark::setup(&relation1);
+        let (pk2, _) = SpartanSnark::setup(&relation2);
+        assert_ne!(
+            pk1.context_hash, pk2.context_hash,
+            "different contexts must produce different context_hash values"
+        );
+    }
+
+    #[test]
+    fn rejects_proof_under_wrong_context() {
+        use symphony::snark::{BackendSnark, RelationDescription};
+        let relation_a = RelationDescription {
+            num_instance_vars: 4,
+            num_witness_vars: 8,
+            num_constraints: 4,
+            context: Some(b"relation-A-context".to_vec()),
+        };
+        let relation_b = RelationDescription {
+            num_instance_vars: 4,
+            num_witness_vars: 8,
+            num_constraints: 4,
+            context: Some(b"relation-B-context".to_vec()),
+        };
+        let (pk_a, _vk_a) = SpartanSnark::setup(&relation_a);
+        let (_pk_b, vk_b) = SpartanSnark::setup(&relation_b);
+        let proof = SpartanSnark::prove(&pk_a, b"instance", b"witness");
+        assert!(
+            !SpartanSnark::verify(&vk_b, b"instance", &proof),
+            "proof should not verify under a different relation's vk"
+        );
+    }
+
+    #[test]
+    fn pedersen_extend_to_bounded() {
+        use symphony::snark::spartan::commitment::PedersenKey;
+        let key = PedersenKey::setup(4, b"test-seed");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut k = key.clone();
+            k.extend_to((1 << 24) + 1, b"test-seed");
+        }));
+        assert!(result.is_err(), "extend_to should panic when n > 2^24");
+        let mut k = key;
+        k.extend_to(8, b"test-seed");
+        assert_eq!(k.generators.len(), 8);
+    }
 }
 
 // =========================================================================

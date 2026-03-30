@@ -59,6 +59,45 @@ mod decomposition_edge_cases {
     use symphony::decomposition;
 
     #[test]
+    fn decompose_digits_bounded_roundtrip() {
+        let base = 4i64;
+        let k = 3;
+        let half_b = base / 2;
+        for &coeff_val in &[42i64, -15, 7] {
+            let digits = decomposition::decompose(coeff_val, base, k);
+            assert_eq!(digits.len(), k);
+            for &d in &digits {
+                assert!(
+                    d.abs() <= half_b,
+                    "decomposition digit {d} exceeds bound {half_b}"
+                );
+            }
+            assert_eq!(decomposition::recompose(&digits, base), coeff_val);
+        }
+    }
+
+    #[test]
+    fn roundtrip_various_bases_and_values() {
+        for b in [16i64, 32, 64] {
+            for k in [4, 8, 16] {
+                for &val in &[0i64, 1, -1, 42, -42, 1000, -1000] {
+                    let digits = decomposition::decompose(val, b, k);
+                    assert_eq!(digits.len(), k);
+                    let half_b = b / 2;
+                    for &d in &digits {
+                        assert!(d.abs() <= half_b, "digit {d} exceeds bound {half_b}");
+                    }
+                    assert_eq!(
+                        decomposition::recompose(&digits, b),
+                        val,
+                        "roundtrip failed for val={val}, b={b}, k={k}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn decompose_zero() {
         let digits = decomposition::decompose(0, 16, 4);
         assert!(digits.iter().all(|&d| d == 0));
@@ -100,6 +139,26 @@ mod decomposition_edge_cases {
 // =========================================================================
 mod recompose_overflow_fix {
     use symphony::decomposition;
+
+    #[test]
+    fn recompose_panics_on_overflow() {
+        let result = std::panic::catch_unwind(|| {
+            decomposition::recompose(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], i64::MAX);
+        });
+        assert!(
+            result.is_err(),
+            "recompose should panic on overflow rather than silently returning wrong value"
+        );
+    }
+
+    #[test]
+    fn decompose_recompose_roundtrip() {
+        let val = 12345i64;
+        let b = 16;
+        let k = 8;
+        let digits = decomposition::decompose(val, b, k);
+        assert_eq!(decomposition::recompose(&digits, b), val);
+    }
 
     #[test]
     fn recompose_small_values_still_works() {

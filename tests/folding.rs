@@ -334,6 +334,51 @@ mod streaming_extended {
         let result = prover.finish();
         assert_eq!(result.witness.len(), n);
     }
+
+    #[test]
+    fn streaming_ring_mul_and_ext_accumulation() {
+        use symphony::ring::extension::ExtFieldContext;
+        let n = 4;
+        let ell_np = 2;
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
+        let mut prover = StreamingProver::new(ajtai, ell_np);
+        prover.set_ext_context(ExtFieldContext::new(Q));
+
+        // Witnesses with non-trivial polynomial coefficients (not just constants)
+        let w1 = RingVector {
+            elements: vec![RingElement::monomial(1); n],
+        };
+        let w2 = RingVector {
+            elements: vec![RingElement::monomial(2); n],
+        };
+
+        prover.feed_witness_commitment(&w1);
+        prover.feed_witness_commitment(&w2);
+
+        while matches!(prover.phase(), StreamingPhase::Sumcheck { .. }) {
+            prover.feed_witness_sumcheck(&w1, 0);
+            prover.feed_witness_sumcheck(&w2, 1);
+        }
+        assert_eq!(prover.phase(), StreamingPhase::Folding);
+
+        prover.feed_witness_folding(&w1, 0);
+        prover.feed_witness_folding(&w2, 1);
+
+        assert_eq!(prover.phase(), StreamingPhase::Complete);
+        let result = prover.finish();
+        assert_eq!(result.witness.len(), n);
+
+        let is_all_zero = result
+            .witness
+            .elements
+            .iter()
+            .all(|e| e.coeffs.iter().all(|&c| c == 0));
+        assert!(
+            !is_all_zero,
+            "folded witness should not be all zeros with monomial inputs"
+        );
+    }
 }
 
 mod streaming_integer_log {
@@ -632,6 +677,110 @@ mod eval_folding_ring_mul {
             result.is_ok(),
             "folding with ring mul eval folding should verify: {:?}",
             result.err()
+        );
+    }
+}
+
+mod folding_soundness {
+    use super::*;
+    use symphony::folding::{self, FoldingStatement};
+    use symphony::rok::range_proof::RangeProofParams;
+
+    fn range_params() -> RangeProofParams {
+        RangeProofParams {
+            lambda_pj: 4,
+            ell_h: D,
+            d_prime: 62,
+            k_g: 2,
+            input_bound: 1024,
+        }
+    }
+
+    fn make_statement(z: &[i64], n_in: usize, ajtai: &AjtaiParams) -> FoldingStatement {
+        let full_ring = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = ajtai.commit(&full_ring);
+        let witness_part = RingVector {
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
+        };
+        FoldingStatement {
+            commitment: c,
+            public_input: z[..n_in].to_vec(),
+            witness: witness_part,
+        }
+    }
+
+    #[test]
+    fn tampered_commitment_rejected() {
+        let ctx = ctx();
+        let (r1cs, z) = common::simple_r1cs();
+        let n_in = r1cs.num_public;
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
+
+        let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
+        let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
+
+        let rp = range_params();
+        let (mut proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+
+        // Tamper with the folded commitment
+        proof.folded_instance.commitment.value.elements[0] = RingElement::from_constant(999);
+
+        let result = folding::verify(&proof, &pis, &r1cs, &ajtai, &rp, &ctx);
+        assert!(
+            result.is_err(),
+            "tampered folded commitment should be rejected"
+        );
+    }
+
+    #[test]
+    fn mismatched_public_input_count_rejected() {
+        let ctx = ctx();
+        let (r1cs, z) = common::simple_r1cs();
+        let n_in = r1cs.num_public;
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
+
+        let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
+
+        let rp = range_params();
+        let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+
+        // Provide only 1 public input instead of 2
+        let wrong_pis = vec![z[..n_in].to_vec()];
+        let result = folding::verify(&proof, &wrong_pis, &r1cs, &ajtai, &rp, &ctx);
+        assert!(
+            result.is_err(),
+            "mismatched public input count should be rejected"
+        );
+    }
+
+    #[test]
+    fn tampered_beta_rejected() {
+        let ctx = ctx();
+        let (r1cs, z) = common::simple_r1cs();
+        let n_in = r1cs.num_public;
+        let ntt = NttContext::new(Q);
+        let ajtai = AjtaiParams::setup(2, r1cs.num_variables, Q, &ntt);
+
+        let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
+        let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
+
+        let rp = range_params();
+        let (mut proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+
+        // Tamper with the beta challenge vector
+        proof.beta[0] = RingElement::from_constant(42);
+
+        let result = folding::verify(&proof, &pis, &r1cs, &ajtai, &rp, &ctx);
+        assert!(
+            result.is_err(),
+            "tampered beta should be rejected by verifier"
         );
     }
 }

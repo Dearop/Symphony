@@ -212,6 +212,150 @@ mod sumcheck_extended {
     }
 }
 
+mod verifier_edge_cases {
+    use super::*;
+    use symphony::sumcheck::prover;
+    use symphony::sumcheck::{self, SumcheckClaim, SumcheckProof, SumcheckRoundMessage};
+
+    #[test]
+    fn verify_single_variable() {
+        let ctx = ctx();
+        // 1-variable, degree-2 sumcheck
+        let s = vec![ExtFieldElement { c0: 5, c1: 2 }];
+        let g = vec![
+            ExtFieldElement { c0: 7, c1: 0 },
+            ExtFieldElement { c0: 11, c1: 0 },
+        ];
+        let eq = prover::build_eq_table(&s, &ctx);
+        let mut claimed_sum = ctx.zero();
+        for i in 0..2 {
+            claimed_sum = ctx.add(&claimed_sum, &ctx.mul(&eq[i], &g[i]));
+        }
+        let challenges = vec![ExtFieldElement { c0: 13, c1: 3 }];
+        let combiner = |f: &[ExtFieldElement], ctx: &ExtFieldContext| ctx.mul(&f[0], &f[1]);
+        let mut tables = vec![eq, g];
+        let proof = prover::prove_bookkeeping(&mut tables, &combiner, 1, 2, &challenges, &ctx);
+
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 2,
+            claimed_sum,
+        };
+        let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
+        assert!(
+            result.is_ok(),
+            "single-variable sumcheck failed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn wrong_challenge_count_rejected() {
+        let ctx = ctx();
+        let proof = SumcheckProof {
+            round_messages: vec![SumcheckRoundMessage {
+                evaluations: vec![ctx.zero(); 3],
+            }],
+        };
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 2,
+            claimed_sum: ctx.zero(),
+        };
+        // Provide 2 challenges for 1-variable proof
+        let challenges = vec![
+            ExtFieldElement { c0: 1, c1: 0 },
+            ExtFieldElement { c0: 2, c1: 0 },
+        ];
+        let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
+        assert!(result.is_err(), "should reject mismatched challenge count");
+    }
+
+    #[test]
+    fn verify_result_contains_evaluation_point() {
+        let ctx = ctx();
+        let s = vec![
+            ExtFieldElement { c0: 3, c1: 0 },
+            ExtFieldElement { c0: 7, c1: 0 },
+        ];
+        let g = vec![
+            ExtFieldElement { c0: 1, c1: 0 },
+            ExtFieldElement { c0: 2, c1: 0 },
+            ExtFieldElement { c0: 3, c1: 0 },
+            ExtFieldElement { c0: 4, c1: 0 },
+        ];
+        let eq = prover::build_eq_table(&s, &ctx);
+        let mut claimed_sum = ctx.zero();
+        for i in 0..4 {
+            claimed_sum = ctx.add(&claimed_sum, &ctx.mul(&eq[i], &g[i]));
+        }
+        let challenges = vec![
+            ExtFieldElement { c0: 11, c1: 2 },
+            ExtFieldElement { c0: 13, c1: 5 },
+        ];
+        let combiner = |f: &[ExtFieldElement], ctx: &ExtFieldContext| ctx.mul(&f[0], &f[1]);
+        let mut tables = vec![eq, g];
+        let proof = prover::prove_bookkeeping(&mut tables, &combiner, 2, 2, &challenges, &ctx);
+
+        let claim = SumcheckClaim {
+            num_vars: 2,
+            degree: 2,
+            claimed_sum,
+        };
+        let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx).unwrap();
+        assert_eq!(
+            result.evaluation_point, challenges,
+            "evaluation point should match challenges"
+        );
+    }
+
+    #[test]
+    fn first_round_sum_mismatch_detected() {
+        let ctx = ctx();
+        // Manually construct a proof where p(0) + p(1) != claimed_sum
+        let proof = SumcheckProof {
+            round_messages: vec![SumcheckRoundMessage {
+                evaluations: vec![
+                    ExtFieldElement { c0: 1, c1: 0 },
+                    ExtFieldElement { c0: 2, c1: 0 },
+                    ExtFieldElement { c0: 5, c1: 0 },
+                ],
+            }],
+        };
+        // claimed_sum = 100, but p(0) + p(1) = 1 + 2 = 3
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 2,
+            claimed_sum: ExtFieldElement { c0: 100, c1: 0 },
+        };
+        let challenges = vec![ExtFieldElement { c0: 7, c1: 0 }];
+        let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
+        assert!(result.is_err(), "should detect first round sum mismatch");
+    }
+
+    #[test]
+    fn zero_claimed_sum_with_zero_evaluations() {
+        let ctx = ctx();
+        let proof = SumcheckProof {
+            round_messages: vec![SumcheckRoundMessage {
+                evaluations: vec![ctx.zero(); 3],
+            }],
+        };
+        let claim = SumcheckClaim {
+            num_vars: 1,
+            degree: 2,
+            claimed_sum: ctx.zero(),
+        };
+        let challenges = vec![ExtFieldElement { c0: 5, c1: 0 }];
+        let result = sumcheck::verifier::verify(&proof, &claim, &challenges, &ctx);
+        assert!(
+            result.is_ok(),
+            "zero sum with zero evaluations should pass: {:?}",
+            result.err()
+        );
+    }
+}
+
 mod eq_polynomial {
     use super::*;
     use symphony::sumcheck::prover::build_eq_table;
