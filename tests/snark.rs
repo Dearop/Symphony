@@ -863,8 +863,8 @@ mod whir_pipeline {
         let statements = vec![s1, s2];
         let mut proof = prover.prove(&statements, &r1cs);
 
-        // Tamper with the CP proof witness hash
-        proof.cp_proof.witness_hash[0] ^= 0xFF;
+        // Tamper with the CP proof's claimed polynomial evaluation
+        proof.cp_proof.z_eval += p3_baby_bear::BabyBear::ONE;
 
         let public_inputs = vec![pi1, pi2];
         assert!(

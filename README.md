@@ -11,7 +11,9 @@ It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Aj
 
 - Core Symphony pipeline is implemented end-to-end in Rust.
 - Standalone CP-SNARK module is implemented (`src/cp_snark/mod.rs`).
-- Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`; concrete backend: `SpartanSnark`).
+- Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`; concrete backends: `SpartanSnark`, `WhirSnark`).
+- **WHIR backend** (feature-gated `whir`): post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from [whir-p3](https://github.com/tcoratger/whir-p3) / Plonky3 over BabyBear. Succinct proofs via Merkle commitment + opening — no witness table in proof.
+- **Spartan backend**: R1CS-to-sumcheck reduction with Pedersen commitments and IPA over Ristretto (curve25519-dalek).
 - Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
 - Integration test suite is split into focused files for maintainability and debugging.
 
@@ -21,7 +23,7 @@ It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Aj
 - **Plausibly post-quantum** — security relies on Module-SIS over cyclotomic rings.
 - **Streaming prover** — memory-efficient, multi-pass prover architecture.
 - **High-arity folding** — folds an arbitrary number of R1CS statements in a single shot (not binary).
-- **Pluggable backend** — the final proof system is abstracted behind a `BackendSnark` trait. Swap in LaBRADOR, WHIR, HyperPlonk+KZG, or your own.
+- **Pluggable backend** — the final proof system is abstracted behind a `BackendSnark` trait. Included: `SpartanSnark` (Ristretto/IPA) and `WhirSnark` (post-quantum, Merkle/Plonky3). Swap in LaBRADOR, HyperPlonk+KZG, or your own.
 
 ## Architecture
 
@@ -49,14 +51,18 @@ symphony/
 │   │   ├── prover.rs      #   Full proof generation orchestration
 │   │   ├── cp_snark.rs    #   Commit-and-prove encoding helpers
 │   │   ├── sumcheck_snark.rs # Sumcheck-backed demo backend (consistency/soundness checks)
-│   │   └── spartan/       #   Spartan backend (R1CS-to-sumcheck + Pedersen + IPA)
-│   │       ├── mod.rs     #     SpartanSnark implementing BackendSnark
-│   │       ├── commitment.rs # Pedersen vector commitment
-│   │       ├── ipa.rs     #     Inner Product Argument
-│   │       ├── r1cs_sumcheck.rs # R1CS-to-sumcheck reduction over Fp
-│   │       ├── scalar_field.rs  # Ristretto scalar field ops
-│   │       ├── serialize.rs     # SpartanContext serialization
-│   │       └── sumcheck.rs      # Sumcheck over Fp
+│   │   ├── spartan/       #   Spartan backend (R1CS-to-sumcheck + Pedersen + IPA)
+│   │   │   ├── mod.rs     #     SpartanSnark implementing BackendSnark
+│   │   │   ├── commitment.rs # Pedersen vector commitment
+│   │   │   ├── ipa.rs     #     Inner Product Argument (Bulletproofs-style)
+│   │   │   ├── r1cs_sumcheck.rs # R1CS-to-sumcheck reduction over Fp
+│   │   │   ├── scalar_field.rs  # Ristretto scalar field ops
+│   │   │   ├── serialize.rs     # SpartanContext serialization
+│   │   │   └── sumcheck.rs      # Sumcheck over Fp
+│   │   └── whir/          #   WHIR backend (feature-gated, post-quantum PCS)
+│   │       ├── mod.rs     #     WhirSnark: sumcheck + WHIR PCS commit/prove/verify
+│   │       ├── field.rs   #     BabyBear field conversions (limb splitting)
+│   │       └── serialize.rs #   WhirContext serialization
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
@@ -76,7 +82,9 @@ symphony/
 ├── benches/
 │   └── folding.rs         # Criterion benchmarks
 └── docs/
-    └── symphony_crate_spec.md  # Full implementation specification
+    ├── symphony_crate_spec.md  # Full implementation specification
+    ├── spartan.md              # Spartan backend documentation
+    └── whir.md                 # WHIR backend documentation
 ```
 
 ## Quick start
@@ -149,12 +157,13 @@ let (prover, verifier) = SymphonyProver::<MySnark>::setup(params);
 ```
 
 Included backends:
-- **`SpartanSnark`** — R1CS-to-sumcheck reduction with Pedersen commitments and IPA over Ristretto (curve25519-dalek). Suitable for integration testing with real cryptographic guarantees.
+- **`WhirSnark`** *(feature = `whir`)* — Post-quantum Merkle-based polynomial commitment using [whir-p3](https://github.com/tcoratger/whir-p3) and Plonky3 over BabyBear (p = 2^31 − 2^27 + 1). Uses Poseidon2 hashing, Keccak-based Merkle trees, and WHIR's polynomial commitment scheme. See [`docs/whir.md`](docs/whir.md).
+- **`SpartanSnark`** — R1CS-to-sumcheck reduction with Pedersen commitments and Bulletproofs-style IPA over Ristretto (curve25519-dalek). See [`docs/spartan.md`](docs/spartan.md).
 - **`SumcheckSnark`** — Demo backend with transcript binding and tamper-detection checks.
 - **`DummySnark`** — Trivial backend for API testing (no soundness).
 
 Possible external backends:
-- **Post-quantum**: LaBRADOR, WHIR (50–100 KB proofs)
+- **Post-quantum**: LaBRADOR (50–100 KB proofs)
 - **Pairing-based**: HyperPlonk + KZG (< 50 KB proofs, not PQ)
 
 ## Standalone CP-SNARK usage
@@ -185,11 +194,23 @@ let proof = cp
 assert!(cp.verify(&[c], b"", &proof));
 ```
 
+## Feature flags
+
+| Flag | What it enables |
+|------|-----------------|
+| `whir` | WHIR backend SNARK (`WhirSnark`), pulls in `whir-p3` + Plonky3 dependencies |
+
+```bash
+cargo build                     # default (Spartan, DummySnark, SumcheckSnark)
+cargo build --features whir     # also builds the WHIR backend
+```
+
 ## Testing
 
 ```bash
-cargo test          # run the full unit/integration/doc test suite
-cargo test -- -q    # quiet output
+cargo test                       # default backends
+cargo test --features whir       # include WHIR backend tests
+cargo test -- -q                 # quiet output
 ```
 
 The test suite covers every protocol layer:
@@ -204,22 +225,28 @@ The test suite covers every protocol layer:
 | RoK protocols (Πhad/Πmon/Πrg/Πgr1cs) | Completeness and soundness across base and extended settings |
 | Folding + streaming + two-layer | Consistency, transcript binding, projection seed derivation, cross-layer checks |
 | SNARK pipeline | End-to-end flow, CP encoding consistency, transcript/public-input binding, tamper checks |
+| WHIR backend | CP roundtrip, output SNARK roundtrip, wrong-instance rejection, proof succinctness (Merkle commitment present), WHIR PCS opening verification |
+| Spartan backend | CP roundtrip, witness-table hash binding, wrong-instance rejection, IPA correctness |
 | Standalone CP-SNARK | `HashCommitment`, `Identity`/`Preimage`/`Transcript`/`FnRelation`, builder API, soundness-oriented checks |
 | Security & soundness | Tamper attacks, replay attacks, splice attacks under SumcheckSnark backend |
 
-## Notes on cryptographic backend
+## Notes on cryptographic backends
 
 - `DummySnark` is intended for API/testing and does not provide production soundness.
 - `SumcheckSnark` provides stronger tamper-detection and transcript binding checks, but is not a production succinct SNARK backend.
-- `SpartanSnark` implements a full R1CS-to-sumcheck reduction with Pedersen vector commitments and an Inner Product Argument (IPA) over the Ristretto group (`curve25519-dalek`). It provides real cryptographic guarantees and is suitable for CP-SNARK integration testing.
+- `SpartanSnark` implements a full R1CS-to-sumcheck reduction with Pedersen vector commitments and a Bulletproofs-style Inner Product Argument (IPA) over the Ristretto group (`curve25519-dalek`). It provides real cryptographic guarantees and is suitable for CP-SNARK integration testing. Not post-quantum.
+- `WhirSnark` *(feature-gated)* implements a post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from whir-p3 over BabyBear. Uses Poseidon2 for hashing and Plonky3's `MerkleTreeMmcs` for commitment. Proofs are succinct (Merkle root + logarithmic opening proof). Plausibly post-quantum since it relies only on hash function security.
 - The architecture is ready for plugging in additional backends via `BackendSnark`.
-- For production deployment, integrate a concrete post-quantum backend and run backend-specific security review/benchmarks.
+- For production deployment, run backend-specific security review/benchmarks.
 
 ## References
 
 - Binyi Chen. *Symphony: Scalable SNARKs in the Random Oracle Model from Lattice-Based High-Arity Folding.* Cryptology ePrint Archive, 2025.
 - Albrecht et al. *LaBRADOR: Compact Proofs for R1CS from Module-SIS.* CRYPTO 2024.
 - Chen & Chiesa. *LatticeFold: A Lattice-Based Folding Scheme and its Applications to Succinct Proof Systems.* 2024.
+- Gur, Hajiabadi, & Mahmoody. *WHIR: Reed-Solomon Proximity Testing with Super-Fast Verification.* 2024.
+- Sethuraman, Lund, & Thaler. *Spartan: Efficient and General-Purpose zkSNARKs Without Trusted Setup.* CRYPTO 2020.
+- Bunz, Bootle, Boneh, Poelstra, Wuille, & Maxwell. *Bulletproofs: Short Proofs for Confidential Transactions and More.* S&P 2018.
 
 ## License
 
