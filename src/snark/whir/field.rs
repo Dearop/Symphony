@@ -59,6 +59,26 @@ pub fn bytes_to_babybear(data: &[u8], q: u64) -> Vec<BabyBear> {
     result
 }
 
+/// Convert bytes to BabyBear elements for R1CS (one element per i64, no limb splitting).
+/// Used by the output SNARK path where R1CS variable values fit in BabyBear.
+/// No sentinel — the z vector has a fixed known size from the R1CS.
+pub fn bytes_to_babybear_direct(data: &[u8]) -> Vec<BabyBear> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i + 8 <= data.len() {
+        let val = i64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+        result.push(BabyBear::from_i64(val));
+        i += 8;
+    }
+    if i < data.len() {
+        let mut buf = [0u8; 8];
+        buf[..data.len() - i].copy_from_slice(&data[i..]);
+        let val = i64::from_le_bytes(buf);
+        result.push(BabyBear::from_i64(val));
+    }
+    result
+}
+
 /// Pad a BabyBear vector to the next power of two.
 pub fn pad_to_power_of_two(v: &mut Vec<BabyBear>) {
     let n = v.len().next_power_of_two();
