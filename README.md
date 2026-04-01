@@ -14,6 +14,7 @@ It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Aj
 - Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`; concrete backends: `SpartanSnark`, `WhirSnark`).
 - **WHIR backend** (feature-gated `whir`): post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from [whir-p3](https://github.com/tcoratger/whir-p3) / Plonky3 over BabyBear. Succinct proofs via Merkle commitment + opening — no witness table in proof.
 - **Spartan backend**: R1CS-to-sumcheck reduction with Pedersen commitments and IPA over Ristretto (curve25519-dalek).
+- **Modular CP pipeline** (`src/modular/`): backend-agnostic, split-backend prover/verifier architecture with `ModularProver`/`ModularVerifier` and `ProofBundle`, decoupling transcript, digest, folding, and backend concerns into reusable components.
 - Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
 - Integration test suite is split into focused files for maintainability and debugging.
 
@@ -32,6 +33,9 @@ symphony/
 ├── src/
 │   ├── ring/              # Rq = Zq[X]/<X^64+1> arithmetic, NTT, extension field K = Fq^2, tensor E = K⊗Rq
 │   ├── commitment/        # Module-Ajtai commitment: commit, strict/relaxed/fine-grained opening
+│   │   ├── mod.rs         #   Core commitment logic
+│   │   ├── params.rs      #   Commitment parameter sets
+│   │   └── opening.rs     #   Strict/relaxed/fine-grained opening modes
 │   ├── decomposition/     # Gadget decomposition and monomial embedding (exp map, table polynomial)
 │   ├── sumcheck/          # Interactive sumcheck prover + verifier over K
 │   ├── rok/               # Reductions of Knowledge
@@ -43,7 +47,8 @@ symphony/
 │   │   ├── mod.rs         #   Πfold: fold ℓ_np statements into one
 │   │   ├── streaming.rs   #   Memory-efficient streaming prover
 │   │   ├── two_layer.rs   #   Two-layer extension for very large statement counts
-│   │   └── challenge.rs   #   Folding challenge set S ⊂ Rq
+│   │   ├── challenge.rs   #   Folding challenge set S ⊂ Rq
+│   │   └── digest.rs      #   Fold-root digest computation
 │   ├── r1cs/              # Sparse R1CS matrices, generalized committed R1CS, Kronecker expansion
 │   ├── fiat_shamir/       # SHA-256 transcript + HashCommitment FS commitment scheme
 │   ├── snark/             # Top-level SNARK pipeline
@@ -64,6 +69,15 @@ symphony/
 │   │       ├── field.rs   #     BabyBear field conversions (limb splitting)
 │   │       └── serialize.rs #   WhirContext serialization
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
+│   ├── modular/           # Reusable modular CP pipeline components
+│   │   ├── transcript_core/   # Canonical transcript schema/codec and challenge derivation
+│   │   ├── digest_core/       # Digest/root helpers for transcript and fold bindings
+│   │   ├── folding_core/      # Folding-domain traits and adapters
+│   │   ├── cp_relation_core/  # CP public/witness model and relation checks
+│   │   ├── cp_backend_api/    # CP backend trait abstraction
+│   │   ├── output_backend_api/# Output backend trait abstraction
+│   │   ├── proof_orchestrator/# End-to-end split-backend prover/verifier (ModularProver/Verifier)
+│   │   └── adapter_symphony/  # Compatibility mapping with legacy SymphonyProof
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
 ├── tests/
@@ -74,17 +88,24 @@ symphony/
 │   ├── sumcheck.rs        # Sumcheck + eq polynomial tests
 │   ├── rok.rs             # Πhad / Πmon / Πrg / Πgr1cs tests
 │   ├── r1cs.rs            # R1CS and conversion tests
+│   ├── generalized_r1cs.rs # Generalized R1CS tests
 │   ├── folding.rs         # Folding, streaming, and two-layer tests
 │   ├── snark.rs           # Full Symphony pipeline tests
 │   ├── cp_snark.rs        # Standalone CP-SNARK tests
-│   ├── security_soundness.rs # Tamper/replay/splice attack detection tests
+│   ├── hash_commitment.rs # Hash-based commitment verification tests
+│   ├── modular_cp_pipeline.rs # Modular pipeline component tests
+│   ├── security_soundness.rs  # Tamper/replay/splice attack detection tests
 │   └── common/mod.rs      # Shared integration test helpers
 ├── benches/
-│   └── folding.rs         # Criterion benchmarks
+│   ├── folding.rs         # Folding scaling benchmarks with heap tracking and CSV reporting
+│   └── cp_succinct.rs     # CP-SNARK and output proof succinctness benchmarks
 └── docs/
-    ├── symphony_crate_spec.md  # Full implementation specification
-    ├── spartan.md              # Spartan backend documentation
-    └── whir.md                 # WHIR backend documentation
+    ├── symphony_crate_spec.md    # Full implementation specification
+    ├── spartan.md                # Spartan backend documentation
+    ├── whir.md                   # WHIR backend documentation
+    ├── linear_verifier_spec.md   # Linear verifier specification
+    ├── lin_verif_design.md       # Linear verifier design notes
+    └── modular_cp_pipeline_plan.md # Modular pipeline planning document
 ```
 
 ## Quick start
@@ -100,7 +121,7 @@ use symphony::ring::{RingElement, RingVector};
 let params = SymphonyParams {
     q: 257, d: 64, kappa: 2, ell_np: 2, ell_h: 64,
     lambda_pj: 4, n_bar: 4, m: 4, b: 16, k_cs: 1,
-    ntt: None,
+    n_in: 1, ntt: None,
 };
 
 // 2. Setup prover and verifier
@@ -194,6 +215,24 @@ let proof = cp
 assert!(cp.verify(&[c], b"", &proof));
 ```
 
+## Modular CP pipeline
+
+The `modular` module provides a backend-agnostic, split-backend architecture that decouples the CP-SNARK and output SNARK into independently swappable components:
+
+```rust
+use symphony::{ModularProver, ModularVerifier, ProofBundle};
+```
+
+Key components:
+- **`ModularProver` / `ModularVerifier`** — end-to-end prover and verifier that orchestrate the full pipeline using separate CP and output backends.
+- **`ProofBundle`** — unified proof container produced by the modular pipeline.
+- **`transcript_core`** — canonical transcript schema, codec, and challenge derivation.
+- **`digest_core`** — digest and root helpers for transcript and fold bindings.
+- **`folding_core`** — folding-domain traits and adapters.
+- **`cp_relation_core`** — CP public/witness model and relation checks.
+- **`cp_backend_api` / `output_backend_api`** — trait abstractions for pluggable CP and output backends.
+- **`adapter_symphony`** — compatibility mapping with the legacy `SymphonyProof` format.
+
 ## Feature flags
 
 | Flag | What it enables |
@@ -221,13 +260,16 @@ The test suite covers every protocol layer:
 | Commitment | Roundtrip, wrong witness rejection, norm bounds, strict/relaxed/fine-grained openings, homomorphic properties |
 | Decomposition | Recompose correctness, bounded digits, monomial embedding, overflow fix coverage |
 | Fiat-Shamir | Determinism, domain separation, bias/range checks, rejection-sampled challenges |
+| Hash commitment | Hash-based commitment scheme verification |
 | Sumcheck + eq polynomial | Valid/invalid claims, degree/round checks, table/direct consistency, partition of unity |
 | RoK protocols (Πhad/Πmon/Πrg/Πgr1cs) | Completeness and soundness across base and extended settings |
+| R1CS + generalized R1CS | Sparse matrix operations, conversion, generalized committed R1CS |
 | Folding + streaming + two-layer | Consistency, transcript binding, projection seed derivation, cross-layer checks |
 | SNARK pipeline | End-to-end flow, CP encoding consistency, transcript/public-input binding, tamper checks |
 | WHIR backend | CP roundtrip, output SNARK roundtrip, wrong-instance rejection, proof succinctness (Merkle commitment present), WHIR PCS opening verification |
 | Spartan backend | CP roundtrip, witness-table hash binding, wrong-instance rejection, IPA correctness |
 | Standalone CP-SNARK | `HashCommitment`, `Identity`/`Preimage`/`Transcript`/`FnRelation`, builder API, soundness-oriented checks |
+| Modular CP pipeline | Modular prover/verifier orchestration, split-backend component tests |
 | Security & soundness | Tamper attacks, replay attacks, splice attacks under SumcheckSnark backend |
 
 ## Notes on cryptographic backends
