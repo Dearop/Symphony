@@ -63,7 +63,7 @@ mod folding {
         let stmts = vec![s1, s2];
 
         let rp = range_params();
-        let (proof, folded_w) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, folded_w, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         assert_eq!(proof.gr1cs_proofs.len(), 2);
         assert_eq!(proof.beta.len(), 2);
@@ -87,7 +87,7 @@ mod folding {
         let stmts = vec![s1, s2];
 
         let rp = range_params();
-        let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         // Folded public input[i] = Σ β[ℓ] · cf^{-1}(x_in[i])
         for (i, &z_i) in z.iter().enumerate().take(n_in) {
@@ -177,7 +177,7 @@ mod folding_extended {
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
 
         let rp = range_params();
-        let (proof, folded_w) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, folded_w, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         assert_eq!(proof.gr1cs_proofs.len(), 3);
         assert_eq!(proof.beta.len(), 3);
@@ -202,7 +202,7 @@ mod folding_extended {
 
         let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
         let rp = range_params();
-        let (_, folded_w) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (_, folded_w, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         assert_eq!(folded_w.witness.len(), n_w);
     }
@@ -218,7 +218,7 @@ mod folding_extended {
 
         let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
         let rp = range_params();
-        let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         assert_eq!(proof.folded_instance.commitment.value.len(), kappa);
     }
@@ -478,8 +478,8 @@ mod projection_seed_fix {
         let pis2: Vec<Vec<i64>> = stmts2.iter().map(|s| s.public_input.clone()).collect();
 
         let rp = range_params();
-        let (proof1, _) = folding::prove(&stmts1, &r1cs, &ajtai, &rp, &ctx);
-        let (proof2, _) = folding::prove(&stmts2, &r1cs, &ajtai, &rp, &ctx);
+        let (proof1, _, _) = folding::prove(&stmts1, &r1cs, &ajtai, &rp, &ctx);
+        let (proof2, _, _) = folding::prove(&stmts2, &r1cs, &ajtai, &rp, &ctx);
 
         // The projection seed is transcript-derived, so different commitments
         // should lead to different GR1CS proofs
@@ -561,8 +561,8 @@ mod transcript_binding_fix {
         let z2 = vec![1i64, 4, 16];
         let stmts_b = vec![mk(&z2), mk(&z2)];
 
-        let (proof_a, _) = folding::prove(&stmts_a, &r1cs, &ajtai, &rp, &ctx);
-        let (proof_b, _) = folding::prove(&stmts_b, &r1cs, &ajtai, &rp, &ctx);
+        let (proof_a, _, _) = folding::prove(&stmts_a, &r1cs, &ajtai, &rp, &ctx);
+        let (proof_b, _, _) = folding::prove(&stmts_b, &r1cs, &ajtai, &rp, &ctx);
 
         // Because GR1CS proofs are now bound to the transcript before β is
         // derived, different proofs should yield different β vectors.
@@ -620,7 +620,7 @@ mod eval_folding_ring_mul {
 
         let stmts = vec![mk(&z), mk(&z)];
         let rp = range_params();
-        let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         assert!(
             !proof.folded_instance.evaluation_values.is_empty(),
@@ -669,7 +669,7 @@ mod eval_folding_ring_mul {
         let stmts = vec![mk(&z), mk(&z)];
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
         let rp = range_params();
-        let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         // The verifier should still accept with ring-mul-based folding
         let result = folding::verify(&proof, &pis, &r1cs, &ajtai, &rp, &ctx);
@@ -726,7 +726,7 @@ mod folding_soundness {
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
 
         let rp = range_params();
-        let (mut proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (mut proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         // Tamper with the folded commitment
         proof.folded_instance.commitment.value.elements[0] = RingElement::from_constant(999);
@@ -749,7 +749,7 @@ mod folding_soundness {
         let stmts: Vec<_> = (0..2).map(|_| make_statement(&z, n_in, &ajtai)).collect();
 
         let rp = range_params();
-        let (proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         // Provide only 1 public input instead of 2
         let wrong_pis = vec![z[..n_in].to_vec()];
@@ -772,7 +772,7 @@ mod folding_soundness {
         let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.public_input.clone()).collect();
 
         let rp = range_params();
-        let (mut proof, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
+        let (mut proof, _, _) = folding::prove(&stmts, &r1cs, &ajtai, &rp, &ctx);
 
         // Tamper with the beta challenge vector
         proof.beta[0] = RingElement::from_constant(42);

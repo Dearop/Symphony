@@ -760,6 +760,7 @@ mod params_validation {
             m: 1 << 16,
             b: 16,
             k_cs: 16,
+            n_in: 1,
             ntt: SymphonyParams::try_ntt(257, D),
         };
         let result = std::panic::catch_unwind(|| {
@@ -781,6 +782,7 @@ mod params_validation {
             m: 1 << 16,
             b: 16,
             k_cs: 16,
+            n_in: 1,
             ntt: SymphonyParams::try_ntt(128, D),
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
@@ -800,6 +802,7 @@ mod params_validation {
             m: 1 << 16,
             b: 16,
             k_cs: 16,
+            n_in: 1,
             ntt: SymphonyParams::try_ntt(127, D),
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
@@ -823,6 +826,7 @@ mod params_validation {
             m: 1 << 16,
             b: 1,
             k_cs: 16,
+            n_in: 1,
             ntt: SymphonyParams::try_ntt(p.q, D),
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
@@ -843,6 +847,7 @@ mod params_validation {
             m: 1 << 16,
             b: 16,
             k_cs: 0,
+            n_in: 1,
             ntt: SymphonyParams::try_ntt(p.q, D),
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));

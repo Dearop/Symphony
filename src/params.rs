@@ -31,6 +31,8 @@ pub struct SymphonyParams {
     pub b: usize,
     /// Gadget decomposition factor (default 16).
     pub k_cs: usize,
+    /// Number of public input variables per R1CS instance (default 1).
+    pub n_in: usize,
     /// Precomputed NTT context for O(d log d) ring multiplication.
     /// `None` only for deliberately invalid parameter sets in tests.
     pub ntt: Option<NttContext>,
@@ -111,6 +113,7 @@ impl SymphonyParams {
             m: 1 << 16,
             b: 16,
             k_cs: 16,
+            n_in: 1,
             ntt: Self::try_ntt(q, D),
         };
         params.validate();

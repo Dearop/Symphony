@@ -10,6 +10,7 @@
 //!   Sample β ∈ S^{ℓ_np}, fold commitments, inputs, evaluations, witnesses
 
 pub mod challenge;
+pub mod digest;
 pub mod streaming;
 pub mod two_layer;
 
@@ -141,13 +142,15 @@ fn derive_shared_challenges(
 /// Run the full Πfold prover.
 ///
 /// Folds ℓ_np statements into one using shared randomness.
+/// Returns `(proof, folded_witness, shared_challenges)` so the CP-SNARK
+/// prover can encode Phase B Hadamard witness data.
 pub fn prove(
     statements: &[FoldingStatement],
     r1cs: &R1CSMatrices,
     ajtai: &AjtaiParams,
     range_params: &RangeProofParams,
     ctx: &ExtFieldContext,
-) -> (FoldingProof, FoldedWitness) {
+) -> (FoldingProof, FoldedWitness, GR1CSChallenges) {
     let ell_np = statements.len();
     let q = ctx.q;
 
@@ -357,7 +360,7 @@ pub fn prove(
         batched_relation,
     };
 
-    (proof, folded_witness)
+    (proof, folded_witness, shared_challenges)
 }
 
 /// Run the Πfold verifier.

@@ -17,6 +17,10 @@ use symphony::commitment::{AjtaiParams, Commitment};
 use symphony::fiat_shamir::hash_commitment::HashCommitment;
 use symphony::fiat_shamir::transcript::Transcript;
 use symphony::fiat_shamir::FSCommitment;
+use symphony::folding::digest::{
+    digest_challenges, digest_fold_inputs, digest_fs_commitments, digest_transcript_seed, Digest32,
+    FoldInput,
+};
 use symphony::folding::streaming::{StreamingPhase, StreamingProver};
 use symphony::folding::{FoldedInstance, FoldingStatement};
 use symphony::params::{SymphonyParams, D};
@@ -31,7 +35,9 @@ use symphony::snark::{
 };
 use symphony::sumcheck::prover;
 use symphony::sumcheck::{self, SumcheckClaim};
-use symphony::SumcheckSnark;
+use symphony::{SpartanProof, SpartanSnark, SumcheckSnark};
+#[cfg(feature = "whir")]
+use symphony::{WhirProof, WhirSnark};
 
 const SCALING_KS: &[usize] = &[2, 4, 8, 16, 32];
 const SCALING_REPORT_PATH: &str = "target/criterion/scaling/sumcheck_scaling.csv";
@@ -230,6 +236,7 @@ fn bench_params(ell_np: usize) -> SymphonyParams {
         m: 4,
         b: 16,
         k_cs: 1,
+        n_in: 1,
         ntt: SymphonyParams::try_ntt(257, D),
     }
 }
@@ -326,9 +333,9 @@ struct PipelineFixture<S: BackendSnark> {
     public_inputs: Vec<Vec<i64>>,
 }
 
-fn build_pipeline_fixture_sumcheck(k: usize) -> PipelineFixture<SumcheckSnark> {
+fn build_pipeline_fixture<S: BackendSnark>(k: usize) -> PipelineFixture<S> {
     let params = bench_params(k);
-    let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
+    let (prover, verifier) = SymphonyProver::<S>::setup(params);
 
     let (r1cs, z) = multi_r1cs();
     let n_in = r1cs.num_public;
@@ -348,11 +355,20 @@ fn build_pipeline_fixture_sumcheck(k: usize) -> PipelineFixture<SumcheckSnark> {
     }
 }
 
+fn build_pipeline_fixture_sumcheck(k: usize) -> PipelineFixture<SumcheckSnark> {
+    build_pipeline_fixture::<SumcheckSnark>(k)
+}
+
 #[derive(Clone)]
 struct CpPipelineMaterial {
     fs_commitments: Vec<Vec<u8>>,
     fs_openings: Vec<Vec<u8>>,
+    fs_messages: Vec<Vec<u8>>,
     folding_transcript_witness: Vec<u8>,
+    fold_inputs: Vec<FoldInput>,
+    fold_root: Digest32,
+    fs_root: Digest32,
+    transcript_seed_digest: Digest32,
     folded_instance: FoldedInstance,
     public_inputs: Vec<Vec<i64>>,
     r1cs_num_constraints: usize,
@@ -360,7 +376,7 @@ struct CpPipelineMaterial {
     r1cs_num_public: usize,
 }
 
-fn build_cp_pipeline_material(fixture: &PipelineFixture<SumcheckSnark>) -> CpPipelineMaterial {
+fn build_cp_pipeline_material<S: BackendSnark>(fixture: &PipelineFixture<S>) -> CpPipelineMaterial {
     let folding_statements: Vec<FoldingStatement> = fixture
         .statements
         .iter()
@@ -373,7 +389,7 @@ fn build_cp_pipeline_material(fixture: &PipelineFixture<SumcheckSnark>) -> CpPip
 
     let rp = range_params();
     let ext_ctx = ExtFieldContext::new(fixture.prover.params.q);
-    let (folding_proof, _) = symphony::folding::prove(
+    let (folding_proof, _, _) = symphony::folding::prove(
         &folding_statements,
         &fixture.r1cs,
         &fixture.prover.ajtai,
@@ -398,10 +414,39 @@ fn build_cp_pipeline_material(fixture: &PipelineFixture<SumcheckSnark>) -> CpPip
     let folding_transcript_witness =
         pipeline_cp_snark::encode_folding_transcript_witness(&folding_proof, &fs_messages);
 
+    // Mirror prover logic for compressed CP witness: include fold inputs and fold_root.
+    let fold_inputs: Vec<FoldInput> = fixture
+        .statements
+        .iter()
+        .enumerate()
+        .map(|(i, (c, pi, _))| FoldInput {
+            commitment_bytes: pipeline_cp_snark::encode_commitment_to_bytes(c),
+            public_input: pi.clone(),
+            eval_values_bytes: if i < folding_proof.gr1cs_proofs.len() {
+                pipeline_cp_snark::encode_gr1cs_round_message(&folding_proof.gr1cs_proofs[i])
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+    let fold_root = digest_fold_inputs(&fold_inputs);
+    let fs_root = digest_fs_commitments(&fs_commitments);
+    let transcript_seed_digest = digest_transcript_seed(
+        &fixture.public_inputs,
+        fixture.r1cs.num_constraints,
+        fixture.r1cs.num_variables,
+        fixture.r1cs.num_public,
+    );
+
     CpPipelineMaterial {
         fs_commitments,
         fs_openings,
+        fs_messages,
         folding_transcript_witness,
+        fold_inputs,
+        fold_root,
+        fs_root,
+        transcript_seed_digest,
         folded_instance: folding_proof.folded_instance,
         public_inputs: fixture.public_inputs.clone(),
         r1cs_num_constraints: fixture.r1cs.num_constraints,
@@ -410,9 +455,7 @@ fn build_cp_pipeline_material(fixture: &PipelineFixture<SumcheckSnark>) -> CpPip
     }
 }
 
-fn encode_cp_relation_io(material: &CpPipelineMaterial) -> (Vec<u8>, Vec<u8>) {
-    let mut transcript = Transcript::new(b"symphony-v1");
-
+fn bind_cp_public_transcript(material: &CpPipelineMaterial, transcript: &mut Transcript) {
     for pi in &material.public_inputs {
         let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
         transcript.append_bytes(b"public-input", &bytes);
@@ -434,6 +477,38 @@ fn encode_cp_relation_io(material: &CpPipelineMaterial) -> (Vec<u8>, Vec<u8>) {
     for fs_comm in &material.fs_commitments {
         transcript.append_bytes(b"fs-commitment", fs_comm);
     }
+}
+
+fn derive_cp_challenges(transcript: &mut Transcript, num_rounds: usize) -> Vec<Vec<u8>> {
+    let mut derived_challenges = Vec::with_capacity(num_rounds);
+    for i in 0..num_rounds {
+        let mut challenge = vec![0u8; 32];
+        let label = format!("challenge-{i}");
+        transcript.challenge_bytes(label.as_bytes(), &mut challenge);
+        derived_challenges.push(challenge);
+    }
+    derived_challenges
+}
+
+fn encode_cp_instance_compressed(material: &CpPipelineMaterial) -> Vec<u8> {
+    let mut transcript = Transcript::new(b"symphony-v1");
+    bind_cp_public_transcript(material, &mut transcript);
+    let derived_challenges = derive_cp_challenges(&mut transcript, material.fs_commitments.len());
+    let challenge_digest = digest_challenges(&derived_challenges);
+
+    pipeline_cp_snark::encode_cp_instance_compressed(
+        &material.fold_root,
+        &material.folded_instance,
+        &challenge_digest,
+        &material.fs_root,
+        &material.transcript_seed_digest,
+    )
+}
+
+/// Legacy (linear) CP relation I/O encoding.
+fn encode_cp_relation_io(material: &CpPipelineMaterial) -> (Vec<u8>, Vec<u8>) {
+    let mut transcript = Transcript::new(b"symphony-v1");
+    bind_cp_public_transcript(material, &mut transcript);
 
     let cp_instance = pipeline_cp_snark::encode_cp_instance(
         &material.fs_commitments,
@@ -447,6 +522,49 @@ fn encode_cp_relation_io(material: &CpPipelineMaterial) -> (Vec<u8>, Vec<u8>) {
     );
 
     (cp_instance, cp_witness)
+}
+
+/// Compressed (sublinear) CP relation I/O encoding, mirroring prover logic.
+fn encode_cp_relation_io_compressed(material: &CpPipelineMaterial) -> (Vec<u8>, Vec<u8>) {
+    let cp_instance = encode_cp_instance_compressed(material);
+    let cp_witness = pipeline_cp_snark::encode_cp_witness_compressed(
+        &material.fs_openings,
+        &material.folding_transcript_witness,
+        &material.fold_inputs,
+        &material.fold_root,
+        &material.fs_commitments,
+        &material.fs_messages,
+        &material.fs_root,
+    );
+    (cp_instance, cp_witness)
+}
+
+fn spartan_proof_wire_bytes(proof: &SpartanProof) -> usize {
+    let mut size = 32usize;
+    for round in &proof.sumcheck_proof.round_polys {
+        size += round.len() * 32;
+    }
+    size += 3 * 32;
+    for ipa in &proof.ipa_proofs {
+        size += ipa.lr_pairs.len() * 64;
+        size += 32 + 32;
+    }
+    size += 32;
+    size += 8;
+    size
+}
+
+#[cfg(feature = "whir")]
+fn whir_proof_wire_bytes(proof: &WhirProof) -> usize {
+    let mut size = 0usize;
+    size += proof.sumcheck_rounds_3.len() * 12;
+    size += proof.sumcheck_rounds_4.len() * 16;
+    size += 12;
+    size += 4;
+    size += 8;
+    size += 1;
+    size += 32 + proof.whir_pcs_proof.rounds.len() * 256;
+    size
 }
 
 // -----------------------------------------------------------------------------
@@ -824,6 +942,219 @@ fn bench_scaling_cp_snark_inside_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
+#[derive(Clone, Copy)]
+struct CpBackendMetrics {
+    prove_ms: f64,
+    verify_ms: f64,
+    proof_bytes: usize,
+}
+
+fn run_cp_backend_once<S: BackendSnark, F: Fn(&S::Proof) -> usize>(
+    pk: &S::ProvingKey,
+    vk: &S::VerifyingKey,
+    instance: &[u8],
+    witness: &[u8],
+    proof_size_fn: F,
+) -> CpBackendMetrics {
+    let prove_start = Instant::now();
+    let proof = S::prove(pk, instance, witness);
+    let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let verify_start = Instant::now();
+    let ok = S::verify(vk, instance, &proof);
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
+    assert!(ok, "CP verify must succeed in backend comparison bench");
+
+    CpBackendMetrics {
+        prove_ms,
+        verify_ms,
+        proof_bytes: proof_size_fn(&proof),
+    }
+}
+
+fn bench_cp_backend_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scaling/cp_backend_comparison");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(10));
+
+    for &k in SCALING_KS {
+        // Build one CP material instance and compare backends on the exact same data.
+        let base_fixture = build_pipeline_fixture_sumcheck(k);
+        let material = build_cp_pipeline_material(&base_fixture);
+        let (legacy_instance, legacy_witness) = encode_cp_relation_io(&material);
+        let (compressed_instance, compressed_witness) = encode_cp_relation_io_compressed(&material);
+
+        let (spartan_prover, spartan_verifier) = SymphonyProver::<SpartanSnark>::setup(bench_params(k));
+
+        let linear_metrics = run_cp_backend_once::<SpartanSnark, _>(
+            &spartan_prover.cp_pk,
+            &spartan_verifier.cp_vk,
+            &legacy_instance,
+            &legacy_witness,
+            spartan_proof_wire_bytes,
+        );
+        let sublinear_metrics = run_cp_backend_once::<SpartanSnark, _>(
+            &spartan_prover.cp_pk,
+            &spartan_verifier.cp_vk,
+            &compressed_instance,
+            &compressed_witness,
+            spartan_proof_wire_bytes,
+        );
+
+        let linear_proof = SpartanSnark::prove(
+            &spartan_prover.cp_pk,
+            &legacy_instance,
+            &legacy_witness,
+        );
+        assert!(SpartanSnark::verify(
+            &spartan_verifier.cp_vk,
+            &legacy_instance,
+            &linear_proof
+        ));
+
+        let sublinear_proof = SpartanSnark::prove(
+            &spartan_prover.cp_pk,
+            &compressed_instance,
+            &compressed_witness,
+        );
+        assert!(SpartanSnark::verify(
+            &spartan_verifier.cp_vk,
+            &compressed_instance,
+            &sublinear_proof
+        ));
+
+        #[cfg(feature = "whir")]
+        let whir_metrics = {
+            let (whir_prover, whir_verifier) = SymphonyProver::<WhirSnark>::setup(bench_params(k));
+            let metrics = run_cp_backend_once::<WhirSnark, _>(
+                &whir_prover.cp_pk,
+                &whir_verifier.cp_vk,
+                &compressed_instance,
+                &compressed_witness,
+                whir_proof_wire_bytes,
+            );
+
+            let whir_proof = WhirSnark::prove(
+                &whir_prover.cp_pk,
+                &compressed_instance,
+                &compressed_witness,
+            );
+            assert!(WhirSnark::verify(
+                &whir_verifier.cp_vk,
+                &compressed_instance,
+                &whir_proof
+            ));
+
+            group.bench_function(BenchmarkId::new("whir_sublinear_prove", k), |bencher| {
+                bencher.iter(|| {
+                    let p = WhirSnark::prove(
+                        black_box(&whir_prover.cp_pk),
+                        black_box(&compressed_instance),
+                        black_box(&compressed_witness),
+                    );
+                    black_box(p);
+                });
+            });
+            group.bench_function(BenchmarkId::new("whir_sublinear_verify", k), |bencher| {
+                bencher.iter(|| {
+                    let ok = WhirSnark::verify(
+                        black_box(&whir_verifier.cp_vk),
+                        black_box(&compressed_instance),
+                        black_box(&whir_proof),
+                    );
+                    black_box(ok);
+                });
+            });
+
+            metrics
+        };
+
+        eprintln!("[cp_backend_compare] k={k}");
+        eprintln!(
+            "spartan_linear: prove_ms={:.3} verify_ms={:.3} proof_bytes={}",
+            linear_metrics.prove_ms, linear_metrics.verify_ms, linear_metrics.proof_bytes
+        );
+        eprintln!(
+            "spartan_sublinear: prove_ms={:.3} verify_ms={:.3} proof_bytes={}",
+            sublinear_metrics.prove_ms, sublinear_metrics.verify_ms, sublinear_metrics.proof_bytes
+        );
+        #[cfg(feature = "whir")]
+        eprintln!(
+            "whir_sublinear: prove_ms={:.3} verify_ms={:.3} proof_bytes={}",
+            whir_metrics.prove_ms, whir_metrics.verify_ms, whir_metrics.proof_bytes
+        );
+        #[cfg(not(feature = "whir"))]
+        eprintln!("whir_sublinear: N/A (requires --features whir)");
+
+        let linear_ratio_prove = linear_metrics.prove_ms / sublinear_metrics.prove_ms;
+        let linear_ratio_verify = linear_metrics.verify_ms / sublinear_metrics.verify_ms;
+        let linear_ratio_size =
+            linear_metrics.proof_bytes as f64 / sublinear_metrics.proof_bytes as f64;
+
+        #[cfg(feature = "whir")]
+        eprintln!(
+            "ratios_vs_spartan_sublinear: linear(prove={:.2}x verify={:.2}x size={:.2}x) whir(prove={:.2}x verify={:.2}x size={:.2}x)",
+            linear_ratio_prove,
+            linear_ratio_verify,
+            linear_ratio_size,
+            whir_metrics.prove_ms / sublinear_metrics.prove_ms,
+            whir_metrics.verify_ms / sublinear_metrics.verify_ms,
+            whir_metrics.proof_bytes as f64 / sublinear_metrics.proof_bytes as f64,
+        );
+        #[cfg(not(feature = "whir"))]
+        eprintln!(
+            "ratios_vs_spartan_sublinear: linear(prove={:.2}x verify={:.2}x size={:.2}x) whir(N/A)",
+            linear_ratio_prove, linear_ratio_verify, linear_ratio_size
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+
+        group.bench_function(BenchmarkId::new("spartan_linear_prove", k), |bencher| {
+            bencher.iter(|| {
+                let p = SpartanSnark::prove(
+                    black_box(&spartan_prover.cp_pk),
+                    black_box(&legacy_instance),
+                    black_box(&legacy_witness),
+                );
+                black_box(p);
+            });
+        });
+        group.bench_function(BenchmarkId::new("spartan_linear_verify", k), |bencher| {
+            bencher.iter(|| {
+                let ok = SpartanSnark::verify(
+                    black_box(&spartan_verifier.cp_vk),
+                    black_box(&legacy_instance),
+                    black_box(&linear_proof),
+                );
+                black_box(ok);
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("spartan_sublinear_prove", k), |bencher| {
+            bencher.iter(|| {
+                let p = SpartanSnark::prove(
+                    black_box(&spartan_prover.cp_pk),
+                    black_box(&compressed_instance),
+                    black_box(&compressed_witness),
+                );
+                black_box(p);
+            });
+        });
+        group.bench_function(BenchmarkId::new("spartan_sublinear_verify", k), |bencher| {
+            bencher.iter(|| {
+                let ok = SpartanSnark::verify(
+                    black_box(&spartan_verifier.cp_vk),
+                    black_box(&compressed_instance),
+                    black_box(&sublinear_proof),
+                );
+                black_box(ok);
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_scaling_streaming_passes_memory(c: &mut Criterion) {
     let mut group = c.benchmark_group("scaling/streaming_passes_and_memory");
     group.sample_size(10);
@@ -962,12 +1293,115 @@ fn bench_backend_micro<S: BackendSnark>(
     group.finish();
 }
 
+// -----------------------------------------------------------------------------
+// Sublinear verifier benchmarks: CP instance size and verify time vs k
+// -----------------------------------------------------------------------------
+
+fn bench_scaling_cp_instance_size(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scaling/cp_instance_size_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(6));
+
+    for &k in SCALING_KS {
+        let fixture = build_pipeline_fixture_sumcheck(k);
+        let material = build_cp_pipeline_material(&fixture);
+
+        // --- Legacy (linear) encoding size ---
+        let (legacy_instance, _) = encode_cp_relation_io(&material);
+        let legacy_size = legacy_instance.len();
+
+        // --- Compressed encoding size ---
+        let compressed_instance = encode_cp_instance_compressed(&material);
+        let compressed_size = compressed_instance.len();
+
+        // Record sizes to scaling CSV
+        let size_stats = ResourceStats {
+            elapsed: Duration::ZERO,
+            peak_heap_bytes: legacy_size as u64,
+            alloc_calls: compressed_size,
+            allocated_bytes: 0,
+        };
+        record_scaling_row(
+            "cp_instance_size",
+            k,
+            &size_stats,
+            0,
+            &format!(
+                "legacy_bytes={legacy_size} compressed_bytes={compressed_size} ratio={:.2}",
+                legacy_size as f64 / compressed_size as f64
+            ),
+        );
+
+        eprintln!(
+            "[cp_instance_size] k={k} legacy={legacy_size} compressed={compressed_size} ratio={:.2}x",
+            legacy_size as f64 / compressed_size as f64
+        );
+
+        // Criterion benchmark: encode compressed instance
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("encode_compressed", k), |bencher| {
+            bencher.iter(|| {
+                black_box(encode_cp_instance_compressed(black_box(&material)));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_scaling_verifier_compressed_vs_k(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scaling/verifier_compressed_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(12));
+
+    for &k in SCALING_KS {
+        let fixture = build_pipeline_fixture_sumcheck(k);
+        let proof = fixture.prover.prove(&fixture.statements, &fixture.r1cs);
+        assert!(fixture
+            .verifier
+            .verify(&fixture.public_inputs, &proof, &fixture.r1cs));
+
+        // Measure verification time with the compressed CP instance path
+        let (_, diag_verify) = measure_resources(|| {
+            let ok = fixture
+                .verifier
+                .verify(&fixture.public_inputs, &proof, &fixture.r1cs);
+            black_box(ok)
+        });
+        record_scaling_row(
+            "pipeline_verify_compressed",
+            k,
+            &diag_verify,
+            2,
+            "compressed_cp_instance",
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("verify", k), |bencher| {
+            bencher.iter(|| {
+                let ok = fixture.verifier.verify(
+                    black_box(&fixture.public_inputs),
+                    black_box(&proof),
+                    black_box(&fixture.r1cs),
+                );
+                black_box(ok);
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_backend_micro_dummy(c: &mut Criterion) {
     bench_backend_micro::<DummySnark>(c, "dummy", &[512, 2048], 30, Duration::from_secs(6));
 }
 
 fn bench_backend_micro_sumcheck(c: &mut Criterion) {
     bench_backend_micro::<SumcheckSnark>(c, "sumcheck", &[512, 2048], 10, Duration::from_secs(20));
+}
+
+fn bench_backend_micro_spartan(c: &mut Criterion) {
+    bench_backend_micro::<SpartanSnark>(c, "spartan", &[512, 2048], 10, Duration::from_secs(20));
 }
 
 // -----------------------------------------------------------------------------
@@ -984,8 +1418,12 @@ criterion_group!(
     bench_scaling_folding_prove_k_statements,
     bench_scaling_pipeline_prove_verify_k,
     bench_scaling_cp_snark_inside_pipeline,
+    bench_cp_backend_comparison,
+    bench_scaling_cp_instance_size,
+    bench_scaling_verifier_compressed_vs_k,
     bench_scaling_streaming_passes_memory,
     bench_backend_micro_dummy,
     bench_backend_micro_sumcheck,
+    bench_backend_micro_spartan,
 );
 criterion_main!(benches);

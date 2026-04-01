@@ -1,5 +1,10 @@
 //! Spartan backend SNARK: R1CS + sumcheck + Pedersen/IPA over Ristretto.
 //!
+//! **⚠ Classical security only — NOT post-quantum.**
+//! This backend relies on the discrete-log assumption over Curve25519/Ristretto.
+//! For a post-quantum alternative, use [`WhirSnark`](super::whir::WhirSnark)
+//! (feature `whir`).
+//!
 //! This module implements a succinct proof system based on the Spartan protocol.
 //! It uses:
 //! - R1CS-to-sumcheck reduction over Fp (Ristretto scalar field)
@@ -15,13 +20,12 @@ pub mod sumcheck;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::Identity;
 use sha2::{Digest, Sha256};
 
 use crate::snark::{BackendSnark, RelationDescription};
 
 use self::commitment::PedersenKey;
-use self::ipa::{ipa_prove, ipa_verify, IPAProof};
+use self::ipa::{ipa_prove, ipa_verify, ipa_verify_eq, IPAProof};
 use self::r1cs_sumcheck::{ceil_log2, compute_matrix_mle_at_point, compute_matrix_vector_products, flatten_ring_r1cs, mle_eval};
 use self::serialize::{deserialize_context, SpartanContext};
 use self::sumcheck::{build_eq_table, prove_r1cs_sumcheck, verify_sumcheck, SumcheckProofFp};
@@ -54,22 +58,23 @@ pub struct SpartanVerifyingKey {
 /// Proof produced by the Spartan backend.
 #[derive(Debug, Clone)]
 pub struct SpartanProof {
-    /// Pedersen commitment to the witness vector (used by output SNARK).
+    /// Pedersen commitment to the witness vector.
+    /// - Output SNARK: commitment to the full z vector (instance + witness).
+    /// - CP SNARK: commitment to the witness table.
     pub witness_commitment: RistrettoPoint,
     /// Sumcheck proof for the R1CS-to-sumcheck reduction.
     pub sumcheck_proof: SumcheckProofFp,
     /// Evaluations: Az(r*), Bz(r*), Cz(r*) (output SNARK) or [w_eval, 0, 0] (CP).
     pub evaluations: [Scalar; 3],
-    /// IPA proofs for the three evaluations (output SNARK only).
+    /// IPA proofs for evaluation claims.
+    /// - Output SNARK: three proofs for Az, Bz, Cz evaluations.
+    /// - CP SNARK: one proof for witness MLE evaluation (ipa_proofs[0]),
+    ///   remaining two are dummy.
     pub ipa_proofs: [IPAProof; 3],
     /// Blinding factor.
     pub blinding_r: Scalar,
     /// Number of sumcheck variables.
     pub num_vars: usize,
-    /// Full witness table (CP-SNARK only, not succinct).
-    pub witness_table: Option<Vec<Scalar>>,
-    /// SHA-256 hash of the witness table (CP-SNARK only).
-    pub witness_hash: Option<[u8; 32]>,
 }
 
 impl BackendSnark for SpartanSnark {
@@ -282,8 +287,6 @@ fn prove_output(
         ipa_proofs: [ipa_a, ipa_b, ipa_c],
         blinding_r,
         num_vars,
-        witness_table: None,
-        witness_hash: None,
     }
 }
 
@@ -390,26 +393,23 @@ fn prove_cp(
     instance: &[u8],
     witness: &[u8],
 ) -> SpartanProof {
-    // Map witness bytes to scalars, pad to power of two
+    // Map witness bytes to scalars with a length sentinel so that
+    // different-length inputs (e.g. "AA" vs "AA\0\0") always produce
+    // distinct committed vectors (matching bytes_to_scalars convention).
     let mut table: Vec<Scalar> = witness.iter().map(|&b| Scalar::from(b as u64)).collect();
+    table.push(Scalar::from(witness.len() as u64));
     let num_vars = ceil_log2(table.len().max(1));
     table.resize(1 << num_vars, Scalar::ZERO);
     let n = 1 << num_vars;
 
-    // Hash-based commitment to the witness table (fast, non-succinct)
-    let witness_commitment_hash = sha256_scalars(&table);
-    // Use identity point as the "commitment" for CP path — the hash binds the witness
-    let witness_commitment = RistrettoPoint::identity();
-
+    // Pedersen commitment to the witness table (succinct binding)
+    let mut ped_key = pk.pedersen_key.clone();
+    ped_key.extend_to(n, &pk.seed);
     let blinding_r = derive_blinding_factor(&pk.seed, instance);
+    let witness_commitment = ped_key.commit(&table, blinding_r);
 
-    // Build transcript with hash-based binding
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"spartan-cp-v1");
-    transcript.extend_from_slice(&pk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-    transcript.extend_from_slice(&witness_commitment_hash);
+    // Build transcript with Pedersen commitment
+    let mut transcript = build_cp_transcript(&pk.seed, instance, &witness_commitment);
 
     // Derive tau
     let tau: Vec<Scalar> = (0..num_vars)
@@ -430,23 +430,29 @@ fn prove_cp(
     // Evaluation at the challenge point
     let w_eval = mle_eval(&table, &challenges);
 
-    // For CP, store the witness table in the proof via the IPA proof's final_a field
-    // and the hash for verification. We use a dummy IPA proof that carries the table.
+    // IPA proof: prove that <table, eq(challenges, .)> = w_eval
+    // This is the MLE evaluation identity: w(r*) = sum_i w_i * eq(r*, i)
+    let eq_at_challenges = build_eq_table(&challenges, num_vars);
+
+    let mut ipa_transcript = transcript.clone();
+    ipa_transcript.extend_from_slice(b"ipa-cp-witness");
+    let ipa_proof = ipa_prove(
+        &ped_key, &table, &eq_at_challenges, blinding_r, &mut ipa_transcript,
+    );
+
     let dummy_ipa = IPAProof {
         lr_pairs: Vec::new(),
         final_a: Scalar::ZERO,
-        final_r: blinding_r,
+        final_r: Scalar::ZERO,
     };
 
     SpartanProof {
         witness_commitment,
         sumcheck_proof,
         evaluations: [w_eval, Scalar::ZERO, Scalar::ZERO],
-        ipa_proofs: [dummy_ipa.clone(), dummy_ipa.clone(), dummy_ipa],
+        ipa_proofs: [ipa_proof, dummy_ipa.clone(), dummy_ipa],
         blinding_r,
         num_vars,
-        witness_table: Some(table),
-        witness_hash: Some(witness_commitment_hash),
     }
 }
 
@@ -456,40 +462,15 @@ fn verify_cp(
     proof: &SpartanProof,
 ) -> bool {
     let num_vars = proof.num_vars;
+    let n = 1 << num_vars;
 
-    // CP proofs must include the witness table and hash
-    let table = match &proof.witness_table {
-        Some(t) => t,
-        None => return false,
-    };
-    let expected_hash = match &proof.witness_hash {
-        Some(h) => h,
-        None => return false,
-    };
+    // Build transcript (same as prover — uses Pedersen commitment)
+    let mut transcript = build_cp_transcript(&vk.seed, instance, &proof.witness_commitment);
 
-    // Verify the witness table matches the hash
-    if table.len() != 1 << num_vars {
-        return false;
-    }
-    let actual_hash = sha256_scalars(table);
-    if actual_hash != *expected_hash {
-        return false;
-    }
-
-    // Build transcript (same as prover)
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"spartan-cp-v1");
-    transcript.extend_from_slice(&vk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-    transcript.extend_from_slice(expected_hash);
-
-    // Derive tau
+    // Derive tau — O(log N) scalars
     let tau: Vec<Scalar> = (0..num_vars)
         .map(|i| derive_tau(&transcript, i))
         .collect();
-
-    let eq_table = build_eq_table(&tau, num_vars);
 
     // Extract claimed sum from first round polynomial
     let claimed_sum = if let Some(first_round) = proof.sumcheck_proof.round_polys.first() {
@@ -502,6 +483,7 @@ fn verify_cp(
         return false;
     };
 
+    // Verify sumcheck transcript — O(log N)
     let sumcheck_result = verify_sumcheck(
         &proof.sumcheck_proof,
         claimed_sum,
@@ -514,16 +496,32 @@ fn verify_cp(
     };
 
     // Check final evaluation: F(r*) = eq(tau,r*) * w(r*)
+    // O(log N): no full eq table needed
     let [w_eval, _, _] = proof.evaluations;
-    let eq_at_r = mle_eval(&eq_table, &challenges);
+    let eq_at_r = eval_eq_at_point(&tau, &challenges);
     let expected_final = eq_at_r * w_eval;
     if final_eval != expected_final {
         return false;
     }
 
-    // Verify w_eval by direct MLE evaluation on the witness table
-    let computed_w_eval = mle_eval(table, &challenges);
-    if computed_w_eval != w_eval {
+    // Verify w_eval via IPA using eq-structured verification.
+    // Instead of building the full 2^n eq table and folding it, we pass only
+    // the O(log N) challenge point. The `ipa_verify_eq` function computes
+    // b_final = prod_j ((1-r_j)*x_j^{-1} + r_j*x_j) in O(log N).
+    // The generator-side MSM is still O(N) — inherent to Bulletproofs IPA.
+    let mut ped_key = vk.pedersen_key.clone();
+    ped_key.extend_to(n, &vk.seed);
+
+    let mut ipa_transcript = transcript.clone();
+    ipa_transcript.extend_from_slice(b"ipa-cp-witness");
+    if !ipa_verify_eq(
+        &ped_key,
+        proof.witness_commitment,
+        &challenges,
+        w_eval,
+        &proof.ipa_proofs[0],
+        &mut ipa_transcript,
+    ) {
         return false;
     }
 
@@ -534,12 +532,33 @@ fn verify_cp(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn sha256_scalars(table: &[Scalar]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    for s in table {
-        h.update(s.to_bytes());
-    }
-    h.finalize().into()
+/// Build a Fiat-Shamir transcript for the CP-SNARK path.
+///
+/// Domain-separated from the output SNARK transcript via the "spartan-cp-v2" tag.
+/// Uses a Pedersen commitment (not a hash) for succinct witness binding.
+fn build_cp_transcript(
+    seed: &[u8; 32],
+    instance: &[u8],
+    commitment: &RistrettoPoint,
+) -> Vec<u8> {
+    let mut t = Vec::new();
+    t.extend_from_slice(b"spartan-cp-v2");
+    t.extend_from_slice(seed);
+    t.extend_from_slice(&(instance.len() as u64).to_le_bytes());
+    t.extend_from_slice(instance);
+    t.extend_from_slice(commitment.compress().as_bytes());
+    t
+}
+
+/// Evaluate eq(a, b) = prod_i (a_i * b_i + (1-a_i)*(1-b_i)) in O(n) field ops.
+///
+/// This avoids building the full 2^n eq table when only a single-point
+/// evaluation is needed (e.g., eq(tau, r*) after sumcheck).
+fn eval_eq_at_point(a: &[Scalar], b: &[Scalar]) -> Scalar {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b.iter()).fold(Scalar::ONE, |acc, (ai, bi)| {
+        acc * (*ai * *bi + (Scalar::ONE - *ai) * (Scalar::ONE - *bi))
+    })
 }
 
 fn bytes_to_scalars(data: &[u8]) -> Vec<Scalar> {
@@ -641,27 +660,42 @@ mod tests {
     }
 
     #[test]
-    fn cp_snark_tampered_witness_table_rejected() {
+    fn cp_snark_tampered_commitment_rejected() {
         let (pk, vk) = SpartanSnark::setup(&test_relation());
         let mut proof = SpartanSnark::prove(&pk, b"instance", b"witness");
-        // Tamper with the witness table
-        if let Some(ref mut table) = proof.witness_table {
-            if !table.is_empty() {
-                table[0] += Scalar::ONE;
-            }
-        }
+        // Tamper with the Pedersen commitment
+        proof.witness_commitment += RistrettoPoint::from_uniform_bytes(&[1u8; 64]);
         assert!(!SpartanSnark::verify(&vk, b"instance", &proof));
     }
 
     #[test]
-    fn cp_snark_tampered_hash_rejected() {
+    fn cp_snark_tampered_evaluation_rejected() {
         let (pk, vk) = SpartanSnark::setup(&test_relation());
         let mut proof = SpartanSnark::prove(&pk, b"instance", b"witness");
-        // Tamper with the witness hash
-        if let Some(ref mut hash) = proof.witness_hash {
-            hash[0] ^= 0xFF;
-        }
+        // Tamper with the claimed w_eval
+        proof.evaluations[0] += Scalar::ONE;
         assert!(!SpartanSnark::verify(&vk, b"instance", &proof));
+    }
+
+    #[test]
+    fn cp_snark_tampered_ipa_rejected() {
+        let (pk, vk) = SpartanSnark::setup(&test_relation());
+        let mut proof = SpartanSnark::prove(&pk, b"instance", b"witness");
+        // Tamper with the IPA proof
+        proof.ipa_proofs[0].final_a += Scalar::ONE;
+        assert!(!SpartanSnark::verify(&vk, b"instance", &proof));
+    }
+
+    #[test]
+    fn cp_snark_no_witness_table_in_proof() {
+        let (pk, _vk) = SpartanSnark::setup(&test_relation());
+        let witness: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let proof = SpartanSnark::prove(&pk, b"instance", &witness);
+        // The proof should contain only O(log N) IPA data, not the full witness.
+        // Verify that the IPA proof has log2(N) lr_pairs (the succinct part).
+        let lr_count = proof.ipa_proofs[0].lr_pairs.len();
+        assert!(lr_count > 0, "IPA proof should have halving rounds");
+        assert!(lr_count <= 10, "IPA proof should have O(log N) rounds, got {lr_count}");
     }
 
     #[test]

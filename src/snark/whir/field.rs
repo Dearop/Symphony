@@ -1,65 +1,58 @@
-//! Field conversion utilities: Symphony i64 coefficients <-> BabyBear limbs.
+//! Field conversion utilities: Symphony bytes <-> BabyBear elements.
 //!
 //! BabyBear p = 2^31 - 2^27 + 1 = 2013265921 (~31 bits).
-//! Symphony values are up to ~60 bits (modular), so each i64 is split into
-//! two limbs: val = lo + hi * BASE where BASE = 2^30 and both lo, hi < 2^30 < p.
+//!
+//! For the CP path, raw witness bytes are packed into BabyBear elements using
+//! a canonical 3-byte packing (2^24 = 16M < p), which is injective. A length
+//! element is appended for unambiguous padding.
+//!
+//! For the output path, R1CS variable values (already in-field) are converted
+//! directly via `bytes_to_babybear_direct`.
 
 use p3_baby_bear::BabyBear;
-use p3_field::{PrimeCharacteristicRing, PrimeField64};
+use p3_field::PrimeCharacteristicRing;
 
-/// Splitting base: 2^30 fits comfortably in BabyBear (p ~ 2^31).
-pub const LIMB_BASE: u64 = 1 << 30;
+/// Bytes packed per BabyBear element. 3 bytes = 2^24 < p, so no modular
+/// reduction occurs and the mapping is injective.
+pub const BYTES_PER_ELEMENT: usize = 3;
 
-/// Split a signed i64 value into two BabyBear limbs [lo, hi].
+/// Convert a byte slice to BabyBear elements using canonical 3-byte packing.
 ///
-/// The value is first reduced to a positive canonical representative mod q,
-/// then split as: val = lo + hi * 2^30.
-pub fn i64_to_babybear_limbs(val: i64, q: u64) -> [BabyBear; 2] {
-    // Reduce to [0, q) canonical form
-    let pos = if val < 0 {
-        (val as i128 + q as i128) as u64
-    } else {
-        val as u64 % q
-    };
-    let lo = pos % LIMB_BASE;
-    let hi = pos / LIMB_BASE;
-    [BabyBear::from_u64(lo), BabyBear::from_u64(hi)]
-}
+/// Each group of 3 bytes is packed little-endian into one BabyBear element.
+/// The final element encodes `data.len()` so that different-length inputs
+/// (including those that differ only in trailing zeros) produce distinct
+/// field-element sequences.
+///
+/// # Injectivity
+///
+/// - Each 3-byte chunk maps to a unique value in [0, 2^24), well below p.
+/// - The length sentinel is exact (no modular reduction for practical sizes).
+/// - Padding bytes in the last partial chunk are zero, disambiguated by length.
+pub fn bytes_to_babybear(data: &[u8], _q: u64) -> Vec<BabyBear> {
+    // Estimate: ceil(len/3) data elements + 1 length sentinel
+    let mut result = Vec::with_capacity(data.len() / BYTES_PER_ELEMENT + 2);
 
-/// Reconstruct an i64 from two BabyBear limbs (for debugging/testing).
-pub fn babybear_limbs_to_u64(limbs: [BabyBear; 2]) -> u64 {
-    let lo = limbs[0].as_canonical_u64();
-    let hi = limbs[1].as_canonical_u64();
-    lo + hi * LIMB_BASE
-}
+    for chunk in data.chunks(BYTES_PER_ELEMENT) {
+        let mut val: u32 = 0;
+        for (i, &b) in chunk.iter().enumerate() {
+            val |= (b as u32) << (8 * i);
+        }
+        // val < 2^24 < p, so BabyBear::from_u32 is lossless
+        result.push(BabyBear::from_u32(val));
+    }
 
-/// Convert a byte slice to BabyBear elements.
-/// Each 8 bytes is interpreted as i64 (le), then split into 2 BabyBear limbs.
-/// A length sentinel is appended for injectivity.
-pub fn bytes_to_babybear(data: &[u8], q: u64) -> Vec<BabyBear> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i + 8 <= data.len() {
-        let val = i64::from_le_bytes(data[i..i + 8].try_into().unwrap());
-        let limbs = i64_to_babybear_limbs(val, q);
-        result.push(limbs[0]);
-        result.push(limbs[1]);
-        i += 8;
-    }
-    if i < data.len() {
-        let mut buf = [0u8; 8];
-        buf[..data.len() - i].copy_from_slice(&data[i..]);
-        let val = i64::from_le_bytes(buf);
-        let limbs = i64_to_babybear_limbs(val, q);
-        result.push(limbs[0]);
-        result.push(limbs[1]);
-    }
-    // Length sentinel
-    result.push(BabyBear::from_u64(data.len() as u64 % (LIMB_BASE - 1)));
+    // Length sentinel — exact for len < 2^31 (practical limit)
+    assert!(
+        data.len() < (1u64 << 31) as usize,
+        "data too large for injective BabyBear encoding"
+    );
+    result.push(BabyBear::from_u32(data.len() as u32));
+
     result
 }
 
-/// Convert bytes to BabyBear elements for R1CS (one element per i64, no limb splitting).
+/// Convert bytes to BabyBear elements for R1CS (one element per i64, no packing).
+///
 /// Used by the output SNARK path where R1CS variable values fit in BabyBear.
 /// No sentinel — the z vector has a fixed known size from the R1CS.
 pub fn bytes_to_babybear_direct(data: &[u8]) -> Vec<BabyBear> {
@@ -88,28 +81,53 @@ pub fn pad_to_power_of_two(v: &mut Vec<BabyBear>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p3_field::PrimeField32;
 
     #[test]
-    fn limb_roundtrip() {
-        let q = 1152921504606830593u64; // Symphony's q
-        for val in [0i64, 1, -1, 42, -42, 1000000, -1000000] {
-            let limbs = i64_to_babybear_limbs(val, q);
-            let recovered = babybear_limbs_to_u64(limbs);
-            let expected = if val < 0 {
-                (val as i128 + q as i128) as u64
-            } else {
-                val as u64 % q
-            };
-            assert_eq!(recovered, expected, "roundtrip failed for val={val}");
-        }
+    fn bytes_to_babybear_injective() {
+        let q = 1152921504606830593u64;
+        // Different inputs must produce different outputs
+        let a = bytes_to_babybear(b"hello", q);
+        let b = bytes_to_babybear(b"hellp", q);
+        assert_ne!(a, b);
     }
 
     #[test]
-    fn bytes_conversion() {
+    fn bytes_to_babybear_length_disambiguation() {
         let q = 1152921504606830593u64;
-        let data = b"hello world";
+        // Inputs that differ only in trailing zeros must differ
+        let a = bytes_to_babybear(&[1, 2, 3], q);
+        let b = bytes_to_babybear(&[1, 2, 3, 0], q);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn bytes_to_babybear_empty() {
+        let q = 1152921504606830593u64;
+        let elems = bytes_to_babybear(b"", q);
+        // Just the length sentinel (0)
+        assert_eq!(elems.len(), 1);
+        assert_eq!(elems[0].as_canonical_u32(), 0);
+    }
+
+    #[test]
+    fn bytes_to_babybear_packing() {
+        let q = 1152921504606830593u64;
+        let data = vec![0xAB, 0xCD, 0xEF]; // one full 3-byte chunk
+        let elems = bytes_to_babybear(&data, q);
+        // 1 data element + 1 length sentinel
+        assert_eq!(elems.len(), 2);
+        let expected_val = 0xABu32 | (0xCDu32 << 8) | (0xEFu32 << 16);
+        assert_eq!(elems[0].as_canonical_u32(), expected_val);
+        assert_eq!(elems[1].as_canonical_u32(), 3); // length
+    }
+
+    #[test]
+    fn bytes_conversion_size() {
+        let q = 1152921504606830593u64;
+        let data = b"hello world"; // 11 bytes
         let elems = bytes_to_babybear(data, q);
-        // 11 bytes -> 1 full i64 (8 bytes) + 1 partial (3 bytes) + 1 sentinel = 5 elements
+        // ceil(11/3) = 4 data elements + 1 sentinel = 5
         assert_eq!(elems.len(), 5);
     }
 }

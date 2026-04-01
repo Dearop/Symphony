@@ -50,3 +50,7 @@ proptest = "1.6"
 [[bench]]
 name = "folding"
 harness = false
+
+[[bench]]
+name = "cp_succinct"
+harness = false
