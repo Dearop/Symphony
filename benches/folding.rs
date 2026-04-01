@@ -24,15 +24,14 @@ use symphony::folding::digest::{
 use symphony::folding::streaming::{StreamingPhase, StreamingProver};
 use symphony::folding::{FoldedInstance, FoldingStatement};
 use symphony::params::{SymphonyParams, D};
+use symphony::proof_orchestrator::{Prover, Verifier};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::extension::{ExtFieldContext, ExtFieldElement};
 use symphony::ring::ntt::NttContext;
 use symphony::ring::{RingElement, RingVector};
 use symphony::rok::range_proof::RangeProofParams;
 use symphony::snark::cp_snark as pipeline_cp_snark;
-use symphony::snark::{
-    BackendSnark, DummySnark, RelationDescription, SymphonyProver, SymphonyVerifier,
-};
+use symphony::snark::{BackendSnark, DummySnark, RelationDescription};
 use symphony::sumcheck::prover;
 use symphony::sumcheck::{self, SumcheckClaim};
 use symphony::{SpartanProof, SpartanSnark, SumcheckSnark};
@@ -261,7 +260,7 @@ fn make_folding_statement(z: &[i64], n_in: usize, ajtai: &AjtaiParams) -> Foldin
 }
 
 fn make_snark_statement<S: BackendSnark>(
-    prover: &SymphonyProver<S>,
+    prover: &Prover<S, S>,
     z: &[i64],
     n_in: usize,
 ) -> (Commitment, Vec<i64>, RingVector) {
@@ -326,8 +325,8 @@ fn streaming_total_passes(n: usize) -> usize {
 }
 
 struct PipelineFixture<S: BackendSnark> {
-    prover: SymphonyProver<S>,
-    verifier: SymphonyVerifier<S>,
+    prover: Prover<S, S>,
+    verifier: Verifier<S, S>,
     r1cs: R1CSMatrices,
     statements: Vec<(Commitment, Vec<i64>, RingVector)>,
     public_inputs: Vec<Vec<i64>>,
@@ -335,7 +334,7 @@ struct PipelineFixture<S: BackendSnark> {
 
 fn build_pipeline_fixture<S: BackendSnark>(k: usize) -> PipelineFixture<S> {
     let params = bench_params(k);
-    let (prover, verifier) = SymphonyProver::<S>::setup(params);
+    let (prover, verifier) = Prover::<S, S>::setup(params);
 
     let (r1cs, z) = multi_r1cs();
     let n_in = r1cs.num_public;
@@ -771,7 +770,7 @@ fn bench_scaling_commit_witness_k_statements(c: &mut Criterion) {
 
     for &k in SCALING_KS {
         let params = bench_params(k);
-        let (prover, _) = SymphonyProver::<SumcheckSnark>::setup(params);
+        let (prover, _) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params);
 
         let full_witness = RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
@@ -981,17 +980,17 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
         // Build one CP material instance and compare backends on the exact same data.
         let base_fixture = build_pipeline_fixture_sumcheck(k);
         let material = build_cp_pipeline_material(&base_fixture);
-        let (legacy_instance, legacy_witness) = encode_cp_relation_io(&material);
+        let (linear_instance, linear_witness) = encode_cp_relation_io(&material);
         let (compressed_instance, compressed_witness) = encode_cp_relation_io_compressed(&material);
 
         let (spartan_prover, spartan_verifier) =
-            SymphonyProver::<SpartanSnark>::setup(bench_params(k));
+            Prover::<SpartanSnark, SpartanSnark>::setup(bench_params(k));
 
         let linear_metrics = run_cp_backend_once::<SpartanSnark, _>(
             &spartan_prover.cp_pk,
             &spartan_verifier.cp_vk,
-            &legacy_instance,
-            &legacy_witness,
+            &linear_instance,
+            &linear_witness,
             spartan_proof_wire_bytes,
         );
         let sublinear_metrics = run_cp_backend_once::<SpartanSnark, _>(
@@ -1003,10 +1002,10 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
         );
 
         let linear_proof =
-            SpartanSnark::prove(&spartan_prover.cp_pk, &legacy_instance, &legacy_witness);
+            SpartanSnark::prove(&spartan_prover.cp_pk, &linear_instance, &linear_witness);
         assert!(SpartanSnark::verify(
             &spartan_verifier.cp_vk,
-            &legacy_instance,
+            &linear_instance,
             &linear_proof
         ));
 
@@ -1023,7 +1022,8 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
 
         #[cfg(feature = "whir")]
         let whir_metrics = {
-            let (whir_prover, whir_verifier) = SymphonyProver::<WhirSnark>::setup(bench_params(k));
+            let (whir_prover, whir_verifier) =
+                Prover::<WhirSnark, WhirSnark>::setup(bench_params(k));
             let metrics = run_cp_backend_once::<WhirSnark, _>(
                 &whir_prover.cp_pk,
                 &whir_verifier.cp_vk,
@@ -1111,8 +1111,8 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
             bencher.iter(|| {
                 let p = SpartanSnark::prove(
                     black_box(&spartan_prover.cp_pk),
-                    black_box(&legacy_instance),
-                    black_box(&legacy_witness),
+                    black_box(&linear_instance),
+                    black_box(&linear_witness),
                 );
                 black_box(p);
             });
@@ -1121,7 +1121,7 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
             bencher.iter(|| {
                 let ok = SpartanSnark::verify(
                     black_box(&spartan_verifier.cp_vk),
-                    black_box(&legacy_instance),
+                    black_box(&linear_instance),
                     black_box(&linear_proof),
                 );
                 black_box(ok);
@@ -1305,8 +1305,8 @@ fn bench_scaling_cp_instance_size(c: &mut Criterion) {
         let material = build_cp_pipeline_material(&fixture);
 
         // --- Legacy (linear) encoding size ---
-        let (legacy_instance, _) = encode_cp_relation_io(&material);
-        let legacy_size = legacy_instance.len();
+        let (linear_instance, _) = encode_cp_relation_io(&material);
+        let linear_size = linear_instance.len();
 
         // --- Compressed encoding size ---
         let compressed_instance = encode_cp_instance_compressed(&material);
@@ -1315,7 +1315,7 @@ fn bench_scaling_cp_instance_size(c: &mut Criterion) {
         // Record sizes to scaling CSV
         let size_stats = ResourceStats {
             elapsed: Duration::ZERO,
-            peak_heap_bytes: legacy_size as u64,
+            peak_heap_bytes: linear_size as u64,
             alloc_calls: compressed_size,
             allocated_bytes: 0,
         };
@@ -1325,14 +1325,14 @@ fn bench_scaling_cp_instance_size(c: &mut Criterion) {
             &size_stats,
             0,
             &format!(
-                "legacy_bytes={legacy_size} compressed_bytes={compressed_size} ratio={:.2}",
-                legacy_size as f64 / compressed_size as f64
+                "linear_bytes={linear_size} compressed_bytes={compressed_size} ratio={:.2}",
+                linear_size as f64 / compressed_size as f64
             ),
         );
 
         eprintln!(
-            "[cp_instance_size] k={k} legacy={legacy_size} compressed={compressed_size} ratio={:.2}x",
-            legacy_size as f64 / compressed_size as f64
+            "[cp_instance_size] k={k} linear={linear_size} compressed={compressed_size} ratio={:.2}x",
+            linear_size as f64 / compressed_size as f64
         );
 
         // Criterion benchmark: encode compressed instance

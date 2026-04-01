@@ -314,6 +314,18 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
 }
 
 impl<CPB: CpBackend, OB: OutputBackend> Verifier<CPB, OB> {
+    /// Verify a modular proof bundle against public inputs.
+    ///
+    /// **Design note:** This method does *not* call [`CpRelation::check`] explicitly.
+    /// Instead, the CP relation consistency is enforced implicitly by the backend proof:
+    /// [`encode_cp_backend_instance`] embeds all four digests (`fs_root`, `fold_root`,
+    /// `challenge_digest`, `transcript_seed_digest`) plus the folded instance into the
+    /// CP backend instance. The CP backend proof then binds these values — any
+    /// inconsistency between digests and the underlying witness data will cause the
+    /// backend verification to fail.
+    ///
+    /// [`CpRelation::check`] remains available as a standalone audit/debugging tool
+    /// for inspecting proof internals without running full backend verification.
     #[must_use]
     pub fn verify(
         &self,

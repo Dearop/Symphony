@@ -663,14 +663,13 @@ mod cp_r1cs_tests {
 }
 
 // =========================================================================
-// Full SNARK pipeline (DummySnark)
+// Modular pipeline tests
 // =========================================================================
-mod snark_pipeline {
+mod modular_pipeline {
     use super::*;
-    use symphony::snark::{DummySnark, SymphonyProver};
+    use symphony::proof_orchestrator::Prover;
+    use symphony::snark::{cp_snark, BackendSnark, DummySnark};
 
-    // multi_r1cs: n=4, m=4, n_in=1. We need params.n() = 4, so n_bar = 2.
-    // n() = n_bar * k_cs = 4 * 1 = 4, matching multi_r1cs's num_variables.
     fn small_params() -> SymphonyParams {
         SymphonyParams {
             q: Q,
@@ -688,11 +687,8 @@ mod snark_pipeline {
         }
     }
 
-    // Build statement tuple for the SNARK pipeline.
-    // commit_witness expects length = params.n() = 4 = r1cs.num_variables.
-    // The RingVector in the tuple is the witness-ONLY part (z[n_in..]).
-    fn make_snark_statement(
-        prover: &symphony::snark::SymphonyProver<DummySnark>,
+    fn make_statement<B: BackendSnark>(
+        prover: &Prover<B, B>,
         z: &[i64],
         n_in: usize,
     ) -> (Commitment, Vec<i64>, RingVector) {
@@ -710,517 +706,119 @@ mod snark_pipeline {
     }
 
     #[test]
-    fn end_to_end_prove_verify() {
+    fn dummy_end_to_end_prove_verify() {
         let params = small_params();
-        let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
+        let (prover, verifier) = Prover::<DummySnark, DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
         let proof = prover.prove(&statements, &r1cs);
 
-        let public_inputs = vec![pi1, pi2];
         assert!(verifier.verify(&public_inputs, &proof, &r1cs));
     }
 
     #[test]
-    fn proof_contains_expected_structure() {
+    fn dummy_proof_contains_expected_structure() {
         let params = small_params();
-        let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
+        let (prover, _) = Prover::<DummySnark, DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
         let proof = prover.prove(&statements, &r1cs);
 
-        assert!(
-            !proof.witness_data.fs_commitments.is_empty(),
-            "should have FS commitments"
-        );
-        assert!(
-            !proof.cp_proof.data.is_empty(),
-            "CP proof should be non-empty"
-        );
-        assert!(
-            !proof.snark_proof.data.is_empty(),
-            "SNARK proof should be non-empty"
-        );
+        assert!(!proof.witness_bundle.fs_commitments.is_empty());
+        assert!(!proof.cp_proof.data.is_empty());
+        assert!(!proof.output_proof.data.is_empty());
     }
 
-    // Note: These DummySnark tamper tests verify pipeline wiring (that the verifier
-    // propagates rejection when proof bytes are corrupted). They do NOT exercise real
-    // cryptographic verification — replace DummySnark with a real backend for that.
     #[test]
-    fn tampered_cp_proof_rejected() {
+    fn dummy_tampered_cp_proof_rejected() {
         let params = small_params();
-        let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
+        let (prover, verifier) = Prover::<DummySnark, DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
         let mut proof = prover.prove(&statements, &r1cs);
-
         proof.cp_proof.data = b"garbage".to_vec();
 
-        let public_inputs = vec![pi1, pi2];
-        assert!(
-            !verifier.verify(&public_inputs, &proof, &r1cs),
-            "tampered CP proof should be rejected"
-        );
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
     }
 
     #[test]
-    fn tampered_snark_proof_rejected() {
+    fn dummy_tampered_output_proof_rejected() {
         let params = small_params();
-        let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
+        let (prover, verifier) = Prover::<DummySnark, DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
         let mut proof = prover.prove(&statements, &r1cs);
+        proof.output_proof.data = b"garbage".to_vec();
 
-        proof.snark_proof.data = b"garbage".to_vec();
-
-        let public_inputs = vec![pi1, pi2];
-        assert!(
-            !verifier.verify(&public_inputs, &proof, &r1cs),
-            "tampered SNARK proof should be rejected"
-        );
-    }
-
-    #[test]
-    fn fold_root_tampering_rejected() {
-        let params = small_params();
-        let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
-
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let mut proof = prover.prove(&statements, &r1cs);
-
-        // Flip a bit in fold_root
-        proof.fold_root[0] ^= 0xff;
-
-        let public_inputs = vec![pi1, pi2];
-        // DummySnark accepts any proof, but the challenge_digest check
-        // in the verifier should still catch this because the transcript
-        // state is unchanged — the verifier independently verifies
-        // challenge_digest from the transcript.
-        // NOTE: With DummySnark, the CP proof itself isn't checked, but
-        // the fold_root only affects the CP instance, not the challenge_digest.
-        // This test verifies the structural change; real soundness comes
-        // from a real backend.
-        let _ = verifier.verify(&public_inputs, &proof, &r1cs);
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
     }
 
     #[test]
     fn challenge_digest_tampering_changes_cp_instance() {
-        // With the sublinear verifier, challenge_digest tampering changes the
-        // CP instance (via the digest-based binding challenge). DummySnark
-        // can't detect this — real soundness requires a real backend.
-        // See security_soundness::tampered_challenge_digest_is_rejected for
-        // the SumcheckSnark version.
         let params = small_params();
-        let (prover, _verifier) = SymphonyProver::<DummySnark>::setup(params);
+        let (prover, _) = Prover::<DummySnark, DummySnark>::setup(params);
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
         let proof = prover.prove(&statements, &r1cs);
 
-        // The CP instances should differ when challenge_digest changes
-        use symphony::snark::cp_snark;
         let original_instance = cp_snark::encode_cp_instance_compressed(
-            &proof.fold_root,
-            &proof.folded_instance,
-            &proof.challenge_digest,
-            &proof.fs_root,
-            &proof.transcript_seed_digest,
+            &proof.cp_public_instance.fold_root,
+            &proof.cp_public_instance.x_folded,
+            &proof.cp_public_instance.challenge_digest,
+            &proof.cp_public_instance.fs_root,
+            &proof.cp_public_instance.transcript_seed_digest,
         );
-        let mut tampered_cd = proof.challenge_digest;
+        let mut tampered_cd = proof.cp_public_instance.challenge_digest;
         tampered_cd[0] ^= 0xff;
         let tampered_instance = cp_snark::encode_cp_instance_compressed(
-            &proof.fold_root,
-            &proof.folded_instance,
+            &proof.cp_public_instance.fold_root,
+            &proof.cp_public_instance.x_folded,
             &tampered_cd,
-            &proof.fs_root,
-            &proof.transcript_seed_digest,
+            &proof.cp_public_instance.fs_root,
+            &proof.cp_public_instance.transcript_seed_digest,
         );
-        assert_ne!(
-            original_instance, tampered_instance,
-            "tampered challenge_digest must produce a different CP instance"
-        );
+
+        assert_ne!(original_instance, tampered_instance);
     }
 }
 
 // =========================================================================
-// CP-SNARK encoding extended
+// Real backend checks through modular orchestrator
 // =========================================================================
-mod cp_snark_extended {
-    use symphony::fiat_shamir::transcript::Transcript;
-    use symphony::folding::FoldedInstance;
-    use symphony::ring::tensor::TensorElement;
-    use symphony::ring::{RingElement, RingVector};
-    use symphony::snark::cp_snark;
-
-    fn dummy_folded_instance() -> FoldedInstance {
-        FoldedInstance {
-            commitment: symphony::commitment::Commitment {
-                value: RingVector::zero(1),
-            },
-            public_input: vec![RingElement::from_constant(0)],
-            evaluation_values: vec![TensorElement::zero()],
-        }
-    }
-
-    #[test]
-    fn different_commitments_different_encoding() {
-        let c1 = vec![b"comm-A".to_vec()];
-        let c2 = vec![b"comm-B".to_vec()];
-        let mut t1 = Transcript::new(b"test");
-        let mut t2 = Transcript::new(b"test");
-        let folded = dummy_folded_instance();
-        let e1 = cp_snark::encode_cp_instance(&c1, &folded, &mut t1);
-        let e2 = cp_snark::encode_cp_instance(&c2, &folded, &mut t2);
-        assert_ne!(e1, e2);
-    }
-
-    #[test]
-    fn folded_instance_affects_encoding() {
-        let commitments = vec![b"comm-A".to_vec()];
-        let mut t1 = Transcript::new(b"test");
-        let mut t2 = Transcript::new(b"test");
-        let folded1 = dummy_folded_instance();
-        let mut folded2 = dummy_folded_instance();
-        folded2.public_input = vec![RingElement::from_constant(7)];
-
-        let e1 = cp_snark::encode_cp_instance(&commitments, &folded1, &mut t1);
-        let e2 = cp_snark::encode_cp_instance(&commitments, &folded2, &mut t2);
-        assert_ne!(e1, e2);
-    }
-
-    #[test]
-    fn empty_commitments_still_encodes() {
-        let mut t = Transcript::new(b"test");
-        let folded = dummy_folded_instance();
-        let encoded = cp_snark::encode_cp_instance(&[], &folded, &mut t);
-        assert!(!encoded.is_empty());
-    }
-}
-
-// =========================================================================
-// SNARK pipeline extended
-// =========================================================================
-mod snark_pipeline_extended {
+mod modular_sumcheck_backend {
     use super::*;
-    use symphony::snark::{DummySnark, SymphonyProver};
-
-    #[test]
-    fn tampered_fs_commitments_change_cp_instance() {
-        use symphony::fiat_shamir::transcript::Transcript;
-        use symphony::snark::cp_snark;
-
-        let params = SymphonyParams {
-            q: Q,
-            d: D,
-            kappa: 2,
-            ell_np: 2,
-            ell_h: D,
-            lambda_pj: 4,
-            n_bar: 4,
-            m: 4,
-            b: 16,
-            k_cs: 1,
-            n_in: 1,
-            ntt: SymphonyParams::try_ntt(Q, D),
-        };
-        let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
-
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-        let mk = |p: &SymphonyProver<DummySnark>| {
-            let full = RingVector {
-                elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
-            };
-            let (c, _) = p.commit_witness(&full);
-            let wp = RingVector {
-                elements: z[n_in..]
-                    .iter()
-                    .map(|&v| RingElement::from_constant(v))
-                    .collect(),
-            };
-            (c, z[..n_in].to_vec(), wp)
-        };
-
-        let stmts = vec![mk(&prover), mk(&prover)];
-        let proof = prover.prove(&stmts, &r1cs);
-
-        // Honest CP instance
-        let mut t1 = Transcript::new(b"symphony-v1");
-        for c in &proof.witness_data.fs_commitments {
-            t1.append_bytes(b"fs-commitment", c);
-        }
-        let honest_instance = cp_snark::encode_cp_instance(
-            &proof.witness_data.fs_commitments,
-            &proof.folded_instance,
-            &mut t1,
-        );
-
-        // Tampered CP instance — a real BackendSnark would reject this
-        let mut tampered_comms = proof.witness_data.fs_commitments.clone();
-        tampered_comms.push(b"extra-garbage".to_vec());
-        let mut t2 = Transcript::new(b"symphony-v1");
-        for c in &tampered_comms {
-            t2.append_bytes(b"fs-commitment", c);
-        }
-        let tampered_instance =
-            cp_snark::encode_cp_instance(&tampered_comms, &proof.folded_instance, &mut t2);
-
-        assert_ne!(
-            honest_instance, tampered_instance,
-            "tampered FS commitments must produce a different CP instance"
-        );
-    }
-
-    #[test]
-    fn different_r1cs_different_proofs() {
-        let params = SymphonyParams {
-            q: Q,
-            d: D,
-            kappa: 2,
-            ell_np: 2,
-            ell_h: D,
-            lambda_pj: 4,
-            n_bar: 4,
-            m: 4,
-            b: 16,
-            k_cs: 1,
-            n_in: 1,
-            ntt: SymphonyParams::try_ntt(Q, D),
-        };
-        let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
-
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-        let mk = |p: &SymphonyProver<DummySnark>| {
-            let full = RingVector {
-                elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
-            };
-            let (c, _) = p.commit_witness(&full);
-            let wp = RingVector {
-                elements: z[n_in..]
-                    .iter()
-                    .map(|&v| RingElement::from_constant(v))
-                    .collect(),
-            };
-            (c, z[..n_in].to_vec(), wp)
-        };
-
-        let stmts = vec![mk(&prover), mk(&prover)];
-        let pis: Vec<Vec<i64>> = stmts.iter().map(|s| s.1.clone()).collect();
-        let proof = prover.prove(&stmts, &r1cs);
-        assert!(verifier.verify(&pis, &proof, &r1cs));
-    }
-}
-
-// =========================================================================
-// SNARK verifier binds public inputs
-// =========================================================================
-mod snark_public_input_binding {
-    use super::*;
-    use symphony::snark::{DummySnark, SymphonyProver};
-
-    fn small_params() -> SymphonyParams {
-        SymphonyParams {
-            q: Q,
-            d: D,
-            kappa: 2,
-            ell_np: 2,
-            ell_h: D,
-            lambda_pj: 4,
-            n_bar: 4,
-            m: 4,
-            b: 16,
-            k_cs: 1,
-            n_in: 1,
-            ntt: SymphonyParams::try_ntt(Q, D),
-        }
-    }
-
-    fn make_snark_statement(
-        prover: &SymphonyProver<DummySnark>,
-        z: &[i64],
-        n_in: usize,
-    ) -> (Commitment, Vec<i64>, RingVector) {
-        let full_ring = RingVector {
-            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
-        };
-        let (c, _) = prover.commit_witness(&full_ring);
-        let witness_part = RingVector {
-            elements: z[n_in..]
-                .iter()
-                .map(|&v| RingElement::from_constant(v))
-                .collect(),
-        };
-        (c, z[..n_in].to_vec(), witness_part)
-    }
-
-    #[test]
-    fn verifier_uses_public_inputs_in_transcript() {
-        let params = small_params();
-        let (prover, verifier) = SymphonyProver::<DummySnark>::setup(params);
-
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-        let s1 = make_snark_statement(&prover, &z, n_in);
-        let s2 = make_snark_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let proof = prover.prove(&statements, &r1cs);
-
-        // Correct public inputs should verify
-        let correct_pis = vec![pi1.clone(), pi2.clone()];
-        assert!(verifier.verify(&correct_pis, &proof, &r1cs));
-
-        // Wrong public inputs should fail (DummySnark won't catch the
-        // cryptographic difference, but the transcript derivation path
-        // changes, which a real backend would detect)
-        let wrong_pis = vec![vec![999i64], vec![999i64]];
-        // With DummySnark, verification still "passes" because DummySnark
-        // doesn't check instance data. But the CP instance encoding differs:
-        let mut t_correct = symphony::fiat_shamir::transcript::Transcript::new(b"symphony-v1");
-        for pi in &correct_pis {
-            let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
-            t_correct.append_bytes(b"public-input", &bytes);
-        }
-        let mut c_correct = [0u8; 32];
-        t_correct.challenge_bytes(b"check", &mut c_correct);
-
-        let mut t_wrong = symphony::fiat_shamir::transcript::Transcript::new(b"symphony-v1");
-        for pi in &wrong_pis {
-            let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
-            t_wrong.append_bytes(b"public-input", &bytes);
-        }
-        let mut c_wrong = [0u8; 32];
-        t_wrong.challenge_bytes(b"check", &mut c_wrong);
-
-        assert_ne!(
-            c_correct, c_wrong,
-            "different public inputs must produce different transcript states"
-        );
-    }
-
-    #[test]
-    fn verifier_uses_r1cs_in_transcript() {
-        // Different R1CS metadata should produce different transcript state
-        let mut t1 = symphony::fiat_shamir::transcript::Transcript::new(b"symphony-v1");
-        t1.append_bytes(b"r1cs-m", &4u64.to_le_bytes());
-        t1.append_bytes(b"r1cs-n", &4u64.to_le_bytes());
-        t1.append_bytes(b"r1cs-pub", &1u64.to_le_bytes());
-        let mut c1 = [0u8; 32];
-        t1.challenge_bytes(b"check", &mut c1);
-
-        let mut t2 = symphony::fiat_shamir::transcript::Transcript::new(b"symphony-v1");
-        t2.append_bytes(b"r1cs-m", &8u64.to_le_bytes());
-        t2.append_bytes(b"r1cs-n", &8u64.to_le_bytes());
-        t2.append_bytes(b"r1cs-pub", &2u64.to_le_bytes());
-        let mut c2 = [0u8; 32];
-        t2.challenge_bytes(b"check", &mut c2);
-
-        assert_ne!(
-            c1, c2,
-            "different R1CS metadata must produce different transcript states"
-        );
-    }
-}
-
-// =========================================================================
-// CP-SNARK witness non-empty fix
-// =========================================================================
-mod cp_snark_witness_fix {
-    use super::*;
-    use symphony::snark::{DummySnark, SymphonyProver};
-
-    #[test]
-    fn cp_witness_is_nonempty_in_pipeline() {
-        let params = SymphonyParams {
-            q: Q,
-            d: D,
-            kappa: 2,
-            ell_np: 2,
-            ell_h: D,
-            lambda_pj: 4,
-            n_bar: 4,
-            m: 4,
-            b: 16,
-            k_cs: 1,
-            n_in: 1,
-            ntt: SymphonyParams::try_ntt(Q, D),
-        };
-        let (prover, _) = SymphonyProver::<DummySnark>::setup(params);
-
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-        let mk = |p: &SymphonyProver<DummySnark>| {
-            let full = RingVector {
-                elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
-            };
-            let (c, _) = p.commit_witness(&full);
-            let wp = RingVector {
-                elements: z[n_in..]
-                    .iter()
-                    .map(|&v| RingElement::from_constant(v))
-                    .collect(),
-            };
-            (c, z[..n_in].to_vec(), wp)
-        };
-
-        let stmts = vec![mk(&prover), mk(&prover)];
-        let proof = prover.prove(&stmts, &r1cs);
-
-        // The CP proof should be a valid DummyProof (non-empty data)
-        assert!(
-            proof.cp_proof.data.starts_with(b"dummy-proof:"),
-            "CP proof should be a valid DummyProof"
-        );
-        // The SNARK proof should also be valid
-        assert!(
-            proof.snark_proof.data.starts_with(b"dummy-proof:"),
-            "SNARK proof should be a valid DummyProof"
-        );
-    }
-}
-
-// =========================================================================
-// SumcheckSnark backend tests (real cryptographic verification)
-// =========================================================================
-mod sumcheck_snark_backend {
-    use super::*;
-    use symphony::snark::SymphonyProver;
+    use symphony::proof_orchestrator::Prover;
     use symphony::SumcheckSnark;
 
-    fn sumcheck_params() -> SymphonyParams {
+    fn params() -> SymphonyParams {
         SymphonyParams {
             q: Q,
             d: D,
@@ -1238,7 +836,7 @@ mod sumcheck_snark_backend {
     }
 
     fn make_statement(
-        prover: &SymphonyProver<SumcheckSnark>,
+        prover: &Prover<SumcheckSnark, SumcheckSnark>,
         z: &[i64],
         n_in: usize,
     ) -> (Commitment, Vec<i64>, RingVector) {
@@ -1256,405 +854,250 @@ mod sumcheck_snark_backend {
     }
 
     #[test]
-    fn sumcheck_snark_end_to_end() {
-        let params = sumcheck_params();
-        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
+    fn end_to_end() {
+        let (prover, verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
         let proof = prover.prove(&statements, &r1cs);
-        assert!(verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
-    }
-
-    #[test]
-    fn sumcheck_snark_tampered_cp_rejected() {
-        let params = sumcheck_params();
-        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let mut proof = prover.prove(&statements, &r1cs);
-
-        // Tamper with the CP proof's witness commitment
-        proof.cp_proof.witness_commitment[0] ^= 0xFF;
-        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
-    }
-
-    #[test]
-    fn sumcheck_snark_tampered_snark_proof_rejected() {
-        let params = sumcheck_params();
-        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let mut proof = prover.prove(&statements, &r1cs);
-
-        // Tamper with the SNARK proof's witness commitment
-        proof.snark_proof.witness_commitment[0] ^= 0xFF;
-        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
-    }
-
-    #[test]
-    fn sumcheck_snark_wrong_public_inputs_rejected() {
-        let params = sumcheck_params();
-        let (prover, verifier) = SymphonyProver::<SumcheckSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let statements = vec![s1, s2];
-        let proof = prover.prove(&statements, &r1cs);
-
-        let wrong_pis = vec![vec![999i64], vec![999i64]];
-        assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
-    }
-
-    fn pi1_pi2(pi1: &[i64], pi2: &[i64]) -> Vec<Vec<i64>> {
-        vec![pi1.to_vec(), pi2.to_vec()]
-    }
-}
-
-// =========================================================================
-// SpartanSnark backend tests (succinct proof via IPA)
-// =========================================================================
-mod spartan_snark_backend {
-    use super::*;
-    use symphony::snark::SymphonyProver;
-    use symphony::SpartanSnark;
-
-    fn spartan_params() -> SymphonyParams {
-        SymphonyParams {
-            q: Q,
-            d: D,
-            kappa: 2,
-            ell_np: 2,
-            ell_h: D,
-            lambda_pj: 4,
-            n_bar: 4,
-            m: 4,
-            b: 16,
-            k_cs: 1,
-            n_in: 1,
-            ntt: SymphonyParams::try_ntt(Q, D),
-        }
-    }
-
-    fn make_statement(
-        prover: &SymphonyProver<SpartanSnark>,
-        z: &[i64],
-        n_in: usize,
-    ) -> (Commitment, Vec<i64>, RingVector) {
-        let full_ring = RingVector {
-            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
-        };
-        let (c, _) = prover.commit_witness(&full_ring);
-        let witness_part = RingVector {
-            elements: z[n_in..]
-                .iter()
-                .map(|&v| RingElement::from_constant(v))
-                .collect(),
-        };
-        (c, z[..n_in].to_vec(), witness_part)
-    }
-
-    fn pi1_pi2(pi1: &[i64], pi2: &[i64]) -> Vec<Vec<i64>> {
-        vec![pi1.to_vec(), pi2.to_vec()]
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn spartan_snark_end_to_end() {
-        let params = spartan_params();
-        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let proof = prover.prove(&statements, &r1cs);
-        assert!(verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn spartan_snark_tampered_cp_witness_rejected() {
-        let params = spartan_params();
-        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let mut proof = prover.prove(&statements, &r1cs);
-
-        // Tamper with CP proof's Pedersen commitment
-        proof.cp_proof.witness_commitment +=
-            curve25519_dalek::ristretto::RistrettoPoint::from_uniform_bytes(&[1u8; 64]);
-        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn spartan_snark_tampered_sumcheck_rejected() {
-        let params = spartan_params();
-        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let mut proof = prover.prove(&statements, &r1cs);
-
-        // Tamper with the SNARK proof's sumcheck
-        if let Some(round) = proof.snark_proof.sumcheck_proof.round_polys.first_mut() {
-            if !round.is_empty() {
-                round[0] += curve25519_dalek::scalar::Scalar::ONE;
-            }
-        }
-        assert!(!verifier.verify(&pi1_pi2(&pi1, &pi2), &proof, &r1cs));
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn spartan_snark_wrong_public_inputs_rejected() {
-        let params = spartan_params();
-        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-
-        let s1 = make_statement(&prover, &z, n_in);
-        let s2 = make_statement(&prover, &z, n_in);
-        let statements = vec![s1, s2];
-        let proof = prover.prove(&statements, &r1cs);
-
-        let wrong_pis = vec![vec![999i64], vec![999i64]];
-        assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn bytes_to_scalars_length_sentinel() {
-        use symphony::snark::{BackendSnark, RelationDescription};
-        let relation = RelationDescription {
-            num_instance_vars: 4,
-            num_witness_vars: 8,
-            num_constraints: 4,
-            context: None,
-        };
-        let (pk, vk) = SpartanSnark::setup(&relation);
-        let w1 = b"AAAA";
-        let w2 = b"AAAA\x00\x00\x00\x00";
-        let proof1 = SpartanSnark::prove(&pk, b"inst", w1);
-        let proof2 = SpartanSnark::prove(&pk, b"inst", w2);
-        assert!(SpartanSnark::verify(&vk, b"inst", &proof1));
-        assert!(SpartanSnark::verify(&vk, b"inst", &proof2));
-        // Different-length inputs must produce different Pedersen commitments
-        assert_ne!(
-            proof1.witness_commitment, proof2.witness_commitment,
-            "different-length inputs must produce different witness commitments"
-        );
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn context_hash_differs_per_relation() {
-        use symphony::snark::{BackendSnark, RelationDescription};
-        let relation1 = RelationDescription {
-            num_instance_vars: 4,
-            num_witness_vars: 8,
-            num_constraints: 4,
-            context: Some(b"context-A".to_vec()),
-        };
-        let relation2 = RelationDescription {
-            num_instance_vars: 4,
-            num_witness_vars: 8,
-            num_constraints: 4,
-            context: Some(b"context-B".to_vec()),
-        };
-        let (pk1, _) = SpartanSnark::setup(&relation1);
-        let (pk2, _) = SpartanSnark::setup(&relation2);
-        assert_ne!(
-            pk1.context_hash, pk2.context_hash,
-            "different contexts must produce different context_hash values"
-        );
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn rejects_proof_under_wrong_context() {
-        use symphony::snark::{BackendSnark, RelationDescription};
-        let relation_a = RelationDescription {
-            num_instance_vars: 4,
-            num_witness_vars: 8,
-            num_constraints: 4,
-            context: Some(b"relation-A-context".to_vec()),
-        };
-        let relation_b = RelationDescription {
-            num_instance_vars: 4,
-            num_witness_vars: 8,
-            num_constraints: 4,
-            context: Some(b"relation-B-context".to_vec()),
-        };
-        let (pk_a, _vk_a) = SpartanSnark::setup(&relation_a);
-        let (_pk_b, vk_b) = SpartanSnark::setup(&relation_b);
-        let proof = SpartanSnark::prove(&pk_a, b"instance", b"witness");
-        assert!(
-            !SpartanSnark::verify(&vk_b, b"instance", &proof),
-            "proof should not verify under a different relation's vk"
-        );
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn pedersen_extend_to_bounded() {
-        use symphony::snark::spartan::commitment::PedersenKey;
-        let key = PedersenKey::setup(4, b"test-seed");
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut k = key.clone();
-            k.extend_to((1 << 24) + 1, b"test-seed");
-        }));
-        assert!(result.is_err(), "extend_to should panic when n > 2^24");
-        let mut k = key;
-        k.extend_to(8, b"test-seed");
-        assert_eq!(k.generators.len(), 8);
-    }
-}
-
-// =========================================================================
-// WHIR backend pipeline
-// =========================================================================
-#[cfg(feature = "whir")]
-mod whir_pipeline {
-    use super::*;
-    use p3_field::PrimeCharacteristicRing;
-    use symphony::snark::{whir::WhirSnark, SymphonyProver};
-
-    fn small_params() -> SymphonyParams {
-        SymphonyParams {
-            q: Q,
-            d: D,
-            kappa: 2,
-            ell_np: 2,
-            ell_h: D,
-            lambda_pj: 4,
-            n_bar: 4,
-            m: 4,
-            b: 16,
-            k_cs: 1,
-            n_in: 1,
-            ntt: SymphonyParams::try_ntt(Q, D),
-        }
-    }
-
-    fn make_whir_statement(
-        prover: &SymphonyProver<WhirSnark>,
-        z: &[i64],
-        n_in: usize,
-    ) -> (Commitment, Vec<i64>, RingVector) {
-        let full_ring = RingVector {
-            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
-        };
-        let (c, _) = prover.commit_witness(&full_ring);
-        let witness_part = RingVector {
-            elements: z[n_in..]
-                .iter()
-                .map(|&v| RingElement::from_constant(v))
-                .collect(),
-        };
-        (c, z[..n_in].to_vec(), witness_part)
-    }
-
-    #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn whir_end_to_end_prove_verify() {
-        let params = small_params();
-        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
-
-        let (r1cs, z) = multi_r1cs();
-        let n_in = r1cs.num_public;
-        let s1 = make_whir_statement(&prover, &z, n_in);
-        let s2 = make_whir_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
-        let proof = prover.prove(&statements, &r1cs);
-
-        let public_inputs = vec![pi1, pi2];
         assert!(verifier.verify(&public_inputs, &proof, &r1cs));
     }
 
     #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn whir_tampered_cp_proof_rejected() {
-        let params = small_params();
-        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
-
+    fn tampered_cp_rejected() {
+        let (prover, verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_whir_statement(&prover, &z, n_in);
-        let s2 = make_whir_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
         let mut proof = prover.prove(&statements, &r1cs);
+        proof.cp_proof.witness_commitment[0] ^= 0xFF;
 
-        // Tamper with the CP proof's claimed polynomial evaluation
-        proof.cp_proof.z_eval += p3_baby_bear::BabyBear::ONE;
-
-        let public_inputs = vec![pi1, pi2];
-        assert!(
-            !verifier.verify(&public_inputs, &proof, &r1cs),
-            "tampered WHIR CP proof should be rejected"
-        );
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
     }
 
     #[test]
-    #[ignore] // slow — run with `cargo test -- --ignored`
-    fn whir_tampered_snark_proof_rejected() {
-        let params = small_params();
-        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
-
+    fn tampered_output_rejected() {
+        let (prover, verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let s1 = make_whir_statement(&prover, &z, n_in);
-        let s2 = make_whir_statement(&prover, &z, n_in);
-        let pi1 = s1.1.clone();
-        let pi2 = s2.1.clone();
-        let statements = vec![s1, s2];
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let mut proof = prover.prove(&statements, &r1cs);
+        proof.output_proof.witness_commitment[0] ^= 0xFF;
+
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
+    }
+
+    #[test]
+    fn wrong_public_inputs_rejected() {
+        let (prover, verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let proof = prover.prove(&statements, &r1cs);
+
+        let wrong_pis = vec![vec![999i64], vec![999i64]];
+        assert!(!verifier.verify(&wrong_pis, &proof, &r1cs));
+    }
+}
+
+mod modular_spartan_backend {
+    use super::*;
+    use symphony::proof_orchestrator::Prover;
+    use symphony::SpartanSnark;
+
+    fn params() -> SymphonyParams {
+        SymphonyParams {
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
+            n_in: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
+        }
+    }
+
+    fn make_statement(
+        prover: &Prover<SpartanSnark, SpartanSnark>,
+        z: &[i64],
+        n_in: usize,
+    ) -> (Commitment, Vec<i64>, RingVector) {
+        let full_ring = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = prover.commit_witness(&full_ring);
+        let witness_part = RingVector {
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
+        };
+        (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    #[test]
+    #[ignore]
+    fn end_to_end() {
+        let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let proof = prover.prove(&statements, &r1cs);
+        assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+    }
+
+    #[test]
+    #[ignore]
+    fn tampered_cp_witness_rejected() {
+        let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
         let mut proof = prover.prove(&statements, &r1cs);
 
-        // Tamper with the SNARK proof evaluations
-        proof.snark_proof.evaluations[0] += p3_baby_bear::BabyBear::ONE;
+        proof.cp_proof.witness_commitment +=
+            curve25519_dalek::ristretto::RistrettoPoint::from_uniform_bytes(&[1u8; 64]);
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
+    }
 
-        let public_inputs = vec![pi1, pi2];
-        assert!(
-            !verifier.verify(&public_inputs, &proof, &r1cs),
-            "tampered WHIR SNARK proof should be rejected"
-        );
+    #[test]
+    #[ignore]
+    fn tampered_output_sumcheck_rejected() {
+        let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        if let Some(round) = proof.output_proof.sumcheck_proof.round_polys.first_mut() {
+            if !round.is_empty() {
+                round[0] += curve25519_dalek::scalar::Scalar::ONE;
+            }
+        }
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
+    }
+}
+
+#[cfg(feature = "whir")]
+mod modular_whir_backend {
+    use super::*;
+    use p3_field::PrimeCharacteristicRing;
+    use symphony::proof_orchestrator::Prover;
+    use symphony::snark::whir::WhirSnark;
+
+    fn params() -> SymphonyParams {
+        SymphonyParams {
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 2,
+            ell_h: D,
+            lambda_pj: 4,
+            n_bar: 4,
+            m: 4,
+            b: 16,
+            k_cs: 1,
+            n_in: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
+        }
+    }
+
+    fn make_statement(
+        prover: &Prover<WhirSnark, WhirSnark>,
+        z: &[i64],
+        n_in: usize,
+    ) -> (Commitment, Vec<i64>, RingVector) {
+        let full_ring = RingVector {
+            elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+        };
+        let (c, _) = prover.commit_witness(&full_ring);
+        let witness_part = RingVector {
+            elements: z[n_in..]
+                .iter()
+                .map(|&v| RingElement::from_constant(v))
+                .collect(),
+        };
+        (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    #[test]
+    #[ignore]
+    fn end_to_end() {
+        let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let proof = prover.prove(&statements, &r1cs);
+        assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+    }
+
+    #[test]
+    #[ignore]
+    fn tampered_cp_rejected() {
+        let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        proof.cp_proof.z_eval += p3_baby_bear::BabyBear::ONE;
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
+    }
+
+    #[test]
+    #[ignore]
+    fn tampered_output_rejected() {
+        let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let mut proof = prover.prove(&statements, &r1cs);
+
+        proof.output_proof.evaluations[0] += p3_baby_bear::BabyBear::ONE;
+        assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
     }
 }

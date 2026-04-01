@@ -748,7 +748,8 @@ mod params_validation {
 
     #[test]
     fn setup_panics_when_d_wrong() {
-        use symphony::snark::{DummySnark, SymphonyProver};
+        use symphony::proof_orchestrator::Prover;
+        use symphony::snark::DummySnark;
         let bad_params = SymphonyParams {
             q: 257,
             d: 32,
@@ -764,7 +765,7 @@ mod params_validation {
             ntt: SymphonyParams::try_ntt(257, D),
         };
         let result = std::panic::catch_unwind(|| {
-            SymphonyProver::<DummySnark>::setup(bad_params);
+            Prover::<DummySnark, DummySnark>::setup(bad_params);
         });
         assert!(result.is_err(), "setup() should panic when d != D");
     }

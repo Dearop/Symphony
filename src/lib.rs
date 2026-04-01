@@ -25,13 +25,13 @@ pub mod cp_snark;
 pub mod decomposition;
 pub mod fiat_shamir;
 pub mod folding;
+pub mod modular;
 pub mod params;
 pub mod r1cs;
 pub mod ring;
 pub mod rok;
 pub mod snark;
 pub mod sumcheck;
-pub mod modular;
 
 // Preserve existing crate-level module paths while keeping implementation grouped.
 pub use modular::adapter_symphony;

@@ -23,9 +23,10 @@ use symphony::cp_snark::IdentityRelation;
 #[cfg(feature = "whir")]
 use symphony::fiat_shamir::FSCommitment;
 use symphony::params::{SymphonyParams, D};
+use symphony::proof_orchestrator::Prover;
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::{RingElement, RingVector};
-use symphony::snark::{BackendSnark, RelationDescription, SymphonyProver};
+use symphony::snark::{BackendSnark, RelationDescription};
 #[cfg(feature = "whir")]
 use symphony::{CPSnark, HashCommitment, WhirSnark};
 use symphony::{SpartanSnark, SumcheckSnark};
@@ -112,7 +113,7 @@ fn bench_params(ell_np: usize) -> SymphonyParams {
 }
 
 fn make_snark_statement<S: BackendSnark>(
-    prover: &SymphonyProver<S>,
+    prover: &Prover<S, S>,
     z: &[i64],
     n_in: usize,
 ) -> (Commitment, Vec<i64>, RingVector) {
@@ -380,7 +381,7 @@ fn bench_pipeline_spartan_vs_k(c: &mut Criterion) {
 
     for &k in &[2usize, 4, 8] {
         let params = bench_params(k);
-        let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
+        let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params);
 
         let statements: Vec<(Commitment, Vec<i64>, RingVector)> = (0..k)
             .map(|_| make_snark_statement(&prover, &z, n_in))
@@ -508,7 +509,7 @@ fn bench_pipeline_whir_vs_k(c: &mut Criterion) {
 
     for &k in &[2usize, 4] {
         let params = bench_params(k);
-        let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
+        let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params);
 
         let statements: Vec<(Commitment, Vec<i64>, RingVector)> = (0..k)
             .map(|_| make_snark_statement(&prover, &z, n_in))
@@ -544,6 +545,207 @@ fn bench_pipeline_whir_vs_k(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// 6. Modular pipeline: split CP/output backends vs k
+// ---------------------------------------------------------------------------
+
+fn make_modular_statement<
+    CPB: symphony::cp_backend_api::CpBackend,
+    OB: symphony::output_backend_api::OutputBackend,
+>(
+    prover: &symphony::proof_orchestrator::Prover<CPB, OB>,
+    z: &[i64],
+    n_in: usize,
+) -> (Commitment, Vec<i64>, RingVector) {
+    let full_ring = RingVector {
+        elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+    };
+    let (c, _) = prover.commit_witness(&full_ring);
+    let witness_part = RingVector {
+        elements: z[n_in..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect(),
+    };
+    (c, z[..n_in].to_vec(), witness_part)
+}
+
+fn bench_modular_pipeline_vs_k(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cp_succinct/modular_pipeline_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(15));
+
+    let (r1cs, z) = multi_r1cs();
+    let n_in = r1cs.num_public;
+
+    for &k in &[2usize, 4, 8] {
+        let params = bench_params(k);
+
+        // --- Sumcheck CP + Sumcheck Output (baseline) ---
+        {
+            let (prover, verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params.clone());
+            let statements: Vec<_> = (0..k)
+                .map(|_| make_modular_statement(&prover, &z, n_in))
+                .collect();
+            let public_inputs: Vec<Vec<i64>> =
+                statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+            let proof = prover.prove(&statements, &r1cs);
+            assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+
+            group.throughput(Throughput::Elements(k as u64));
+
+            group.bench_function(BenchmarkId::new("prove_sum_sum", k), |b| {
+                b.iter(|| {
+                    black_box(prover.prove(black_box(&statements), black_box(&r1cs)));
+                });
+            });
+            group.bench_function(BenchmarkId::new("verify_sum_sum", k), |b| {
+                b.iter(|| {
+                    black_box(verifier.verify(
+                        black_box(&public_inputs),
+                        black_box(&proof),
+                        black_box(&r1cs),
+                    ));
+                });
+            });
+        }
+
+        // --- Spartan CP + Spartan Output ---
+        {
+            let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params.clone());
+            let statements: Vec<_> = (0..k)
+                .map(|_| make_modular_statement(&prover, &z, n_in))
+                .collect();
+            let public_inputs: Vec<Vec<i64>> =
+                statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+            let proof = prover.prove(&statements, &r1cs);
+            assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+
+            group.bench_function(BenchmarkId::new("prove_spartan_spartan", k), |b| {
+                b.iter(|| {
+                    black_box(prover.prove(black_box(&statements), black_box(&r1cs)));
+                });
+            });
+            group.bench_function(BenchmarkId::new("verify_spartan_spartan", k), |b| {
+                b.iter(|| {
+                    black_box(verifier.verify(
+                        black_box(&public_inputs),
+                        black_box(&proof),
+                        black_box(&r1cs),
+                    ));
+                });
+            });
+        }
+
+        // --- Split: Spartan CP + Sumcheck Output ---
+        {
+            let (prover, verifier) = Prover::<SpartanSnark, SumcheckSnark>::setup(params.clone());
+            let statements: Vec<_> = (0..k)
+                .map(|_| make_modular_statement(&prover, &z, n_in))
+                .collect();
+            let public_inputs: Vec<Vec<i64>> =
+                statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+            let proof = prover.prove(&statements, &r1cs);
+            assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+
+            group.bench_function(BenchmarkId::new("prove_spartan_sum", k), |b| {
+                b.iter(|| {
+                    black_box(prover.prove(black_box(&statements), black_box(&r1cs)));
+                });
+            });
+            group.bench_function(BenchmarkId::new("verify_spartan_sum", k), |b| {
+                b.iter(|| {
+                    black_box(verifier.verify(
+                        black_box(&public_inputs),
+                        black_box(&proof),
+                        black_box(&r1cs),
+                    ));
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// 7. Modular pipeline with WHIR backend (post-quantum)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "whir")]
+fn bench_modular_pipeline_whir_vs_k(c: &mut Criterion) {
+    use symphony::WhirSnark;
+
+    let mut group = c.benchmark_group("cp_succinct/modular_pipeline_whir_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(15));
+
+    let (r1cs, z) = multi_r1cs();
+    let n_in = r1cs.num_public;
+
+    for &k in &[2usize, 4] {
+        let params = bench_params(k);
+
+        // --- WHIR CP + WHIR Output (homogeneous PQ) ---
+        {
+            let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params.clone());
+            let statements: Vec<_> = (0..k)
+                .map(|_| make_modular_statement(&prover, &z, n_in))
+                .collect();
+            let public_inputs: Vec<Vec<i64>> =
+                statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+            let proof = prover.prove(&statements, &r1cs);
+            assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+
+            group.throughput(Throughput::Elements(k as u64));
+
+            group.bench_function(BenchmarkId::new("prove_whir_whir", k), |b| {
+                b.iter(|| {
+                    black_box(prover.prove(black_box(&statements), black_box(&r1cs)));
+                });
+            });
+            group.bench_function(BenchmarkId::new("verify_whir_whir", k), |b| {
+                b.iter(|| {
+                    black_box(verifier.verify(
+                        black_box(&public_inputs),
+                        black_box(&proof),
+                        black_box(&r1cs),
+                    ));
+                });
+            });
+        }
+
+        // --- Split: WHIR CP + Sumcheck Output ---
+        {
+            let (prover, verifier) = Prover::<WhirSnark, SumcheckSnark>::setup(params.clone());
+            let statements: Vec<_> = (0..k)
+                .map(|_| make_modular_statement(&prover, &z, n_in))
+                .collect();
+            let public_inputs: Vec<Vec<i64>> =
+                statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+            let proof = prover.prove(&statements, &r1cs);
+            assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+
+            group.bench_function(BenchmarkId::new("prove_whir_sum", k), |b| {
+                b.iter(|| {
+                    black_box(prover.prove(black_box(&statements), black_box(&r1cs)));
+                });
+            });
+            group.bench_function(BenchmarkId::new("verify_whir_sum", k), |b| {
+                b.iter(|| {
+                    black_box(verifier.verify(
+                        black_box(&public_inputs),
+                        black_box(&proof),
+                        black_box(&r1cs),
+                    ));
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg(not(feature = "whir"))]
 criterion_group!(
@@ -551,6 +753,7 @@ criterion_group!(
     bench_proof_size_scaling,
     bench_spartan_cp_scaling,
     bench_pipeline_spartan_vs_k,
+    bench_modular_pipeline_vs_k,
 );
 
 #[cfg(feature = "whir")]
@@ -559,8 +762,10 @@ criterion_group!(
     bench_proof_size_scaling,
     bench_spartan_cp_scaling,
     bench_pipeline_spartan_vs_k,
+    bench_modular_pipeline_vs_k,
     bench_whir_cp_scaling,
     bench_pipeline_whir_vs_k,
+    bench_modular_pipeline_whir_vs_k,
 );
 
 criterion_main!(benches);
