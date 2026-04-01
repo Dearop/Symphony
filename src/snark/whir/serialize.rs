@@ -13,6 +13,8 @@ pub struct WhirContext {
     pub d: usize,
     pub n_pub: usize,
     pub is_output_snark: bool,
+    /// True when this context carries the CP-SNARK R1CS (folding constraints).
+    pub is_cp_snark: bool,
 }
 
 /// Serialize a WhirContext to bytes.
@@ -24,6 +26,7 @@ pub fn serialize_context(ctx: &WhirContext) -> Vec<u8> {
     buf.extend_from_slice(&(ctx.d as u64).to_le_bytes());
     buf.extend_from_slice(&(ctx.n_pub as u64).to_le_bytes());
     buf.push(if ctx.is_output_snark { 1 } else { 0 });
+    buf.push(if ctx.is_cp_snark { 1 } else { 0 });
 
     buf.extend_from_slice(&(ctx.r1cs.num_constraints as u64).to_le_bytes());
     buf.extend_from_slice(&(ctx.r1cs.num_variables as u64).to_le_bytes());
@@ -48,6 +51,8 @@ pub fn deserialize_context(data: &[u8]) -> Option<WhirContext> {
     let n_pub = read_u64(data, &mut pos)? as usize;
     let is_output_snark = *data.get(pos)? != 0;
     pos += 1;
+    let is_cp_snark = *data.get(pos)? != 0;
+    pos += 1;
 
     let num_constraints = read_u64(data, &mut pos)? as usize;
     let num_variables = read_u64(data, &mut pos)? as usize;
@@ -70,6 +75,7 @@ pub fn deserialize_context(data: &[u8]) -> Option<WhirContext> {
         d,
         n_pub,
         is_output_snark,
+        is_cp_snark,
     })
 }
 
@@ -139,6 +145,7 @@ mod tests {
             d: 64,
             n_pub: 1,
             is_output_snark: true,
+            is_cp_snark: false,
         };
 
         let bytes = serialize_context(&ctx);
@@ -148,6 +155,7 @@ mod tests {
         assert_eq!(ctx2.d, ctx.d);
         assert_eq!(ctx2.n_pub, ctx.n_pub);
         assert_eq!(ctx2.is_output_snark, ctx.is_output_snark);
+        assert_eq!(ctx2.is_cp_snark, ctx.is_cp_snark);
         assert_eq!(ctx2.r1cs.num_constraints, ctx.r1cs.num_constraints);
         assert_eq!(ctx2.r1cs.num_variables, ctx.r1cs.num_variables);
         assert_eq!(ctx2.r1cs.a.entries.len(), ctx.r1cs.a.entries.len());

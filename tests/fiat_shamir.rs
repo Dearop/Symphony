@@ -193,9 +193,71 @@ mod fiat_shamir_bias_fix {
     }
 }
 
+mod transcript_edge_cases {
+    use super::*;
+
+    #[test]
+    fn append_empty_data() {
+        let mut t1 = Transcript::new(b"test");
+        let mut t2 = Transcript::new(b"test");
+        t1.append_bytes(b"label", b"");
+        t2.append_bytes(b"label", b"");
+        let mut c1 = [0u8; 32];
+        let mut c2 = [0u8; 32];
+        t1.challenge_bytes(b"ch", &mut c1);
+        t2.challenge_bytes(b"ch", &mut c2);
+        assert_eq!(c1, c2, "empty data appends should be deterministic");
+    }
+
+    #[test]
+    fn challenge_scalar_small_q() {
+        // Test with very small primes
+        for &q in &[2u64, 3, 5, 7, 11] {
+            let mut t = Transcript::new(b"small-q");
+            let q_half = (q / 2) as i64;
+            for i in 0..20 {
+                let label = format!("s-{i}");
+                let s = t.challenge_scalar(label.as_bytes(), q);
+                assert!(
+                    s >= -(q_half) && s <= q_half,
+                    "scalar {s} out of range for q={q}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn challenge_bytes_single_byte() {
+        let mut t = Transcript::new(b"single-byte");
+        t.append_bytes(b"data", b"hello");
+        let mut buf = [0u8; 1];
+        t.challenge_bytes(b"ch", &mut buf);
+        // Just verify it doesn't panic and produces something
+        // (with overwhelmingly high probability, it's non-zero after hashing)
+        let mut t2 = Transcript::new(b"single-byte");
+        t2.append_bytes(b"data", b"hello");
+        let mut buf2 = [0u8; 1];
+        t2.challenge_bytes(b"ch", &mut buf2);
+        assert_eq!(buf, buf2, "single byte challenge should be deterministic");
+    }
+}
+
 mod challenge_rejection_sampling {
     use super::*;
     use symphony::folding::challenge::{derive_challenge_vector, ChallengeSet};
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn challenge_vector_rejects_q_le_4() {
+        let mut transcript = Transcript::new(b"test");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            derive_challenge_vector(&mut transcript, 3, 1);
+        }));
+        assert!(
+            result.is_err(),
+            "derive_challenge_vector should panic when q <= 4"
+        );
+    }
 
     #[test]
     fn derived_challenges_in_set_s() {

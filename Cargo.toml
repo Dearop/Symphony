@@ -18,6 +18,8 @@ whir = [
     "p3-matrix",
     "p3-util",
     "p3-maybe-rayon",
+    "p3-multilinear-util",
+    "p3-commit",
 ]
 
 [dependencies]
@@ -38,6 +40,8 @@ p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optiona
 p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
 p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
 p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-multilinear-util = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "b0fa5139", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
@@ -45,4 +49,8 @@ proptest = "1.6"
 
 [[bench]]
 name = "folding"
+harness = false
+
+[[bench]]
+name = "cp_succinct"
 harness = false

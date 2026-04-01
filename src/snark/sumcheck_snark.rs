@@ -1,17 +1,27 @@
-//! Sumcheck-based [`BackendSnark`] implementation.
+//! Sumcheck-based [`BackendSnark`] implementation (NON-SUCCINCT, testing only).
 //!
 //! Uses the crate's own sumcheck infrastructure to provide a stronger demo
 //! backend than [`DummySnark`](super::DummySnark).
 //!
-//! The proof is **not succinct** (it includes the full witness table), but it
-//! provides:
-//! - **Consistency checks**: wrong instances, tampered proofs, and modified
-//!   witnesses are rejected.
+//! # Non-succinctness warning
+//!
+//! The proof **includes the full witness table** and the verifier performs
+//! O(N) passes over it. This is intentional: `SumcheckSnark` exists for
+//! integration testing of the Symphony pipeline (e.g., verifying that wrong
+//! instances and tampered proofs are rejected).
+//!
+//! **For succinct CP verification, use [`SpartanSnark`](super::spartan::SpartanSnark).**
+//! `SpartanSnark` replaces the witness table with a Pedersen commitment and
+//! uses a Bulletproofs-style IPA for evaluation proofs. The verifier never
+//! touches the raw witness.
+//!
+//! # What it provides
+//!
+//! - **Consistency**: wrong instances, tampered proofs, and modified witnesses
+//!   are rejected.
 //! - **Completeness**: valid instance/witness pairs always produce accepted
 //!   proofs.
-//!
-//! Intended for integration testing — verifying that the Symphony pipeline
-//! rejects invalid proofs and accepts valid ones.
+//! - **Simplicity**: easy to debug since the witness is directly available.
 
 use sha2::{Digest, Sha256};
 

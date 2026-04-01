@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "zk-math-context": {
+      "command": "/Users/paul/Documents/EPFL/MA-2/MSP/zk-MCP/.venv/bin/python",
+      "args": ["-m", "server.main"],
+      "cwd": "/Users/paul/Documents/EPFL/MA-2/MSP/zk-MCP"
+    }
+  }
+}

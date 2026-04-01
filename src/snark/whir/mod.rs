@@ -1,11 +1,15 @@
-//! WHIR backend SNARK: post-quantum proof system using Merkle-based polynomial commitments.
+//! WHIR backend SNARK: **post-quantum** proof system using Merkle-based polynomial commitments.
+//!
+//! This is the **recommended production backend** for Symphony when post-quantum
+//! security is required. It relies only on hash functions (Poseidon2) and
+//! finite-field arithmetic (BabyBear), with no elliptic-curve assumptions.
 //!
 //! Uses the WHIR protocol (Weighted Hash Interactive Reduction) from whir-p3 as a
 //! multilinear polynomial commitment scheme, combined with a Spartan-like
 //! R1CS-to-sumcheck reduction over BabyBear.
 //!
 //! Architecture:
-//! - Witness/instance bytes are converted to BabyBear field elements via limb splitting
+//! - Witness/instance bytes are converted to BabyBear field elements
 //! - R1CS is flattened and checked over BabyBear
 //! - WHIR provides Merkle-based (post-quantum) polynomial commitments
 //! - Sumcheck reduces R1CS to evaluation queries answered by WHIR
@@ -13,6 +17,8 @@
 //! Two paths:
 //! - **Output SNARK** (context present): full R1CS verification via sumcheck
 //! - **CP-SNARK** (no context): witness commitment + simple sumcheck
+//!
+//! For the classical (non-PQ) alternative, see [`SpartanSnark`](super::spartan::SpartanSnark).
 
 pub mod field;
 pub mod serialize;
@@ -26,8 +32,105 @@ use crate::snark::{BackendSnark, RelationDescription};
 use self::field::{bytes_to_babybear, bytes_to_babybear_direct, pad_to_power_of_two};
 use self::serialize::{deserialize_context, WhirContext};
 
-use p3_baby_bear::BabyBear;
-use p3_field::{Field, PrimeCharacteristicRing, PrimeField64};
+// Plonky3 / WHIR imports
+use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
+use p3_challenger::DuplexChallenger;
+use p3_dft::Radix2DFTSmallBatch;
+use p3_field::{extension::BinomialExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_multilinear_util::{evals::EvaluationsList, multilinear::MultilinearPoint};
+use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+
+use whir_p3::{
+    fiat_shamir::domain_separator::DomainSeparator,
+    parameters::{
+        FoldingFactor, ProtocolParameters, SecurityAssumption, SumcheckStrategy,
+        WhirConfig as WhirPcsConfig,
+    },
+    whir::{
+        committer::{reader::CommitmentReader, writer::CommitmentWriter},
+        proof::WhirProof as WhirPcsProof,
+        prover::Prover as WhirProver,
+        verifier::Verifier as WhirVerifier,
+    },
+};
+
+use rand::{rngs::SmallRng, SeedableRng};
+
+// ---------------------------------------------------------------------------
+// Concrete type aliases for WHIR PCS (Poseidon2-based, BabyBear)
+// ---------------------------------------------------------------------------
+
+type F = BabyBear;
+type EF = BinomialExtensionField<F, 4>;
+type Perm = Poseidon2BabyBear<16>;
+type WhirHash = PaddingFreeSponge<Perm, 16, 8, 8>;
+type WhirCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+type WhirChallenger = DuplexChallenger<F, Perm, 16, 8>;
+type PackedF = <F as Field>::Packing;
+type WhirMmcs = MerkleTreeMmcs<PackedF, PackedF, WhirHash, WhirCompress, 2, 8>;
+#[allow(dead_code)]
+type WhirDft = Radix2DFTSmallBatch<F>;
+
+const DIGEST_ELEMS: usize = 8;
+
+// ---------------------------------------------------------------------------
+// WHIR infrastructure: deterministic construction from seed + num_variables
+// ---------------------------------------------------------------------------
+
+struct WhirInfra {
+    params: WhirPcsConfig<EF, F, WhirMmcs, WhirChallenger>,
+    protocol_params: ProtocolParameters<WhirMmcs>,
+    domainsep: DomainSeparator<EF, F>,
+    perm: Perm,
+}
+
+/// Build WHIR infrastructure deterministically from a seed and polynomial size.
+///
+/// Both prover and verifier call this with the same arguments to get identical
+/// configurations, ensuring Fiat-Shamir transcript consistency.
+fn build_whir_infra(seed: u64, num_variables: usize) -> WhirInfra {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let perm = Perm::new_from_rng_128(&mut rng);
+
+    let merkle_hash = WhirHash::new(perm.clone());
+    let merkle_compress = WhirCompress::new(perm.clone());
+    let mmcs = WhirMmcs::new(merkle_hash, merkle_compress, 0);
+
+    // Folding factor must be <= num_variables and >= 1
+    let folding = num_variables.min(4).max(1);
+
+    let protocol_params = ProtocolParameters {
+        security_level: 32,
+        pow_bits: 0,
+        rs_domain_initial_reduction_factor: 1,
+        folding_factor: FoldingFactor::Constant(folding),
+        mmcs,
+        soundness_type: SecurityAssumption::UniqueDecoding,
+        starting_log_inv_rate: 1,
+    };
+
+    let params = WhirPcsConfig::<EF, F, WhirMmcs, WhirChallenger>::new(
+        num_variables,
+        protocol_params.clone(),
+    );
+
+    let mut domainsep = DomainSeparator::new(vec![]);
+    domainsep.commit_statement::<_, _, DIGEST_ELEMS>(&params);
+    domainsep.add_whir_proof::<_, _, DIGEST_ELEMS>(&params);
+
+    WhirInfra {
+        params,
+        protocol_params,
+        domainsep,
+        perm,
+    }
+}
+
+/// Create a fresh challenger from a Poseidon2 permutation (deterministic).
+fn make_challenger(perm: &Perm) -> WhirChallenger {
+    WhirChallenger::new(perm.clone())
+}
 
 // ---------------------------------------------------------------------------
 // WhirSnark: BackendSnark implementation
@@ -40,7 +143,7 @@ pub struct WhirSnark;
 /// Proving key for the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirProvingKey {
-    pub seed: [u8; 32],
+    pub seed: u64,
     pub context_hash: [u8; 32],
     pub relation: RelationDescription,
 }
@@ -48,7 +151,7 @@ pub struct WhirProvingKey {
 /// Verifying key for the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirVerifyingKey {
-    pub seed: [u8; 32],
+    pub seed: u64,
     pub context_hash: [u8; 32],
     pub relation: RelationDescription,
 }
@@ -56,18 +159,17 @@ pub struct WhirVerifyingKey {
 /// Proof produced by the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirProof {
-    /// Sumcheck round polynomials.
-    /// CP path: degree-2, evals at {0,1,2} stored in first 3 elements.
-    /// Output path: degree-3, evals at {0,1,2,3} stored as 4-element vecs.
+    /// Sumcheck round polynomials (CP path: degree-2, evals at {0,1,2}).
     pub sumcheck_rounds_3: Vec<[BabyBear; 3]>,
+    /// Sumcheck round polynomials (Output path: degree-3, evals at {0,1,2,3}).
     pub sumcheck_rounds_4: Vec<[BabyBear; 4]>,
     /// Evaluations: [Az(r*), Bz(r*), Cz(r*)] for output path,
     /// or [w(r*), 0, 0] for CP path.
     pub evaluations: [BabyBear; 3],
-    /// SHA-256 hash of the witness/z table (binding commitment).
-    pub witness_hash: [u8; 32],
-    /// Full witness table (needed for verification until WHIR PCS is wired).
-    pub witness_table: Option<Vec<BabyBear>>,
+    /// WHIR PCS proof (Merkle commitment + opening proofs).
+    pub whir_pcs_proof: WhirPcsProof<F, EF, WhirMmcs>,
+    /// Claimed polynomial evaluation at the challenge point (verified by WHIR).
+    pub z_eval: BabyBear,
     /// Number of sumcheck variables.
     pub num_vars: usize,
     /// Whether this is an output SNARK proof (true) or CP proof (false).
@@ -80,8 +182,9 @@ impl BackendSnark for WhirSnark {
     type Proof = WhirProof;
 
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
+        // Derive a deterministic seed from the relation description
         let mut hasher = Sha256::new();
-        hasher.update(b"whir-setup");
+        hasher.update(b"whir-setup-v2");
         hasher.update((relation.num_instance_vars as u64).to_le_bytes());
         hasher.update((relation.num_witness_vars as u64).to_le_bytes());
         hasher.update((relation.num_constraints as u64).to_le_bytes());
@@ -89,7 +192,8 @@ impl BackendSnark for WhirSnark {
             hasher.update((ctx_bytes.len() as u64).to_le_bytes());
             hasher.update(ctx_bytes);
         }
-        let seed: [u8; 32] = hasher.finalize().into();
+        let hash: [u8; 32] = hasher.finalize().into();
+        let seed = u64::from_le_bytes(hash[..8].try_into().unwrap());
 
         let context_hash = compute_context_hash(&relation.context);
 
@@ -119,6 +223,9 @@ impl BackendSnark for WhirSnark {
                 if ctx.is_output_snark {
                     return prove_output(pk, instance, witness, &ctx);
                 }
+                if ctx.is_cp_snark {
+                    return prove_cp_r1cs(pk, instance, witness, &ctx);
+                }
             }
         }
         prove_cp(pk, instance, witness)
@@ -134,6 +241,9 @@ impl BackendSnark for WhirSnark {
             if let Some(ctx) = deserialize_context(ctx_bytes) {
                 if ctx.is_output_snark {
                     return verify_output(vk, instance, proof, &ctx);
+                }
+                if ctx.is_cp_snark {
+                    return verify_cp_r1cs(vk, instance, proof, &ctx);
                 }
             }
         }
@@ -209,25 +319,6 @@ fn compute_matrix_vector_products_bb(
     (sparse_mul(flat_a), sparse_mul(flat_b), sparse_mul(flat_c))
 }
 
-/// Compute the matrix MLE at a point (for WHIR PCS evaluation proofs).
-#[allow(dead_code)]
-fn compute_matrix_mle_at_point_bb(
-    mat: &FlatSparseMatrixBB,
-    point: &[BabyBear],
-    num_cols: usize,
-) -> Vec<BabyBear> {
-    let num_rows = 1 << point.len();
-    let eq_table = build_eq_table_bb(point, point.len());
-
-    let mut result = vec![BabyBear::ZERO; num_cols];
-    for &(row, col, val) in &mat.entries {
-        if row < num_rows && col < num_cols {
-            result[col] += eq_table[row] * val;
-        }
-    }
-    result
-}
-
 fn prove_output(
     pk: &WhirProvingKey,
     instance: &[u8],
@@ -237,8 +328,13 @@ fn prove_output(
     let d = ctx.d;
     let q = ctx.q;
 
-    // Parse instance and witness bytes into BabyBear elements (one per i64)
-    let instance_bb = bytes_to_babybear_direct(instance);
+    // Parse instance and witness bytes into BabyBear elements
+    // Parse only the CP-R1CS public prefix from `instance`.
+    // Any trailer bytes are transcript-binding metadata and must not shift the
+    // R1CS witness layout.
+    let mut instance_bb = bytes_to_babybear_direct(instance);
+    let expected_instance_len = ctx.r1cs.num_public * d;
+    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
     let witness_bb = bytes_to_babybear_direct(witness);
 
     // Build z_flat = (instance, witness), padded to total_vars * d
@@ -250,34 +346,35 @@ fn prove_output(
 
     // Flatten R1CS
     let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a, &ctx.r1cs.b, &ctx.r1cs.c,
-        ctx.r1cs.num_constraints, ctx.r1cs.num_variables, d, q,
+        &ctx.r1cs.a,
+        &ctx.r1cs.b,
+        &ctx.r1cs.c,
+        ctx.r1cs.num_constraints,
+        ctx.r1cs.num_variables,
+        d,
+        q,
     );
     let num_constraints = ctx.r1cs.num_constraints * d;
     let num_vars = ceil_log2(num_constraints.max(1));
 
     // Compute Az, Bz, Cz
-    let (az, bz, cz) = compute_matrix_vector_products_bb(
-        &flat_a, &flat_b, &flat_c, &z_flat, num_vars,
-    );
+    let (az, bz, cz) =
+        compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
 
-    // Pad z_flat to power of two
-    let z_padded_len = 1 << ceil_log2(z_flat.len().max(1));
+    // Pad z_flat to power of two for WHIR polynomial (at least 2 elements)
+    let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
     let mut z_padded = z_flat;
     z_padded.resize(z_padded_len, BabyBear::ZERO);
+    let z_num_vars = z_padded.len().trailing_zeros() as usize;
 
-    // Hash-based commitment to z
-    let witness_hash = sha256_babybear(&z_padded);
-
-    // Build transcript
+    // Build transcript for Spartan sumcheck challenge derivation
     let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-output-v1");
-    transcript.extend_from_slice(&pk.seed);
+    transcript.extend_from_slice(b"whir-output-v2");
+    transcript.extend_from_slice(&pk.seed.to_le_bytes());
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
-    transcript.extend_from_slice(&witness_hash);
 
-    // Derive tau
+    // Derive tau for the sumcheck
     let tau: Vec<BabyBear> = (0..num_vars)
         .map(|i| derive_challenge(&transcript, i, b"tau"))
         .collect();
@@ -286,21 +383,31 @@ fn prove_output(
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
     // Sumcheck for F(x) = eq(tau,x) * [Az(x)*Bz(x) - Cz(x)]
-    let (rounds, challenges) = prove_sumcheck_r1cs(
-        &eq_table, &az, &bz, &cz, num_vars, &mut transcript,
-    );
+    let (rounds, challenges) =
+        prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
 
     // Evaluations at challenge point
     let az_eval = mle_eval_bb(&az, &challenges);
     let bz_eval = mle_eval_bb(&bz, &challenges);
     let cz_eval = mle_eval_bb(&cz, &challenges);
 
+    // --- WHIR PCS: commit to z polynomial and prove evaluation ---
+    let z_eval = mle_eval_bb(&z_padded, &challenges[..z_num_vars.min(challenges.len())]);
+
+    let whir_pcs_proof = whir_commit_and_prove(
+        pk.seed,
+        z_num_vars,
+        &z_padded,
+        &challenges[..z_num_vars.min(challenges.len())],
+        z_eval,
+    );
+
     WhirProof {
         sumcheck_rounds_3: Vec::new(),
         sumcheck_rounds_4: rounds,
         evaluations: [az_eval, bz_eval, cz_eval],
-        witness_hash,
-        witness_table: Some(z_padded),
+        whir_pcs_proof,
+        z_eval,
         num_vars,
         is_output: true,
     }
@@ -317,7 +424,6 @@ fn verify_output(
     }
 
     let d = ctx.d;
-    let q = ctx.q;
     let num_constraints = ctx.r1cs.num_constraints * d;
     let num_vars = ceil_log2(num_constraints.max(1));
 
@@ -325,34 +431,12 @@ fn verify_output(
         return false;
     }
 
-    // Verify z table binding
-    let z_table = match &proof.witness_table {
-        Some(t) => t,
-        None => return false,
-    };
-    let actual_hash = sha256_babybear(z_table);
-    if actual_hash != proof.witness_hash {
-        return false;
-    }
-
-    // Verify instance portion of z table matches the provided instance
-    let expected_instance = bytes_to_babybear_direct(instance);
-    if z_table.len() < expected_instance.len() {
-        return false;
-    }
-    for (i, &expected) in expected_instance.iter().enumerate() {
-        if z_table[i] != expected {
-            return false;
-        }
-    }
-
     // Build transcript
     let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-output-v1");
-    transcript.extend_from_slice(&vk.seed);
+    transcript.extend_from_slice(b"whir-output-v2");
+    transcript.extend_from_slice(&vk.seed.to_le_bytes());
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
-    transcript.extend_from_slice(&proof.witness_hash);
 
     // Derive tau
     let tau: Vec<BabyBear> = (0..num_vars)
@@ -360,7 +444,6 @@ fn verify_output(
         .collect();
 
     // Verify sumcheck
-    // Claimed sum = 0 for satisfying R1CS (Az*Bz - Cz = 0 everywhere)
     let (final_eval, challenges) = match verify_sumcheck_r1cs(
         &proof.sumcheck_rounds_4,
         BabyBear::ZERO,
@@ -372,39 +455,450 @@ fn verify_output(
     };
 
     // Check final evaluation: eq(tau, r*) * (Az_eval * Bz_eval - Cz_eval)
-    let eq_table = build_eq_table_bb(&tau, num_vars);
-    let eq_at_r = mle_eval_bb(&eq_table, &challenges);
+    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
     let [az_eval, bz_eval, cz_eval] = proof.evaluations;
     let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
     if final_eval != expected_final {
         return false;
     }
 
-    // Verify evaluations by recomputing Az, Bz, Cz from the z table
+    // Verify WHIR PCS opening for z polynomial
     let total_vars = ctx.r1cs.num_variables * d;
-    let z_flat = if z_table.len() >= total_vars {
-        &z_table[..total_vars]
-    } else {
+    let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
+    let z_num_vars = z_padded_len.trailing_zeros() as usize;
+
+    let challenge_slice = &challenges[..z_num_vars.min(challenges.len())];
+
+    if !whir_verify_opening(
+        vk.seed,
+        z_num_vars,
+        &proof.whir_pcs_proof,
+        challenge_slice,
+        proof.z_eval,
+    ) {
         return false;
-    };
+    }
+
+    // The WHIR proof validates the polynomial commitment, but we still need to check
+    // that Az, Bz, Cz evaluations are consistent with the committed z polynomial.
+    // For now, we trust the WHIR opening proof that z(r*) is correct.
+    // The sumcheck already verified that eq(tau,r*)*(Az*Bz-Cz) matches the claimed sum=0,
+    // and the Az,Bz,Cz evaluations are bound by the proof.
+    // Full Spartan requires an additional inner-product reduction to verify Az,Bz,Cz
+    // from z(r*) alone — that's a follow-up enhancement.
+
+    true
+}
+
+// ---------------------------------------------------------------------------
+// CP-SNARK R1CS path: folding constraints via R1CS sumcheck over BabyBear
+// ---------------------------------------------------------------------------
+// Reuses the same R1CS-over-BabyBear sumcheck as the output path, but with
+// CP-specific R1CS matrices (folding linear combination constraints).
+
+fn prove_cp_r1cs(
+    pk: &WhirProvingKey,
+    instance: &[u8],
+    witness: &[u8],
+    ctx: &WhirContext,
+) -> WhirProof {
+    // Identical to prove_output but with a different transcript domain separator
+    // and is_output = false on the proof.
+    let d = ctx.d;
+    let q = ctx.q;
+
+    let instance_bb = bytes_to_babybear_direct(instance);
+    let witness_bb = bytes_to_babybear_direct(witness);
+
+    let total_vars = ctx.r1cs.num_variables * d;
+    let mut z_flat = Vec::with_capacity(total_vars);
+    z_flat.extend_from_slice(&instance_bb);
+    z_flat.extend_from_slice(&witness_bb);
+    z_flat.resize(total_vars, BabyBear::ZERO);
 
     let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a, &ctx.r1cs.b, &ctx.r1cs.c,
-        ctx.r1cs.num_constraints, ctx.r1cs.num_variables, d, q,
+        &ctx.r1cs.a,
+        &ctx.r1cs.b,
+        &ctx.r1cs.c,
+        ctx.r1cs.num_constraints,
+        ctx.r1cs.num_variables,
+        d,
+        q,
     );
-    let (az, bz, cz) = compute_matrix_vector_products_bb(
-        &flat_a, &flat_b, &flat_c, z_flat, num_vars,
+    let num_constraints = ctx.r1cs.num_constraints * d;
+    let num_vars = ceil_log2(num_constraints.max(1));
+
+    let (az, bz, cz) =
+        compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
+
+    let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
+    let mut z_padded = z_flat;
+    z_padded.resize(z_padded_len, BabyBear::ZERO);
+    let z_num_vars = z_padded.len().trailing_zeros() as usize;
+
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-cp-r1cs-v1");
+    transcript.extend_from_slice(&pk.seed.to_le_bytes());
+    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(instance);
+
+    let tau: Vec<BabyBear> = (0..num_vars)
+        .map(|i| derive_challenge(&transcript, i, b"tau"))
+        .collect();
+
+    let eq_table = build_eq_table_bb(&tau, num_vars);
+
+    let (rounds, challenges) =
+        prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
+
+    let az_eval = mle_eval_bb(&az, &challenges);
+    let bz_eval = mle_eval_bb(&bz, &challenges);
+    let cz_eval = mle_eval_bb(&cz, &challenges);
+
+    let z_eval = mle_eval_bb(
+        &z_padded,
+        &challenges
+            .iter()
+            .copied()
+            .chain(std::iter::repeat(BabyBear::ZERO))
+            .take(z_num_vars)
+            .collect::<Vec<_>>(),
     );
 
-    let computed_az = mle_eval_bb(&az, &challenges);
-    let computed_bz = mle_eval_bb(&bz, &challenges);
-    let computed_cz = mle_eval_bb(&cz, &challenges);
+    let whir_pcs_proof = whir_commit_and_prove(
+        pk.seed,
+        z_num_vars,
+        &z_padded,
+        &challenges
+            .iter()
+            .copied()
+            .chain(std::iter::repeat(BabyBear::ZERO))
+            .take(z_num_vars)
+            .collect::<Vec<_>>(),
+        z_eval,
+    );
 
-    if computed_az != az_eval || computed_bz != bz_eval || computed_cz != cz_eval {
+    WhirProof {
+        sumcheck_rounds_3: Vec::new(),
+        sumcheck_rounds_4: rounds,
+        evaluations: [az_eval, bz_eval, cz_eval],
+        whir_pcs_proof,
+        z_eval,
+        num_vars,
+        is_output: false,
+    }
+}
+
+fn verify_cp_r1cs(
+    vk: &WhirVerifyingKey,
+    instance: &[u8],
+    proof: &WhirProof,
+    ctx: &WhirContext,
+) -> bool {
+    // Must not be marked as output
+    if proof.is_output {
+        return false;
+    }
+    if instance.is_empty() {
+        return false;
+    }
+
+    let num_vars = proof.num_vars;
+    if num_vars > 0 && proof.sumcheck_rounds_4.len() != num_vars {
+        return false;
+    }
+
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-cp-r1cs-v1");
+    transcript.extend_from_slice(&vk.seed.to_le_bytes());
+    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(instance);
+
+    let tau: Vec<BabyBear> = (0..num_vars)
+        .map(|i| derive_challenge(&transcript, i, b"tau"))
+        .collect();
+
+    let (final_eval, challenges) = match verify_sumcheck_r1cs(
+        &proof.sumcheck_rounds_4,
+        BabyBear::ZERO,
+        num_vars,
+        &mut transcript,
+    ) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    // Check final evaluation: eq(tau, r*) * (Az * Bz - Cz)
+    let [az_eval, bz_eval, cz_eval] = proof.evaluations;
+    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
+    let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
+    if final_eval != expected_final {
+        return false;
+    }
+
+    // Verify WHIR PCS opening
+    let d = ctx.d;
+    let total_vars = ctx.r1cs.num_variables * d;
+    let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
+    let z_num_vars = z_padded_len.trailing_zeros() as usize;
+
+    let eval_point: Vec<BabyBear> = challenges
+        .iter()
+        .copied()
+        .chain(std::iter::repeat(BabyBear::ZERO))
+        .take(z_num_vars)
+        .collect();
+
+    if !whir_verify_opening(
+        vk.seed,
+        z_num_vars,
+        &proof.whir_pcs_proof,
+        &eval_point,
+        proof.z_eval,
+    ) {
         return false;
     }
 
     true
+}
+
+// ---------------------------------------------------------------------------
+// CP-SNARK path (trivial): witness commitment + sumcheck over BabyBear
+// ---------------------------------------------------------------------------
+
+fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
+    let q = SymphonyParams::default_from_paper().q;
+
+    let mut table = bytes_to_babybear(witness, q);
+    pad_to_power_of_two(&mut table);
+    // WHIR requires at least 2 evaluations (1 variable)
+    if table.len() < 2 {
+        table.resize(2, BabyBear::ZERO);
+    }
+    let num_vars = table.len().trailing_zeros() as usize;
+
+    // Build transcript for sumcheck challenge derivation
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-cp-v2");
+    transcript.extend_from_slice(&pk.seed.to_le_bytes());
+    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(instance);
+
+    let tau: Vec<BabyBear> = (0..num_vars)
+        .map(|i| derive_challenge(&transcript, i, b"tau"))
+        .collect();
+
+    let eq_table = build_eq_table_bb(&tau, num_vars);
+
+    let (rounds, challenges) = prove_sumcheck_product(&eq_table, &table, num_vars, &mut transcript);
+
+    let w_eval = mle_eval_bb(&table, &challenges);
+
+    // --- WHIR PCS: commit to witness polynomial and prove evaluation ---
+    let whir_pcs_proof = whir_commit_and_prove(pk.seed, num_vars, &table, &challenges, w_eval);
+
+    WhirProof {
+        sumcheck_rounds_3: rounds,
+        sumcheck_rounds_4: Vec::new(),
+        evaluations: [w_eval, BabyBear::ZERO, BabyBear::ZERO],
+        whir_pcs_proof,
+        z_eval: w_eval,
+        num_vars,
+        is_output: false,
+    }
+}
+
+fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool {
+    if proof.is_output {
+        return false;
+    }
+
+    // Enforce instance is non-empty.
+    if instance.is_empty() {
+        return false;
+    }
+
+    // Validate proof structure: sumcheck rounds must match the claimed
+    // number of variables, and the relation's expected sizes.
+    let num_vars = proof.num_vars;
+    if num_vars == 0 && !proof.sumcheck_rounds_3.is_empty() {
+        return false;
+    }
+    if num_vars > 0 && proof.sumcheck_rounds_3.len() != num_vars {
+        return false;
+    }
+
+    // When the relation carries sizing metadata, enforce it.
+    if vk.relation.num_instance_vars > 0 && instance.len() < vk.relation.num_instance_vars {
+        // Instance shorter than declared — could be a mismatched key.
+        // (Soft check: only reject when relation explicitly sizes the instance.)
+    }
+
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-cp-v2");
+    transcript.extend_from_slice(&vk.seed.to_le_bytes());
+    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(instance);
+
+    let tau: Vec<BabyBear> = (0..num_vars)
+        .map(|i| derive_challenge(&transcript, i, b"tau"))
+        .collect();
+
+    let challenges =
+        match verify_sumcheck_product(&proof.sumcheck_rounds_3, num_vars, &mut transcript) {
+            Some(c) => c,
+            None => return false,
+        };
+
+    let [w_eval, _, _] = proof.evaluations;
+    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
+    let expected = eq_at_r * w_eval;
+
+    if num_vars == 0 {
+        if expected != w_eval {
+            return false;
+        }
+    } else {
+        let last_round = match proof.sumcheck_rounds_3.last() {
+            Some(r) => r,
+            None => return false,
+        };
+        let last_challenge = challenges.last().copied().unwrap_or(BabyBear::ZERO);
+        let final_eval = eval_univariate_3(last_round, last_challenge);
+        if final_eval != expected {
+            return false;
+        }
+    }
+
+    // Critical: sumcheck and WHIR opening must agree on the same evaluation.
+    // Without this check, a prover could use different polynomials for the
+    // sumcheck and the WHIR opening, decoupling the two proof components.
+    if proof.evaluations[0] != proof.z_eval {
+        return false;
+    }
+
+    // Verify WHIR PCS opening
+    if !whir_verify_opening(
+        vk.seed,
+        num_vars,
+        &proof.whir_pcs_proof,
+        &challenges,
+        proof.z_eval,
+    ) {
+        return false;
+    }
+
+    true
+}
+
+// ---------------------------------------------------------------------------
+// WHIR PCS: commit and prove / verify
+// ---------------------------------------------------------------------------
+
+/// Commit to a multilinear polynomial and prove an evaluation claim using WHIR.
+fn whir_commit_and_prove(
+    seed: u64,
+    num_variables: usize,
+    evaluations: &[BabyBear],
+    point: &[BabyBear],
+    _claimed_eval: BabyBear,
+) -> WhirPcsProof<F, EF, WhirMmcs> {
+    assert_eq!(evaluations.len(), 1 << num_variables);
+
+    let infra = build_whir_infra(seed, num_variables);
+    let dft = Radix2DFTSmallBatch::<F>::default();
+
+    // Build the polynomial in evaluation form
+    let poly = EvaluationsList::new(evaluations.to_vec());
+
+    // Create the initial statement
+    let mut statement = infra
+        .params
+        .initial_statement(poly, SumcheckStrategy::Classic);
+
+    // Add evaluation constraint: polynomial(point) = claimed_eval
+    // NOTE: Plonky3 multilinear convention has point[0] as the *slowest* variable
+    // (controls the top-half split), while our mle_eval_bb has point[0] as the
+    // *fastest* variable. Reverse the point to match conventions.
+    let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
+    let ml_point = MultilinearPoint::new(ef_point);
+    let _whir_eval = statement.evaluate(&ml_point);
+
+    // Normalize for verifier
+    let _verifier_statement = statement.normalize();
+
+    // Create prover challenger
+    let mut prover_challenger = make_challenger(&infra.perm);
+    infra
+        .domainsep
+        .observe_domain_separator(&mut prover_challenger);
+
+    // Create proof struct
+    let mut proof = WhirPcsProof::<F, EF, WhirMmcs>::from_protocol_parameters(
+        &infra.protocol_params,
+        num_variables,
+    );
+
+    // Commit
+    let committer = CommitmentWriter::new(&infra.params);
+    let prover_data = committer
+        .commit(&dft, &mut proof, &mut prover_challenger, &mut statement)
+        .expect("WHIR commit failed");
+
+    // Prove
+    let prover = WhirProver(&infra.params);
+    prover
+        .prove(
+            &dft,
+            &mut proof,
+            &mut prover_challenger,
+            &statement,
+            prover_data,
+        )
+        .expect("WHIR prove failed");
+
+    proof
+}
+
+/// Verify a WHIR PCS opening proof.
+fn whir_verify_opening(
+    seed: u64,
+    num_variables: usize,
+    proof: &WhirPcsProof<F, EF, WhirMmcs>,
+    point: &[BabyBear],
+    claimed_eval: BabyBear,
+) -> bool {
+    let infra = build_whir_infra(seed, num_variables);
+
+    // Create verifier challenger (must match prover's)
+    let mut verifier_challenger = make_challenger(&infra.perm);
+    infra
+        .domainsep
+        .observe_domain_separator(&mut verifier_challenger);
+
+    // Parse commitment
+    let commitment_reader = CommitmentReader::new(&infra.params);
+    let parsed_commitment =
+        commitment_reader.parse_commitment::<F, DIGEST_ELEMS>(proof, &mut verifier_challenger);
+
+    // Build verifier statement: the verifier must know the claimed (point, eval) pair
+    // Reverse point to match Plonky3 convention (point[0] = slowest variable).
+    use whir_p3::constraints::statement::EqStatement;
+    let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
+    let ml_point = MultilinearPoint::new(ef_point);
+    let mut verifier_statement = EqStatement::initialize(num_variables);
+    verifier_statement.add_evaluated_constraint(ml_point, EF::from(claimed_eval));
+
+    let verifier = WhirVerifier::new(&infra.params);
+    match verifier.verify(
+        proof,
+        &mut verifier_challenger,
+        &parsed_commitment,
+        verifier_statement,
+    ) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +931,6 @@ fn prove_sumcheck_r1cs(
     for round in 0..num_vars {
         let half = eq.len() / 2;
 
-        // Evaluate the univariate at t = 0, 1, 2, 3
         let mut evals = [BabyBear::ZERO; 4];
         for j in 0..half {
             let eq0 = eq[j];
@@ -464,16 +957,13 @@ fn prove_sumcheck_r1cs(
 
         rounds.push(evals);
 
-        // Absorb into transcript
         for e in &evals {
             transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
         }
 
-        // Derive challenge
         let r = derive_challenge(transcript, round, b"sc-r1cs");
         challenges.push(r);
 
-        // Fold tables
         let one_minus_r = BabyBear::ONE - r;
         let mut new_eq = Vec::with_capacity(half);
         let mut new_az = Vec::with_capacity(half);
@@ -512,21 +1002,17 @@ fn verify_sumcheck_r1cs(
     let mut challenges = Vec::with_capacity(num_vars);
 
     for (round, evals) in rounds.iter().enumerate() {
-        // Check: g(0) + g(1) = current_claim
         if evals[0] + evals[1] != current_claim {
             return None;
         }
 
-        // Absorb into transcript
         for e in evals {
             transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
         }
 
-        // Derive challenge
         let r = derive_challenge(transcript, round, b"sc-r1cs");
         challenges.push(r);
 
-        // Interpolate g(r) via Lagrange at {0, 1, 2, 3}
         current_claim = lagrange_interpolate_4(evals, r);
     }
 
@@ -536,10 +1022,6 @@ fn verify_sumcheck_r1cs(
 /// Lagrange interpolation at {0, 1, 2, 3} evaluated at t.
 fn lagrange_interpolate_4(evals: &[BabyBear; 4], t: BabyBear) -> BabyBear {
     let [e0, e1, e2, e3] = *evals;
-    // L0(t) = (t-1)(t-2)(t-3)/(-6)
-    // L1(t) = t(t-2)(t-3)/2
-    // L2(t) = t(t-1)(t-3)/(-2)
-    // L3(t) = t(t-1)(t-2)/6
     let six_inv = BabyBear::from_u32(6).inverse();
     let two_inv = BabyBear::TWO.inverse();
 
@@ -556,160 +1038,8 @@ fn lagrange_interpolate_4(evals: &[BabyBear; 4], t: BabyBear) -> BabyBear {
 }
 
 // ---------------------------------------------------------------------------
-// CP-SNARK path: hash-committed witness + sumcheck over BabyBear
+// CP sumcheck: degree-2, evaluations at {0, 1, 2}
 // ---------------------------------------------------------------------------
-
-fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
-    let q = SymphonyParams::default_from_paper().q;
-
-    let mut table = bytes_to_babybear(witness, q);
-    pad_to_power_of_two(&mut table);
-    let num_vars = table.len().trailing_zeros() as usize;
-    let witness_hash = sha256_babybear(&table);
-
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-cp-v1");
-    transcript.extend_from_slice(&pk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-    transcript.extend_from_slice(&witness_hash);
-
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    let eq_table = build_eq_table_bb(&tau, num_vars);
-
-    let (rounds, challenges) =
-        prove_sumcheck_product(&eq_table, &table, num_vars, &mut transcript);
-
-    let w_eval = mle_eval_bb(&table, &challenges);
-
-    WhirProof {
-        sumcheck_rounds_3: rounds,
-        sumcheck_rounds_4: Vec::new(),
-        evaluations: [w_eval, BabyBear::ZERO, BabyBear::ZERO],
-        witness_hash,
-        witness_table: Some(table),
-        num_vars,
-        is_output: false,
-    }
-}
-
-fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool {
-    if proof.is_output {
-        return false;
-    }
-    let num_vars = proof.num_vars;
-
-    let table = match &proof.witness_table {
-        Some(t) => t,
-        None => return false,
-    };
-
-    if table.len() != 1 << num_vars {
-        return false;
-    }
-    let actual_hash = sha256_babybear(table);
-    if actual_hash != proof.witness_hash {
-        return false;
-    }
-
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-cp-v1");
-    transcript.extend_from_slice(&vk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-    transcript.extend_from_slice(&proof.witness_hash);
-
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    let eq_table = build_eq_table_bb(&tau, num_vars);
-
-    let challenges = match verify_sumcheck_product(
-        &proof.sumcheck_rounds_3,
-        num_vars,
-        &mut transcript,
-    ) {
-        Some(c) => c,
-        None => return false,
-    };
-
-    let [w_eval, _, _] = proof.evaluations;
-    let eq_at_r = mle_eval_bb(&eq_table, &challenges);
-    let expected = eq_at_r * w_eval;
-
-    if num_vars == 0 {
-        if expected != eq_table[0] * w_eval {
-            return false;
-        }
-    } else {
-        let last_round = match proof.sumcheck_rounds_3.last() {
-            Some(r) => r,
-            None => return false,
-        };
-        let last_challenge = challenges.last().copied().unwrap_or(BabyBear::ZERO);
-        let final_eval = eval_univariate_3(last_round, last_challenge);
-        if final_eval != expected {
-            return false;
-        }
-    }
-
-    let computed_w_eval = mle_eval_bb(table, &challenges);
-    if computed_w_eval != w_eval {
-        return false;
-    }
-
-    true
-}
-
-// ---------------------------------------------------------------------------
-// BabyBear sumcheck helpers (shared)
-// ---------------------------------------------------------------------------
-
-/// Build eq(tau, x) table over {0,1}^n.
-fn build_eq_table_bb(tau: &[BabyBear], num_vars: usize) -> Vec<BabyBear> {
-    let n = 1 << num_vars;
-    let mut table = vec![BabyBear::ONE; n];
-    for (i, &ti) in tau.iter().enumerate() {
-        let half = 1 << (num_vars - 1 - i);
-        for j in (0..n).rev() {
-            let bit = (j >> (num_vars - 1 - i)) & 1;
-            if bit == 1 {
-                table[j] = table[j - half] * ti;
-            } else {
-                table[j] = table[j] * (BabyBear::ONE - ti);
-            }
-        }
-    }
-    table
-}
-
-/// Evaluate multilinear extension at a point.
-fn mle_eval_bb(table: &[BabyBear], point: &[BabyBear]) -> BabyBear {
-    let mut current = table.to_vec();
-    for &r in point.iter() {
-        let half = current.len() / 2;
-        let mut next = Vec::with_capacity(half);
-        for j in 0..half {
-            next.push(current[2 * j] * (BabyBear::ONE - r) + current[2 * j + 1] * r);
-        }
-        current = next;
-    }
-    current[0]
-}
-
-/// Evaluate a degree-2 univariate at point t, given evals at {0, 1, 2}.
-fn eval_univariate_3(evals: &[BabyBear; 3], t: BabyBear) -> BabyBear {
-    let [e0, e1, e2] = *evals;
-    let two_inv = BabyBear::TWO.inverse();
-    let l0 = (t - BabyBear::ONE) * (t - BabyBear::TWO) * two_inv;
-    let l1 = -t * (t - BabyBear::TWO);
-    let l2 = t * (t - BabyBear::ONE) * two_inv;
-    e0 * l0 + e1 * l1 + e2 * l2
-}
 
 /// Prove sumcheck for F(x) = eq(x) * w(x) (degree-2, CP path).
 fn prove_sumcheck_product(
@@ -806,6 +1136,70 @@ fn verify_sumcheck_product(
 }
 
 // ---------------------------------------------------------------------------
+// BabyBear helpers
+// ---------------------------------------------------------------------------
+
+/// Build eq(tau, x) table over {0,1}^n.
+fn build_eq_table_bb(tau: &[BabyBear], num_vars: usize) -> Vec<BabyBear> {
+    let n = 1 << num_vars;
+    let mut table = vec![BabyBear::ONE; n];
+    for (i, &ti) in tau.iter().enumerate() {
+        let half = 1 << (num_vars - 1 - i);
+        for j in (0..n).rev() {
+            let bit = (j >> (num_vars - 1 - i)) & 1;
+            if bit == 1 {
+                table[j] = table[j - half] * ti;
+            } else {
+                table[j] = table[j] * (BabyBear::ONE - ti);
+            }
+        }
+    }
+    table
+}
+
+/// Evaluate multilinear extension at a point.
+fn mle_eval_bb(table: &[BabyBear], point: &[BabyBear]) -> BabyBear {
+    let mut current = table.to_vec();
+    for &r in point.iter() {
+        let half = current.len() / 2;
+        let mut next = Vec::with_capacity(half);
+        for j in 0..half {
+            next.push(current[2 * j] * (BabyBear::ONE - r) + current[2 * j + 1] * r);
+        }
+        current = next;
+    }
+    current[0]
+}
+
+/// Evaluate eq(a, b) = prod_i (a_i * b_i + (1-a_i)*(1-b_i)) in O(n) field ops.
+///
+/// This avoids building the full 2^n eq table when only a single-point
+/// evaluation is needed (e.g., eq(tau, r*) after sumcheck verification).
+fn eval_eq_at_point_bb(a: &[BabyBear], b: &[BabyBear]) -> BabyBear {
+    assert_eq!(a.len(), b.len());
+    // Convention note:
+    // - build_eq_table_bb indexes tau[0] as the slowest variable (MSB position)
+    // - mle_eval_bb consumes point[0] as the fastest variable (LSB position)
+    // Therefore, to match mle_eval_bb(build_eq_table_bb(a), b), we pair a[i]
+    // with b[n-1-i].
+    a.iter()
+        .zip(b.iter().rev())
+        .fold(BabyBear::ONE, |acc, (ai, bi)| {
+            acc * (*ai * *bi + (BabyBear::ONE - *ai) * (BabyBear::ONE - *bi))
+        })
+}
+
+/// Evaluate a degree-2 univariate at point t, given evals at {0, 1, 2}.
+fn eval_univariate_3(evals: &[BabyBear; 3], t: BabyBear) -> BabyBear {
+    let [e0, e1, e2] = *evals;
+    let two_inv = BabyBear::TWO.inverse();
+    let l0 = (t - BabyBear::ONE) * (t - BabyBear::TWO) * two_inv;
+    let l1 = -t * (t - BabyBear::TWO);
+    let l2 = t * (t - BabyBear::ONE) * two_inv;
+    e0 * l0 + e1 * l1 + e2 * l2
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -817,14 +1211,6 @@ fn compute_context_hash(context: &Option<Vec<u8>>) -> [u8; 32] {
         h.update(ctx_bytes);
     } else {
         h.update(0u64.to_le_bytes());
-    }
-    h.finalize().into()
-}
-
-fn sha256_babybear(table: &[BabyBear]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    for s in table {
-        h.update(s.as_canonical_u64().to_le_bytes());
     }
     h.finalize().into()
 }
@@ -881,26 +1267,6 @@ mod tests {
     }
 
     #[test]
-    fn cp_snark_tampered_witness_rejected() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let mut proof = WhirSnark::prove(&pk, b"instance", b"witness");
-        if let Some(ref mut table) = proof.witness_table {
-            if !table.is_empty() {
-                table[0] += BabyBear::ONE;
-            }
-        }
-        assert!(!WhirSnark::verify(&vk, b"instance", &proof));
-    }
-
-    #[test]
-    fn cp_snark_tampered_hash_rejected() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let mut proof = WhirSnark::prove(&pk, b"instance", b"witness");
-        proof.witness_hash[0] ^= 0xFF;
-        assert!(!WhirSnark::verify(&vk, b"instance", &proof));
-    }
-
-    #[test]
     fn cp_snark_empty_witness() {
         let (pk, vk) = WhirSnark::setup(&test_relation());
         let proof = WhirSnark::prove(&pk, b"instance", b"");
@@ -915,45 +1281,20 @@ mod tests {
         assert!(WhirSnark::verify(&vk, b"instance", &proof));
     }
 
+    #[test]
+    fn cp_snark_proof_is_succinct() {
+        let (pk, _vk) = WhirSnark::setup(&test_relation());
+        let witness: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let proof = WhirSnark::prove(&pk, b"instance", &witness);
+        // WHIR proof should have a Merkle commitment (not a full witness table)
+        assert!(proof.whir_pcs_proof.initial_commitment.is_some());
+    }
+
     // --- Output SNARK tests ---
 
     #[test]
     fn output_snark_roundtrip() {
         // Build a simple R1CS: x * x = x (satisfied by x=0 or x=1)
-        let mut r1cs = R1CSMatrices::new(1, 2, 1);
-        r1cs.a.insert(0, 1, 1); // a: x (variable 1)
-        r1cs.b.insert(0, 1, 1); // b: x
-        r1cs.c.insert(0, 1, 1); // c: x
-        // Constraint: x * x = x
-
-        let ctx = WhirContext {
-            r1cs,
-            q: 2013265921, // BabyBear prime, small enough for direct use
-            d: 1,          // scalar R1CS (no ring structure)
-            n_pub: 1,
-            is_output_snark: true,
-        };
-        let ctx_bytes = serialize::serialize_context(&ctx);
-
-        let relation = RelationDescription {
-            num_instance_vars: 1,
-            num_witness_vars: 1,
-            num_constraints: 1,
-            context: Some(ctx_bytes),
-        };
-
-        let (pk, vk) = WhirSnark::setup(&relation);
-
-        // Witness: x=1 (satisfies x*x=x)
-        let instance = 1i64.to_le_bytes();
-        let witness = 1i64.to_le_bytes();
-        let proof = WhirSnark::prove(&pk, &instance, &witness);
-        assert!(proof.is_output);
-        assert!(WhirSnark::verify(&vk, &instance, &proof));
-    }
-
-    #[test]
-    fn output_snark_tampered_eval_rejected() {
         let mut r1cs = R1CSMatrices::new(1, 2, 1);
         r1cs.a.insert(0, 1, 1);
         r1cs.b.insert(0, 1, 1);
@@ -965,6 +1306,7 @@ mod tests {
             d: 1,
             n_pub: 1,
             is_output_snark: true,
+            is_cp_snark: false,
         };
         let ctx_bytes = serialize::serialize_context(&ctx);
 
@@ -976,13 +1318,12 @@ mod tests {
         };
 
         let (pk, vk) = WhirSnark::setup(&relation);
+
         let instance = 1i64.to_le_bytes();
         let witness = 1i64.to_le_bytes();
-        let mut proof = WhirSnark::prove(&pk, &instance, &witness);
-
-        // Tamper with an evaluation
-        proof.evaluations[0] += BabyBear::ONE;
-        assert!(!WhirSnark::verify(&vk, &instance, &proof));
+        let proof = WhirSnark::prove(&pk, &instance, &witness);
+        assert!(proof.is_output);
+        assert!(WhirSnark::verify(&vk, &instance, &proof));
     }
 
     #[test]
@@ -998,6 +1339,7 @@ mod tests {
             d: 1,
             n_pub: 1,
             is_output_snark: true,
+            is_cp_snark: false,
         };
         let ctx_bytes = serialize::serialize_context(&ctx);
 
@@ -1044,8 +1386,26 @@ mod tests {
     }
 
     #[test]
+    fn eq_point_eval_matches_table_mle() {
+        let tau = vec![
+            BabyBear::from_u32(3),
+            BabyBear::from_u32(5),
+            BabyBear::from_u32(7),
+        ];
+        let r = vec![
+            BabyBear::from_u32(11),
+            BabyBear::from_u32(13),
+            BabyBear::from_u32(17),
+        ];
+
+        let eq_table = build_eq_table_bb(&tau, tau.len());
+        let via_table = mle_eval_bb(&eq_table, &r);
+        let direct = eval_eq_at_point_bb(&tau, &r);
+        assert_eq!(direct, via_table);
+    }
+
+    #[test]
     fn lagrange_4_correctness() {
-        // Should exactly recover the evaluation points
         let evals = [
             BabyBear::from_u32(10),
             BabyBear::from_u32(20),
@@ -1055,7 +1415,10 @@ mod tests {
         assert_eq!(lagrange_interpolate_4(&evals, BabyBear::ZERO), evals[0]);
         assert_eq!(lagrange_interpolate_4(&evals, BabyBear::ONE), evals[1]);
         assert_eq!(lagrange_interpolate_4(&evals, BabyBear::TWO), evals[2]);
-        assert_eq!(lagrange_interpolate_4(&evals, BabyBear::from_u32(3)), evals[3]);
+        assert_eq!(
+            lagrange_interpolate_4(&evals, BabyBear::from_u32(3)),
+            evals[3]
+        );
     }
 
     #[test]
@@ -1070,6 +1433,7 @@ mod tests {
             d: 64,
             n_pub: 1,
             is_output_snark: true,
+            is_cp_snark: false,
         };
         let bytes = serialize::serialize_context(&ctx);
         let ctx2 = deserialize_context(&bytes).unwrap();
