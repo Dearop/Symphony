@@ -10,6 +10,7 @@
 //!
 //! The actual proving and verifying is delegated to the generic backend.
 
+use super::r1cs::CpR1csLayout;
 use crate::fiat_shamir::transcript::Transcript;
 use crate::folding::digest::{Digest32, FoldInput};
 use crate::folding::{FoldedInstance, FoldingProof};
@@ -159,6 +160,29 @@ pub fn encode_cp_instance_compressed(
     let binding_challenge: [u8; 32] = hasher.finalize().into();
     instance.extend_from_slice(&binding_challenge);
 
+    instance
+}
+
+/// Encode the full CP backend instance with R1CS prefix + digest binding trailer.
+///
+/// The prefix preserves CP-R1CS layout for backends that enforce folding
+/// constraints over instance variables. The trailer binds all digest fields so
+/// the CP proof is tied to the full constant-size public instance.
+pub fn encode_cp_backend_instance(
+    cp_public_instance: &CpPublicInstance,
+    cp_layout: &CpR1csLayout,
+) -> Vec<u8> {
+    let mut instance =
+        super::r1cs::encode_cp_instance_r1cs(&cp_public_instance.folded_instance, cp_layout);
+    let binding = encode_cp_instance_compressed(
+        &cp_public_instance.fold_root,
+        &cp_public_instance.folded_instance,
+        &cp_public_instance.challenge_digest,
+        &cp_public_instance.fs_root,
+        &cp_public_instance.transcript_seed_digest,
+    );
+    instance.extend_from_slice(&(binding.len() as u64).to_le_bytes());
+    instance.extend_from_slice(&binding);
     instance
 }
 

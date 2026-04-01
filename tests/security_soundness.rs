@@ -436,7 +436,11 @@ mod spartan_soundness {
         prover: &SymphonyProver<SpartanSnark>,
         z: &[i64],
         n_in: usize,
-    ) -> (symphony::commitment::Commitment, Vec<i64>, symphony::ring::RingVector) {
+    ) -> (
+        symphony::commitment::Commitment,
+        Vec<i64>,
+        symphony::ring::RingVector,
+    ) {
         let full_ring = symphony::ring::RingVector {
             elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
         };
@@ -454,7 +458,11 @@ mod spartan_soundness {
         prover: &SymphonyProver<SpartanSnark>,
         z: &[i64],
         n_in: usize,
-    ) -> Vec<(symphony::commitment::Commitment, Vec<i64>, symphony::ring::RingVector)> {
+    ) -> Vec<(
+        symphony::commitment::Commitment,
+        Vec<i64>,
+        symphony::ring::RingVector,
+    )> {
         vec![
             make_spartan_statement(prover, z, n_in),
             make_spartan_statement(prover, z, n_in),
@@ -653,7 +661,10 @@ mod spartan_soundness {
         // 1. IPA has O(log N) lr_pairs, not O(N) data
         let lr_count = proof.cp_proof.ipa_proofs[0].lr_pairs.len();
         assert!(lr_count > 0, "IPA should have halving rounds");
-        assert!(lr_count <= 20, "IPA lr_pairs should be O(log N), got {lr_count}");
+        assert!(
+            lr_count <= 20,
+            "IPA lr_pairs should be O(log N), got {lr_count}"
+        );
 
         // 2. The proof struct has no Vec<_> field that scales with witness length.
         //    SpartanProof contains: witness_commitment (32 bytes), sumcheck_proof,
@@ -714,7 +725,9 @@ mod spartan_soundness {
 #[cfg(feature = "whir")]
 mod whir_soundness {
     use super::*;
-    use symphony::snark::{BackendSnark, ProofWitnessData, RelationDescription, SymphonyProof, SymphonyProver};
+    use symphony::snark::{
+        BackendSnark, ProofWitnessData, RelationDescription, SymphonyProof, SymphonyProver,
+    };
     use symphony::WhirSnark;
 
     fn whir_params() -> SymphonyParams {

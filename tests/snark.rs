@@ -191,7 +191,8 @@ mod cp_r1cs_tests {
                 } else {
                     // Negacyclic: X^D = -1
                     let idx2 = idx - D;
-                    out[idx2] = ((out[idx2] as i128 - prod as i128).rem_euclid(BB_P as i128)) as i64;
+                    out[idx2] =
+                        ((out[idx2] as i128 - prod as i128).rem_euclid(BB_P as i128)) as i64;
                 }
             }
         }
@@ -218,10 +219,13 @@ mod cp_r1cs_tests {
         beta[1][0] = 5; // beta[1] = constant 5
 
         let mut c = vec![vec![vec![0i64; D]; kappa]; ell_np];
-        c[0][0][0] = 7;  c[0][0][1] = 2;  // c_0[0] = 7 + 2X
-        c[0][1][0] = 1;                     // c_0[1] = 1
-        c[1][0][0] = 11; c[1][0][2] = 1;  // c_1[0] = 11 + X^2
-        c[1][1][0] = 4;  c[1][1][1] = 3;  // c_1[1] = 4 + 3X
+        c[0][0][0] = 7;
+        c[0][0][1] = 2; // c_0[0] = 7 + 2X
+        c[0][1][0] = 1; // c_0[1] = 1
+        c[1][0][0] = 11;
+        c[1][0][2] = 1; // c_1[0] = 11 + X^2
+        c[1][1][0] = 4;
+        c[1][1][1] = 3; // c_1[1] = 4 + 3X
 
         let mut x_in = vec![vec![vec![0i64; D]; n_in]; ell_np];
         x_in[0][0][0] = 10; // x_0[0] = 10
@@ -313,7 +317,13 @@ mod cp_r1cs_tests {
         let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, 0, -1);
 
         // Same setup as above but simpler
-        let beta = vec![vec![1i64; 1].into_iter().chain(vec![0; D - 1]).collect::<Vec<_>>(); ell_np];
+        let beta = vec![
+            vec![1i64; 1]
+                .into_iter()
+                .chain(vec![0; D - 1])
+                .collect::<Vec<_>>();
+            ell_np
+        ];
         let c: Vec<Vec<Vec<i64>>> = (0..ell_np)
             .map(|ell| {
                 vec![{
@@ -395,27 +405,34 @@ mod cp_r1cs_tests {
     /// (a0 + a1*Y)(b0 + b1*Y) = (a0*b0 + QNR*a1*b1) + (a0*b1 + a1*b0)*Y
     fn ext_mul(a: (i64, i64), b: (i64, i64), qnr: i64) -> (i64, i64) {
         let p = BB_P as i128;
-        let c0 = ((a.0 as i128 * b.0 as i128 + qnr as i128 * a.1 as i128 * b.1 as i128) % p + p) % p;
+        let c0 =
+            ((a.0 as i128 * b.0 as i128 + qnr as i128 * a.1 as i128 * b.1 as i128) % p + p) % p;
         let c1 = ((a.0 as i128 * b.1 as i128 + a.1 as i128 * b.0 as i128) % p + p) % p;
         (c0 as i64, c1 as i64)
     }
 
     fn ext_add(a: (i64, i64), b: (i64, i64)) -> (i64, i64) {
         let p = BB_P as i128;
-        (((a.0 as i128 + b.0 as i128) % p) as i64,
-         ((a.1 as i128 + b.1 as i128) % p) as i64)
+        (
+            ((a.0 as i128 + b.0 as i128) % p) as i64,
+            ((a.1 as i128 + b.1 as i128) % p) as i64,
+        )
     }
 
     fn ext_sub(a: (i64, i64), b: (i64, i64)) -> (i64, i64) {
         let p = BB_P as i128;
-        (((a.0 as i128 - b.0 as i128 + p) % p) as i64,
-         ((a.1 as i128 - b.1 as i128 + p) % p) as i64)
+        (
+            ((a.0 as i128 - b.0 as i128 + p) % p) as i64,
+            ((a.1 as i128 - b.1 as i128 + p) % p) as i64,
+        )
     }
 
     fn ext_scale(a: (i64, i64), s: i64) -> (i64, i64) {
         let p = BB_P as i128;
-        (((a.0 as i128 * s as i128).rem_euclid(p)) as i64,
-         ((a.1 as i128 * s as i128).rem_euclid(p)) as i64)
+        (
+            ((a.0 as i128 * s as i128).rem_euclid(p)) as i64,
+            ((a.1 as i128 * s as i128).rem_euclid(p)) as i64,
+        )
     }
 
     /// Lagrange interpolation of a degree-3 polynomial at point r,
@@ -454,8 +471,7 @@ mod cp_r1cs_tests {
     }
 
     /// Fill a K-mul's aux variables in the z-vector: p1, p2, c0, c1
-    fn fill_ext_mul_aux(z: &mut [i64], aux_base: usize,
-                        a: (i64, i64), b: (i64, i64), qnr: i64) {
+    fn fill_ext_mul_aux(z: &mut [i64], aux_base: usize, a: (i64, i64), b: (i64, i64), qnr: i64) {
         let p = BB_P as i128;
         let p1 = ((a.0 as i128 * b.0 as i128).rem_euclid(p)) as i64;
         let p2 = ((a.1 as i128 * b.1 as i128).rem_euclid(p)) as i64;
@@ -500,17 +516,30 @@ mod cp_r1cs_tests {
 
         // prod_c = beta * c (ring mul in BabyBear)
         let prod_c = ring_mul_bb(
-            &(0..D).map(|j| if j < 4 { beta_val[j] } else { 0 }).collect::<Vec<_>>(),
-            &(0..D).map(|j| if j < 4 { c_val[j] } else { 0 }).collect::<Vec<_>>(),
+            &(0..D)
+                .map(|j| if j < 4 { beta_val[j] } else { 0 })
+                .collect::<Vec<_>>(),
+            &(0..D)
+                .map(|j| if j < 4 { c_val[j] } else { 0 })
+                .collect::<Vec<_>>(),
         );
-        for j in 0..D { z[layout.prod_c(0, 0, j)] = prod_c[j]; }
+        for j in 0..D {
+            z[layout.prod_c(0, 0, j)] = prod_c[j];
+        }
 
-        let x_ring: Vec<i64> = std::iter::once(x_val).chain(std::iter::repeat(0)).take(D).collect();
+        let x_ring: Vec<i64> = std::iter::once(x_val)
+            .chain(std::iter::repeat(0))
+            .take(D)
+            .collect();
         let prod_x = ring_mul_bb(
-            &(0..D).map(|j| if j < 4 { beta_val[j] } else { 0 }).collect::<Vec<_>>(),
+            &(0..D)
+                .map(|j| if j < 4 { beta_val[j] } else { 0 })
+                .collect::<Vec<_>>(),
             &x_ring,
         );
-        for j in 0..D { z[layout.prod_x(0, 0, j)] = prod_x[j]; }
+        for j in 0..D {
+            z[layout.prod_x(0, 0, j)] = prod_x[j];
+        }
 
         // --- Phase B: construct a valid Hadamard sumcheck ---
         // We need: claimed_sum = 0, 2 rounds, and a final check.
@@ -580,10 +609,7 @@ mod cp_r1cs_tests {
             fill_ext_mul_aux(&mut z, aux(aux_idx, 0), si, ri_val, qnr);
             aux_idx += 1;
 
-            let f = ext_add(
-                ext_sub(ext_scale(sr, 2), ext_add(si, ri_val)),
-                (1, 0),
-            );
+            let f = ext_add(ext_sub(ext_scale(sr, 2), ext_add(si, ri_val)), (1, 0));
             factor_vals.push(f);
         }
 
@@ -610,7 +636,7 @@ mod cp_r1cs_tests {
             let u1 = ((j + 2) as i64, 0i64);
             let u2 = ext_mul(u0, u1, qnr);
             let diff = ext_sub(ext_mul(u0, u1, qnr), u2); // = 0
-            // alpha^j * diff = alpha^j * 0 = 0
+                                                          // alpha^j * diff = alpha^j * 0 = 0
             fill_ext_mul_aux(&mut z, aux(aux_idx, 0), alpha_pow, diff, qnr);
             aux_idx += 1;
 
@@ -954,8 +980,11 @@ mod snark_pipeline_extended {
         for c in &proof.witness_data.fs_commitments {
             t1.append_bytes(b"fs-commitment", c);
         }
-        let honest_instance =
-            cp_snark::encode_cp_instance(&proof.witness_data.fs_commitments, &proof.folded_instance, &mut t1);
+        let honest_instance = cp_snark::encode_cp_instance(
+            &proof.witness_data.fs_commitments,
+            &proof.folded_instance,
+            &mut t1,
+        );
 
         // Tampered CP instance — a real BackendSnark would reject this
         let mut tampered_comms = proof.witness_data.fs_commitments.clone();
@@ -1523,7 +1552,7 @@ mod spartan_snark_backend {
 mod whir_pipeline {
     use super::*;
     use p3_field::PrimeCharacteristicRing;
-    use symphony::snark::{SymphonyProver, whir::WhirSnark};
+    use symphony::snark::{whir::WhirSnark, SymphonyProver};
 
     fn small_params() -> SymphonyParams {
         SymphonyParams {

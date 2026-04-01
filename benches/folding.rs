@@ -984,7 +984,8 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
         let (legacy_instance, legacy_witness) = encode_cp_relation_io(&material);
         let (compressed_instance, compressed_witness) = encode_cp_relation_io_compressed(&material);
 
-        let (spartan_prover, spartan_verifier) = SymphonyProver::<SpartanSnark>::setup(bench_params(k));
+        let (spartan_prover, spartan_verifier) =
+            SymphonyProver::<SpartanSnark>::setup(bench_params(k));
 
         let linear_metrics = run_cp_backend_once::<SpartanSnark, _>(
             &spartan_prover.cp_pk,
@@ -1001,11 +1002,8 @@ fn bench_cp_backend_comparison(c: &mut Criterion) {
             spartan_proof_wire_bytes,
         );
 
-        let linear_proof = SpartanSnark::prove(
-            &spartan_prover.cp_pk,
-            &legacy_instance,
-            &legacy_witness,
-        );
+        let linear_proof =
+            SpartanSnark::prove(&spartan_prover.cp_pk, &legacy_instance, &legacy_witness);
         assert!(SpartanSnark::verify(
             &spartan_verifier.cp_vk,
             &legacy_instance,

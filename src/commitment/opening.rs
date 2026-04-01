@@ -38,7 +38,12 @@ pub fn verify_relaxed(
     }
 
     // Check A·f = s·c (NTT-accelerated)
-    let f_ntt: Vec<[u64; D]> = opening.f.elements.iter().map(|e| params.ntt.forward(e)).collect();
+    let f_ntt: Vec<[u64; D]> = opening
+        .f
+        .elements
+        .iter()
+        .map(|e| params.ntt.forward(e))
+        .collect();
     let mut af = RingVector::zero(params.kappa);
     for i in 0..params.kappa {
         let mut acc = [0u64; D];

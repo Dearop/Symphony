@@ -86,7 +86,9 @@ impl SymphonyParams {
 
     /// Get the NTT context, panicking if unavailable (invalid params).
     pub fn ntt(&self) -> &NttContext {
-        self.ntt.as_ref().expect("NTT context unavailable (invalid q for NTT)")
+        self.ntt
+            .as_ref()
+            .expect("NTT context unavailable (invalid q for NTT)")
     }
 
     /// Try to build an NTT context for the given q. Returns None if q

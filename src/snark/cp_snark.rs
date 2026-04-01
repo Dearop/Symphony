@@ -16,10 +16,11 @@ mod encoding;
 mod r1cs;
 
 pub use encoding::{
-    encode_commitment_to_bytes, encode_cp_instance, encode_cp_instance_compressed,
-    encode_cp_witness, encode_cp_witness_compressed, encode_folded_instance, encode_folded_witness,
-    encode_folding_transcript_witness, encode_gr1cs_round_message, serialize_cp_context,
-    serialize_output_context, CPRelation, CpPublicInstance,
+    encode_commitment_to_bytes, encode_cp_backend_instance, encode_cp_instance,
+    encode_cp_instance_compressed, encode_cp_witness, encode_cp_witness_compressed,
+    encode_folded_instance, encode_folded_witness, encode_folding_transcript_witness,
+    encode_gr1cs_round_message, serialize_cp_context, serialize_output_context, CPRelation,
+    CpPublicInstance,
 };
 
 pub use r1cs::{

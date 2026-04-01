@@ -19,16 +19,16 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use symphony::commitment::Commitment;
 #[cfg(feature = "whir")]
-use symphony::fiat_shamir::FSCommitment;
-#[cfg(feature = "whir")]
 use symphony::cp_snark::IdentityRelation;
+#[cfg(feature = "whir")]
+use symphony::fiat_shamir::FSCommitment;
 use symphony::params::{SymphonyParams, D};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::{RingElement, RingVector};
 use symphony::snark::{BackendSnark, RelationDescription, SymphonyProver};
-use symphony::{SpartanSnark, SumcheckSnark};
 #[cfg(feature = "whir")]
 use symphony::{CPSnark, HashCommitment, WhirSnark};
+use symphony::{SpartanSnark, SumcheckSnark};
 
 // ---------------------------------------------------------------------------
 // Proof-size helpers
@@ -175,7 +175,10 @@ fn bench_proof_size_scaling(c: &mut Criterion) {
         let sum_verify_start = Instant::now();
         let sum_ok = SumcheckSnark::verify(&sum_vk, &instance, &sum_proof);
         let sum_verify_ms = sum_verify_start.elapsed().as_secs_f64() * 1_000.0;
-        assert!(sum_ok, "Sumcheck verify must pass for witness_size={witness_size}");
+        assert!(
+            sum_ok,
+            "Sumcheck verify must pass for witness_size={witness_size}"
+        );
 
         let spa_prove_start = Instant::now();
         let spa_proof = SpartanSnark::prove(&spa_pk, &instance, &witness);
@@ -183,7 +186,10 @@ fn bench_proof_size_scaling(c: &mut Criterion) {
         let spa_verify_start = Instant::now();
         let spa_ok = SpartanSnark::verify(&spa_vk, &instance, &spa_proof);
         let spa_verify_ms = spa_verify_start.elapsed().as_secs_f64() * 1_000.0;
-        assert!(spa_ok, "Spartan verify must pass for witness_size={witness_size}");
+        assert!(
+            spa_ok,
+            "Spartan verify must pass for witness_size={witness_size}"
+        );
 
         let sum_bytes = sumcheck_proof_wire_bytes(&sum_proof);
         let spa_bytes = spartan_proof_wire_bytes(&spa_proof);
@@ -198,7 +204,10 @@ fn bench_proof_size_scaling(c: &mut Criterion) {
             let whir_verify_start = Instant::now();
             let whir_ok = WhirSnark::verify(&whir_vk, &instance, &whir_proof);
             let whir_verify_ms = whir_verify_start.elapsed().as_secs_f64() * 1_000.0;
-            assert!(whir_ok, "WHIR verify must pass for witness_size={witness_size}");
+            assert!(
+                whir_ok,
+                "WHIR verify must pass for witness_size={witness_size}"
+            );
 
             let whir_bytes = whir_proof_wire_bytes(&whir_proof);
             eprintln!(
@@ -373,8 +382,9 @@ fn bench_pipeline_spartan_vs_k(c: &mut Criterion) {
         let params = bench_params(k);
         let (prover, verifier) = SymphonyProver::<SpartanSnark>::setup(params);
 
-        let statements: Vec<(Commitment, Vec<i64>, RingVector)> =
-            (0..k).map(|_| make_snark_statement(&prover, &z, n_in)).collect();
+        let statements: Vec<(Commitment, Vec<i64>, RingVector)> = (0..k)
+            .map(|_| make_snark_statement(&prover, &z, n_in))
+            .collect();
         let public_inputs: Vec<Vec<i64>> = statements.iter().map(|(_, pi, _)| pi.clone()).collect();
 
         let proof = prover.prove(&statements, &r1cs);
@@ -473,11 +483,7 @@ fn bench_whir_cp_scaling(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("verify", witness_size), |b| {
             b.iter(|| {
-                black_box(cp.verify(
-                    black_box(&commitments),
-                    black_box(b""),
-                    black_box(&proof),
-                ));
+                black_box(cp.verify(black_box(&commitments), black_box(b""), black_box(&proof)));
             });
         });
     }
@@ -504,8 +510,9 @@ fn bench_pipeline_whir_vs_k(c: &mut Criterion) {
         let params = bench_params(k);
         let (prover, verifier) = SymphonyProver::<WhirSnark>::setup(params);
 
-        let statements: Vec<(Commitment, Vec<i64>, RingVector)> =
-            (0..k).map(|_| make_snark_statement(&prover, &z, n_in)).collect();
+        let statements: Vec<(Commitment, Vec<i64>, RingVector)> = (0..k)
+            .map(|_| make_snark_statement(&prover, &z, n_in))
+            .collect();
         let public_inputs: Vec<Vec<i64>> = statements.iter().map(|(_, pi, _)| pi.clone()).collect();
 
         let proof = prover.prove(&statements, &r1cs);

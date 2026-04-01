@@ -1,6 +1,6 @@
 //! SNARK construction (Construction 6.1) — the commit-and-prove compiler.
 //!
-//! The SNARK statement never embeds the Fiat-Shamir hash.
+//! The SNARK statement never embeds Fiat-Shamir hashing logic.
 //!
 //! Setup: choose Π_cm (Merkle or KZG), setup CP-SNARK, setup backend SNARK.
 //!
@@ -8,14 +8,14 @@
 //!   1. Run non-interactive folding (Fiat-Shamir applied)
 //!   2. At each round, commit to messages with Π_cm
 //!   3. Obtain folded instance and witness
-//!   4. Generate SNARK proof π for the folded statement
+//!   4. Generate output proof π for the folded statement
 //!   5. Generate CP-SNARK proof π_cp for folding correctness
 //!   6. Output π* = (π_cp, π, {c_{fs,i}}, x_o)
 //!
 //! Verifier:
-//!   1. Recompute challenges from (x, {c_{fs,i}}) and H
-//!   2. Check Π_cp.Verify(π_cp) — proves folding WITHOUT hash-in-circuit
-//!   3. Check Π_snark.Verify(π) — proves the folded statement
+//!   1. Recompute transcript seed digest from public inputs + relation metadata
+//!   2. Check Π_cp.Verify(π_cp) over full CP public binding digests
+//!   3. Check Π_out.Verify(π) for the folded statement
 
 pub mod cp_snark;
 pub mod prover;
@@ -68,14 +68,16 @@ pub struct RelationDescription {
 
 /// A complete Symphony proof, generic over the backend SNARK `S`.
 ///
-/// The verifier only reads the top-level fields (cp_proof, snark_proof,
-/// folded_instance, and the four digests). All O(k) data lives in `witness_data`
-/// and is only needed for proof generation / serialization / re-verification of
-/// the CP relation.
+/// The verifier reads only top-level O(1) fields:
+/// - `cp_proof`
+/// - `snark_proof` (output proof)
+/// - `folded_instance`
+/// - `fold_root`, `challenge_digest`, `fs_root`, `transcript_seed_digest`
+///
+/// All O(k) transcript/folding objects remain in `witness_data`.
 #[derive(Debug, Clone)]
 pub struct SymphonyProof<S: BackendSnark> {
     // -- Verifier-visible fields (O(1) total size) --
-
     /// CP-SNARK proof π_cp (proves folding correctness).
     pub cp_proof: S::Proof,
     /// Output SNARK proof π (proves the folded statement).
@@ -92,10 +94,18 @@ pub struct SymphonyProof<S: BackendSnark> {
     pub transcript_seed_digest: Digest32,
 
     // -- Witness data (O(k), not read by verifier) --
-
     /// Full witness data needed for serialization and CP relation verification.
     /// The verifier never inspects this; the CP-SNARK proves its consistency.
     pub witness_data: ProofWitnessData,
+}
+
+impl<S: BackendSnark> SymphonyProof<S> {
+    /// Naming-consistent accessor for the output proof.
+    ///
+    /// The stored field is `snark_proof` for backwards compatibility.
+    pub fn output_proof(&self) -> &S::Proof {
+        &self.snark_proof
+    }
 }
 
 /// O(k) witness data bundled with the proof for serialization.
@@ -153,7 +163,8 @@ impl<S: BackendSnark> SymphonyProver<S> {
     /// correctness) and once for the output relation (folded R1CS).
     pub fn setup(params: SymphonyParams) -> (Self, SymphonyVerifier<S>) {
         params.validate();
-        let ajtai = crate::commitment::AjtaiParams::setup(params.kappa, params.n(), params.q, params.ntt());
+        let ajtai =
+            crate::commitment::AjtaiParams::setup(params.kappa, params.n(), params.q, params.ntt());
 
         // Generate CP R1CS encoding folding linear combination constraints.
         // The CP-SNARK proves c* = Σ beta·c and x* = Σ beta·x (ring arithmetic).
@@ -273,15 +284,22 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         //   c*[i] = Σ beta[ℓ] · c_ℓ[i]   (commitment folding)
         //   x*[s] = Σ beta[ℓ] · x_in[ℓ][s]  (public input folding)
         //
-        // The verifier builds the R1CS-compatible instance from the
-        // folded instance and calls S::verify.
+        // The verifier builds the CP backend instance using:
+        // - R1CS-compatible folded instance prefix
+        // - digest-binding trailer (fold_root, fs_root, transcript_seed_digest, challenge_digest)
+        // and calls `S::verify`.
         // ---------------------------------------------------------------
         let t_cp_start = std::time::Instant::now();
 
-        let cp_instance = cp_snark::encode_cp_instance_r1cs(
-            &proof.folded_instance,
-            &self.cp_layout,
-        );
+        let cp_public_instance = cp_snark::CpPublicInstance {
+            fold_root: proof.fold_root,
+            fs_root: proof.fs_root,
+            transcript_seed_digest: proof.transcript_seed_digest,
+            challenge_digest: proof.challenge_digest,
+            folded_instance: proof.folded_instance.clone(),
+        };
+        let cp_instance =
+            cp_snark::encode_cp_backend_instance(&cp_public_instance, &self.cp_layout);
         if !S::verify(&self.cp_vk, &cp_instance, &proof.cp_proof) {
             return false;
         }

@@ -43,7 +43,10 @@ use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 
 use whir_p3::{
     fiat_shamir::domain_separator::DomainSeparator,
-    parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, SumcheckStrategy, WhirConfig as WhirPcsConfig},
+    parameters::{
+        FoldingFactor, ProtocolParameters, SecurityAssumption, SumcheckStrategy,
+        WhirConfig as WhirPcsConfig,
+    },
     whir::{
         committer::{reader::CommitmentReader, writer::CommitmentWriter},
         proof::WhirProof as WhirPcsProof,
@@ -326,7 +329,12 @@ fn prove_output(
     let q = ctx.q;
 
     // Parse instance and witness bytes into BabyBear elements
-    let instance_bb = bytes_to_babybear_direct(instance);
+    // Parse only the CP-R1CS public prefix from `instance`.
+    // Any trailer bytes are transcript-binding metadata and must not shift the
+    // R1CS witness layout.
+    let mut instance_bb = bytes_to_babybear_direct(instance);
+    let expected_instance_len = ctx.r1cs.num_public * d;
+    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
     let witness_bb = bytes_to_babybear_direct(witness);
 
     // Build z_flat = (instance, witness), padded to total_vars * d
@@ -338,16 +346,20 @@ fn prove_output(
 
     // Flatten R1CS
     let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a, &ctx.r1cs.b, &ctx.r1cs.c,
-        ctx.r1cs.num_constraints, ctx.r1cs.num_variables, d, q,
+        &ctx.r1cs.a,
+        &ctx.r1cs.b,
+        &ctx.r1cs.c,
+        ctx.r1cs.num_constraints,
+        ctx.r1cs.num_variables,
+        d,
+        q,
     );
     let num_constraints = ctx.r1cs.num_constraints * d;
     let num_vars = ceil_log2(num_constraints.max(1));
 
     // Compute Az, Bz, Cz
-    let (az, bz, cz) = compute_matrix_vector_products_bb(
-        &flat_a, &flat_b, &flat_c, &z_flat, num_vars,
-    );
+    let (az, bz, cz) =
+        compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
 
     // Pad z_flat to power of two for WHIR polynomial (at least 2 elements)
     let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
@@ -371,9 +383,8 @@ fn prove_output(
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
     // Sumcheck for F(x) = eq(tau,x) * [Az(x)*Bz(x) - Cz(x)]
-    let (rounds, challenges) = prove_sumcheck_r1cs(
-        &eq_table, &az, &bz, &cz, num_vars, &mut transcript,
-    );
+    let (rounds, challenges) =
+        prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
 
     // Evaluations at challenge point
     let az_eval = mle_eval_bb(&az, &challenges);
@@ -506,15 +517,19 @@ fn prove_cp_r1cs(
     z_flat.resize(total_vars, BabyBear::ZERO);
 
     let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a, &ctx.r1cs.b, &ctx.r1cs.c,
-        ctx.r1cs.num_constraints, ctx.r1cs.num_variables, d, q,
+        &ctx.r1cs.a,
+        &ctx.r1cs.b,
+        &ctx.r1cs.c,
+        ctx.r1cs.num_constraints,
+        ctx.r1cs.num_variables,
+        d,
+        q,
     );
     let num_constraints = ctx.r1cs.num_constraints * d;
     let num_vars = ceil_log2(num_constraints.max(1));
 
-    let (az, bz, cz) = compute_matrix_vector_products_bb(
-        &flat_a, &flat_b, &flat_c, &z_flat, num_vars,
-    );
+    let (az, bz, cz) =
+        compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
 
     let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
     let mut z_padded = z_flat;
@@ -533,21 +548,30 @@ fn prove_cp_r1cs(
 
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
-    let (rounds, challenges) = prove_sumcheck_r1cs(
-        &eq_table, &az, &bz, &cz, num_vars, &mut transcript,
-    );
+    let (rounds, challenges) =
+        prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
 
     let az_eval = mle_eval_bb(&az, &challenges);
     let bz_eval = mle_eval_bb(&bz, &challenges);
     let cz_eval = mle_eval_bb(&cz, &challenges);
 
-    let z_eval = mle_eval_bb(&z_padded, &challenges.iter().copied()
-        .chain(std::iter::repeat(BabyBear::ZERO))
-        .take(z_num_vars)
-        .collect::<Vec<_>>());
+    let z_eval = mle_eval_bb(
+        &z_padded,
+        &challenges
+            .iter()
+            .copied()
+            .chain(std::iter::repeat(BabyBear::ZERO))
+            .take(z_num_vars)
+            .collect::<Vec<_>>(),
+    );
 
     let whir_pcs_proof = whir_commit_and_prove(
-        pk.seed, z_num_vars, &z_padded, &challenges.iter().copied()
+        pk.seed,
+        z_num_vars,
+        &z_padded,
+        &challenges
+            .iter()
+            .copied()
             .chain(std::iter::repeat(BabyBear::ZERO))
             .take(z_num_vars)
             .collect::<Vec<_>>(),
@@ -618,7 +642,9 @@ fn verify_cp_r1cs(
     let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
     let z_num_vars = z_padded_len.trailing_zeros() as usize;
 
-    let eval_point: Vec<BabyBear> = challenges.iter().copied()
+    let eval_point: Vec<BabyBear> = challenges
+        .iter()
+        .copied()
         .chain(std::iter::repeat(BabyBear::ZERO))
         .take(z_num_vars)
         .collect();
@@ -664,19 +690,12 @@ fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
 
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
-    let (rounds, challenges) =
-        prove_sumcheck_product(&eq_table, &table, num_vars, &mut transcript);
+    let (rounds, challenges) = prove_sumcheck_product(&eq_table, &table, num_vars, &mut transcript);
 
     let w_eval = mle_eval_bb(&table, &challenges);
 
     // --- WHIR PCS: commit to witness polynomial and prove evaluation ---
-    let whir_pcs_proof = whir_commit_and_prove(
-        pk.seed,
-        num_vars,
-        &table,
-        &challenges,
-        w_eval,
-    );
+    let whir_pcs_proof = whir_commit_and_prove(pk.seed, num_vars, &table, &challenges, w_eval);
 
     WhirProof {
         sumcheck_rounds_3: rounds,
@@ -725,14 +744,11 @@ fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool 
         .map(|i| derive_challenge(&transcript, i, b"tau"))
         .collect();
 
-    let challenges = match verify_sumcheck_product(
-        &proof.sumcheck_rounds_3,
-        num_vars,
-        &mut transcript,
-    ) {
-        Some(c) => c,
-        None => return false,
-    };
+    let challenges =
+        match verify_sumcheck_product(&proof.sumcheck_rounds_3, num_vars, &mut transcript) {
+            Some(c) => c,
+            None => return false,
+        };
 
     let [w_eval, _, _] = proof.evaluations;
     let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
@@ -796,7 +812,9 @@ fn whir_commit_and_prove(
     let poly = EvaluationsList::new(evaluations.to_vec());
 
     // Create the initial statement
-    let mut statement = infra.params.initial_statement(poly, SumcheckStrategy::Classic);
+    let mut statement = infra
+        .params
+        .initial_statement(poly, SumcheckStrategy::Classic);
 
     // Add evaluation constraint: polynomial(point) = claimed_eval
     // NOTE: Plonky3 multilinear convention has point[0] as the *slowest* variable
@@ -811,7 +829,9 @@ fn whir_commit_and_prove(
 
     // Create prover challenger
     let mut prover_challenger = make_challenger(&infra.perm);
-    infra.domainsep.observe_domain_separator(&mut prover_challenger);
+    infra
+        .domainsep
+        .observe_domain_separator(&mut prover_challenger);
 
     // Create proof struct
     let mut proof = WhirPcsProof::<F, EF, WhirMmcs>::from_protocol_parameters(
@@ -828,7 +848,13 @@ fn whir_commit_and_prove(
     // Prove
     let prover = WhirProver(&infra.params);
     prover
-        .prove(&dft, &mut proof, &mut prover_challenger, &statement, prover_data)
+        .prove(
+            &dft,
+            &mut proof,
+            &mut prover_challenger,
+            &statement,
+            prover_data,
+        )
         .expect("WHIR prove failed");
 
     proof
@@ -846,7 +872,9 @@ fn whir_verify_opening(
 
     // Create verifier challenger (must match prover's)
     let mut verifier_challenger = make_challenger(&infra.perm);
-    infra.domainsep.observe_domain_separator(&mut verifier_challenger);
+    infra
+        .domainsep
+        .observe_domain_separator(&mut verifier_challenger);
 
     // Parse commitment
     let commitment_reader = CommitmentReader::new(&infra.params);
@@ -1154,9 +1182,11 @@ fn eval_eq_at_point_bb(a: &[BabyBear], b: &[BabyBear]) -> BabyBear {
     // - mle_eval_bb consumes point[0] as the fastest variable (LSB position)
     // Therefore, to match mle_eval_bb(build_eq_table_bb(a), b), we pair a[i]
     // with b[n-1-i].
-    a.iter().zip(b.iter().rev()).fold(BabyBear::ONE, |acc, (ai, bi)| {
-        acc * (*ai * *bi + (BabyBear::ONE - *ai) * (BabyBear::ONE - *bi))
-    })
+    a.iter()
+        .zip(b.iter().rev())
+        .fold(BabyBear::ONE, |acc, (ai, bi)| {
+            acc * (*ai * *bi + (BabyBear::ONE - *ai) * (BabyBear::ONE - *bi))
+        })
 }
 
 /// Evaluate a degree-2 univariate at point t, given evals at {0, 1, 2}.
@@ -1385,7 +1415,10 @@ mod tests {
         assert_eq!(lagrange_interpolate_4(&evals, BabyBear::ZERO), evals[0]);
         assert_eq!(lagrange_interpolate_4(&evals, BabyBear::ONE), evals[1]);
         assert_eq!(lagrange_interpolate_4(&evals, BabyBear::TWO), evals[2]);
-        assert_eq!(lagrange_interpolate_4(&evals, BabyBear::from_u32(3)), evals[3]);
+        assert_eq!(
+            lagrange_interpolate_4(&evals, BabyBear::from_u32(3)),
+            evals[3]
+        );
     }
 
     #[test]

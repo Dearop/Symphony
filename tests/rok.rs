@@ -378,7 +378,10 @@ mod range_proof {
         let ntt = NttContext::new(Q);
         let ajtai = AjtaiParams::setup(2, n, Q, &ntt);
         let witness = RingVector {
-            elements: vec![RingElement::from_constant(3), RingElement::from_constant(-2)],
+            elements: vec![
+                RingElement::from_constant(3),
+                RingElement::from_constant(-2),
+            ],
         };
         let (c, _) = ajtai.commit(&witness);
         let params = RangeProofParams {

@@ -407,7 +407,14 @@ mod tests {
         let proof = ipa_prove(&key, &a, &b, r, &mut transcript_p);
 
         let mut transcript_v = b"test".to_vec();
-        assert!(ipa_verify(&key, commitment, &b, ip, &proof, &mut transcript_v));
+        assert!(ipa_verify(
+            &key,
+            commitment,
+            &b,
+            ip,
+            &proof,
+            &mut transcript_v
+        ));
     }
 
     #[test]
@@ -424,7 +431,14 @@ mod tests {
         let proof = ipa_prove(&key, &a, &b, r, &mut transcript_p);
 
         let mut transcript_v = b"test8".to_vec();
-        assert!(ipa_verify(&key, commitment, &b, ip, &proof, &mut transcript_v));
+        assert!(ipa_verify(
+            &key,
+            commitment,
+            &b,
+            ip,
+            &proof,
+            &mut transcript_v
+        ));
     }
 
     #[test]
@@ -449,11 +463,25 @@ mod tests {
 
         // Verify with full b vector
         let mut transcript_v1 = b"test-eq".to_vec();
-        assert!(ipa_verify(&key, commitment, &b, ip, &proof, &mut transcript_v1));
+        assert!(ipa_verify(
+            &key,
+            commitment,
+            &b,
+            ip,
+            &proof,
+            &mut transcript_v1
+        ));
 
         // Verify with eq_point (structured, no full expansion)
         let mut transcript_v2 = b"test-eq".to_vec();
-        assert!(ipa_verify_eq(&key, commitment, &eq_point, ip, &proof, &mut transcript_v2));
+        assert!(ipa_verify_eq(
+            &key,
+            commitment,
+            &eq_point,
+            ip,
+            &proof,
+            &mut transcript_v2
+        ));
     }
 
     #[test]
@@ -477,6 +505,13 @@ mod tests {
 
         let wrong_ip = Scalar::from(999u64);
         let mut transcript_v = b"test-eq-rej".to_vec();
-        assert!(!ipa_verify_eq(&key, commitment, &eq_point, wrong_ip, &proof, &mut transcript_v));
+        assert!(!ipa_verify_eq(
+            &key,
+            commitment,
+            &eq_point,
+            wrong_ip,
+            &proof,
+            &mut transcript_v
+        ));
     }
 }

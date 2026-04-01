@@ -253,8 +253,8 @@ pub fn prove(
     }
 
     // Fold witnesses: f* = Σ β_ℓ · f_ℓ
-    let n_w = statements[0].witness.len();
-    let mut folded_witness_elems = vec![RingElement::zero(); n_w];
+    let num_witness_elems = statements[0].witness.len();
+    let mut folded_witness_elems = vec![RingElement::zero(); num_witness_elems];
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fw_elem) in folded_witness_elems.iter_mut().enumerate() {
             let scaled = stmt.witness.elements[i].mul_ntt(&beta[ell], &ajtai.ntt);
@@ -265,7 +265,7 @@ pub fn prove(
     // Fold evaluation values from linear relations.
     // Each evaluation value is a TensorElement (T×D matrix). We fold using
     // the full ring element β[ℓ], performing ring multiplication per row.
-    let mut folded_eval_vals = Vec::new();
+    let mut folded_evaluation_values = Vec::new();
     if !linear_relations.is_empty() {
         let mut folded = [
             crate::ring::tensor::TensorElement::zero(),
@@ -287,11 +287,11 @@ pub fn prove(
                 }
             }
         }
-        folded_eval_vals = folded.to_vec();
+        folded_evaluation_values = folded.to_vec();
     }
 
     // Fold monomial vectors from range proofs
-    let mut folded_monomial_vecs = Vec::new();
+    let mut folded_monomial_vectors = Vec::new();
     if !gr1cs_proofs.is_empty() {
         let k_g = gr1cs_proofs[0].range_proof.monomial_vectors.len();
         for layer in 0..k_g {
@@ -308,26 +308,28 @@ pub fn prove(
                     }
                 }
             }
-            folded_monomial_vecs.push(RingVector { elements: folded });
+            folded_monomial_vectors.push(RingVector { elements: folded });
         }
     }
 
     let folded_instance = FoldedInstance {
         commitment: folded_commitment,
         public_input: folded_public_input,
-        evaluation_values: folded_eval_vals,
+        evaluation_values: folded_evaluation_values,
     };
 
     let folded_witness = FoldedWitness {
         witness: RingVector {
             elements: folded_witness_elems,
         },
-        monomial_vectors: folded_monomial_vecs,
+        monomial_vectors: folded_monomial_vectors,
     };
 
-    // Use the first linear/batched relation as representative
-    let linear_relation = if linear_relations.is_empty() {
-        LinearRelation {
+    // Keep one representative relation for transcript/output binding metadata.
+    let linear_relation = linear_relations
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| LinearRelation {
             commitment: folded_instance.commitment.clone(),
             evaluation_point: Vec::new(),
             evaluation_values: [
@@ -335,20 +337,17 @@ pub fn prove(
                 crate::ring::tensor::TensorElement::zero(),
                 crate::ring::tensor::TensorElement::zero(),
             ],
-        }
-    } else {
-        linear_relations.into_iter().next().unwrap()
-    };
+        });
 
-    let batched_relation = if batched_relations.is_empty() {
-        BatchedLinearRelation {
-            commitments: Vec::new(),
-            evaluation_point: Vec::new(),
-            evaluation_values: Vec::new(),
-        }
-    } else {
-        batched_relations.into_iter().next().unwrap()
-    };
+    let batched_relation =
+        batched_relations
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| BatchedLinearRelation {
+                commitments: Vec::new(),
+                evaluation_point: Vec::new(),
+                evaluation_values: Vec::new(),
+            });
 
     let commitments: Vec<Commitment> = statements.iter().map(|s| s.commitment.clone()).collect();
     let proof = FoldingProof {
@@ -470,9 +469,13 @@ pub fn verify(
     Ok(proof.folded_instance.clone())
 }
 
+/// Folding verification errors.
 #[derive(Debug)]
 pub enum FoldingError {
+    /// One GR1CS sub-proof at the given index failed verification.
     GR1CSFailed(usize),
+    /// Folded output is inconsistent with derived challenges or linear folds.
     FoldingInconsistent,
+    /// Norm constraint failed (reserved for stricter checks).
     NormBoundExceeded,
 }

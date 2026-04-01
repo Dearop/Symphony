@@ -26,7 +26,10 @@ use crate::snark::{BackendSnark, RelationDescription};
 
 use self::commitment::PedersenKey;
 use self::ipa::{ipa_prove, ipa_verify, ipa_verify_eq, IPAProof};
-use self::r1cs_sumcheck::{ceil_log2, compute_matrix_mle_at_point, compute_matrix_vector_products, flatten_ring_r1cs, mle_eval};
+use self::r1cs_sumcheck::{
+    ceil_log2, compute_matrix_mle_at_point, compute_matrix_vector_products, flatten_ring_r1cs,
+    mle_eval,
+};
 use self::serialize::{deserialize_context, SpartanContext};
 use self::sumcheck::{build_eq_table, prove_r1cs_sumcheck, verify_sumcheck, SumcheckProofFp};
 
@@ -212,9 +215,7 @@ fn prove_output(
     let num_constraints = ctx.r1cs.num_constraints * d;
     let num_vars = ceil_log2(num_constraints.max(1));
     // Compute Az, Bz, Cz
-    let (az, bz, cz) = compute_matrix_vector_products(
-        &flat_a, &flat_b, &flat_c, &z_flat, num_vars,
-    );
+    let (az, bz, cz) = compute_matrix_vector_products(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
 
     // Pad z_flat to power-of-two for Pedersen commitment
     let z_padded_len = 1 << ceil_log2(z_flat.len().max(1));
@@ -234,9 +235,7 @@ fn prove_output(
     let mut transcript = build_spartan_transcript(&pk.seed, instance, &witness_commitment);
 
     // Derive random tau
-    let tau: Vec<Scalar> = (0..num_vars)
-        .map(|i| derive_tau(&transcript, i))
-        .collect();
+    let tau: Vec<Scalar> = (0..num_vars).map(|i| derive_tau(&transcript, i)).collect();
 
     // Build eq(tau, x) table
     let eq_table = build_eq_table(&tau, num_vars);
@@ -265,19 +264,31 @@ fn prove_output(
     let mut ipa_transcript_a = transcript.clone();
     ipa_transcript_a.extend_from_slice(b"ipa-A");
     let ipa_a = ipa_prove(
-        &ped_key, &z_padded, &a_row_padded, blinding_r, &mut ipa_transcript_a,
+        &ped_key,
+        &z_padded,
+        &a_row_padded,
+        blinding_r,
+        &mut ipa_transcript_a,
     );
 
     let mut ipa_transcript_b = transcript.clone();
     ipa_transcript_b.extend_from_slice(b"ipa-B");
     let ipa_b = ipa_prove(
-        &ped_key, &z_padded, &b_row_padded, blinding_r, &mut ipa_transcript_b,
+        &ped_key,
+        &z_padded,
+        &b_row_padded,
+        blinding_r,
+        &mut ipa_transcript_b,
     );
 
     let mut ipa_transcript_c = transcript.clone();
     ipa_transcript_c.extend_from_slice(b"ipa-C");
     let ipa_c = ipa_prove(
-        &ped_key, &z_padded, &c_row_padded, blinding_r, &mut ipa_transcript_c,
+        &ped_key,
+        &z_padded,
+        &c_row_padded,
+        blinding_r,
+        &mut ipa_transcript_c,
     );
 
     SpartanProof {
@@ -305,13 +316,10 @@ fn verify_output(
     }
 
     // Build transcript
-    let mut transcript =
-        build_spartan_transcript(&vk.seed, instance, &proof.witness_commitment);
+    let mut transcript = build_spartan_transcript(&vk.seed, instance, &proof.witness_commitment);
 
     // Derive tau
-    let tau: Vec<Scalar> = (0..num_vars)
-        .map(|i| derive_tau(&transcript, i))
-        .collect();
+    let tau: Vec<Scalar> = (0..num_vars).map(|i| derive_tau(&transcript, i)).collect();
 
     // Verify sumcheck
     // The claimed sum is 0 for a satisfying R1CS (since Az*Bz - Cz = 0 everywhere)
@@ -357,8 +365,12 @@ fn verify_output(
     let mut ipa_transcript_a = transcript.clone();
     ipa_transcript_a.extend_from_slice(b"ipa-A");
     if !ipa_verify(
-        &ped_key, z_commitment, &a_row_padded, az_eval,
-        &proof.ipa_proofs[0], &mut ipa_transcript_a,
+        &ped_key,
+        z_commitment,
+        &a_row_padded,
+        az_eval,
+        &proof.ipa_proofs[0],
+        &mut ipa_transcript_a,
     ) {
         return false;
     }
@@ -366,8 +378,12 @@ fn verify_output(
     let mut ipa_transcript_b = transcript.clone();
     ipa_transcript_b.extend_from_slice(b"ipa-B");
     if !ipa_verify(
-        &ped_key, z_commitment, &b_row_padded, bz_eval,
-        &proof.ipa_proofs[1], &mut ipa_transcript_b,
+        &ped_key,
+        z_commitment,
+        &b_row_padded,
+        bz_eval,
+        &proof.ipa_proofs[1],
+        &mut ipa_transcript_b,
     ) {
         return false;
     }
@@ -375,8 +391,12 @@ fn verify_output(
     let mut ipa_transcript_c = transcript.clone();
     ipa_transcript_c.extend_from_slice(b"ipa-C");
     if !ipa_verify(
-        &ped_key, z_commitment, &c_row_padded, cz_eval,
-        &proof.ipa_proofs[2], &mut ipa_transcript_c,
+        &ped_key,
+        z_commitment,
+        &c_row_padded,
+        cz_eval,
+        &proof.ipa_proofs[2],
+        &mut ipa_transcript_c,
     ) {
         return false;
     }
@@ -388,11 +408,7 @@ fn verify_output(
 // CP-SNARK: witness commitment + sumcheck + IPA (like SumcheckSnark but succinct)
 // ---------------------------------------------------------------------------
 
-fn prove_cp(
-    pk: &SpartanProvingKey,
-    instance: &[u8],
-    witness: &[u8],
-) -> SpartanProof {
+fn prove_cp(pk: &SpartanProvingKey, instance: &[u8], witness: &[u8]) -> SpartanProof {
     // Map witness bytes to scalars with a length sentinel so that
     // different-length inputs (e.g. "AA" vs "AA\0\0") always produce
     // distinct committed vectors (matching bytes_to_scalars convention).
@@ -412,9 +428,7 @@ fn prove_cp(
     let mut transcript = build_cp_transcript(&pk.seed, instance, &witness_commitment);
 
     // Derive tau
-    let tau: Vec<Scalar> = (0..num_vars)
-        .map(|i| derive_tau(&transcript, i))
-        .collect();
+    let tau: Vec<Scalar> = (0..num_vars).map(|i| derive_tau(&transcript, i)).collect();
 
     // Build eq(tau, x) table
     let eq_table = build_eq_table(&tau, num_vars);
@@ -424,8 +438,14 @@ fn prove_cp(
     let ones_table = vec![Scalar::ONE; n];
     let zero_table = vec![Scalar::ZERO; n];
 
-    let (sumcheck_proof, challenges) =
-        prove_r1cs_sumcheck(&eq_table, &table, &ones_table, &zero_table, num_vars, &mut transcript);
+    let (sumcheck_proof, challenges) = prove_r1cs_sumcheck(
+        &eq_table,
+        &table,
+        &ones_table,
+        &zero_table,
+        num_vars,
+        &mut transcript,
+    );
 
     // Evaluation at the challenge point
     let w_eval = mle_eval(&table, &challenges);
@@ -437,7 +457,11 @@ fn prove_cp(
     let mut ipa_transcript = transcript.clone();
     ipa_transcript.extend_from_slice(b"ipa-cp-witness");
     let ipa_proof = ipa_prove(
-        &ped_key, &table, &eq_at_challenges, blinding_r, &mut ipa_transcript,
+        &ped_key,
+        &table,
+        &eq_at_challenges,
+        blinding_r,
+        &mut ipa_transcript,
     );
 
     let dummy_ipa = IPAProof {
@@ -456,11 +480,7 @@ fn prove_cp(
     }
 }
 
-fn verify_cp(
-    vk: &SpartanVerifyingKey,
-    instance: &[u8],
-    proof: &SpartanProof,
-) -> bool {
+fn verify_cp(vk: &SpartanVerifyingKey, instance: &[u8], proof: &SpartanProof) -> bool {
     let num_vars = proof.num_vars;
     let n = 1 << num_vars;
 
@@ -468,9 +488,7 @@ fn verify_cp(
     let mut transcript = build_cp_transcript(&vk.seed, instance, &proof.witness_commitment);
 
     // Derive tau — O(log N) scalars
-    let tau: Vec<Scalar> = (0..num_vars)
-        .map(|i| derive_tau(&transcript, i))
-        .collect();
+    let tau: Vec<Scalar> = (0..num_vars).map(|i| derive_tau(&transcript, i)).collect();
 
     // Extract claimed sum from first round polynomial
     let claimed_sum = if let Some(first_round) = proof.sumcheck_proof.round_polys.first() {
@@ -536,11 +554,7 @@ fn verify_cp(
 ///
 /// Domain-separated from the output SNARK transcript via the "spartan-cp-v2" tag.
 /// Uses a Pedersen commitment (not a hash) for succinct witness binding.
-fn build_cp_transcript(
-    seed: &[u8; 32],
-    instance: &[u8],
-    commitment: &RistrettoPoint,
-) -> Vec<u8> {
+fn build_cp_transcript(seed: &[u8; 32], instance: &[u8], commitment: &RistrettoPoint) -> Vec<u8> {
     let mut t = Vec::new();
     t.extend_from_slice(b"spartan-cp-v2");
     t.extend_from_slice(seed);
@@ -695,7 +709,10 @@ mod tests {
         // Verify that the IPA proof has log2(N) lr_pairs (the succinct part).
         let lr_count = proof.ipa_proofs[0].lr_pairs.len();
         assert!(lr_count > 0, "IPA proof should have halving rounds");
-        assert!(lr_count <= 10, "IPA proof should have O(log N) rounds, got {lr_count}");
+        assert!(
+            lr_count <= 10,
+            "IPA proof should have O(log N) rounds, got {lr_count}"
+        );
     }
 
     #[test]

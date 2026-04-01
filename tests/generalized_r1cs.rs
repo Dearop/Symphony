@@ -24,7 +24,9 @@ mod check_hadamard_tests {
 
     /// Convert a scalar witness vector into ring elements (constant polynomials).
     fn to_ring_elements(vals: &[i64]) -> Vec<RingElement> {
-        vals.iter().map(|&v| RingElement::from_constant(v)).collect()
+        vals.iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect()
     }
 
     #[test]
