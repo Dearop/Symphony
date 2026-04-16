@@ -150,6 +150,7 @@ pub fn prove(
 ) -> (FoldingProof, FoldedWitness) {
     let ell_np = statements.len();
     let q = ctx.q;
+    let ntt = &ajtai.ntt;
 
     // Initialize transcript
     let mut transcript = crate::fiat_shamir::transcript::Transcript::new(b"symphony-fold");
@@ -222,14 +223,21 @@ pub fn prove(
     // Steps 4-6: Folding via low-norm challenge
     // Derive β deterministically from the Fiat-Shamir transcript.
     let beta = challenge::derive_challenge_vector(&mut transcript, q, ell_np);
+    let beta_ntt: Vec<[u64; D]> = beta.iter().map(|b| ntt.forward(b)).collect();
+
+    let mul_by_beta = |x: &RingElement, beta_ntt: &[u64; D]| -> RingElement {
+        let x_ntt = ntt.forward(x);
+        let prod_ntt = ntt.pointwise_mul(&x_ntt, beta_ntt);
+        ntt.inverse(&prod_ntt)
+    };
 
     // Fold commitments: c* = Σ β_ℓ · c_ℓ
     let kappa = statements[0].commitment.value.len();
     let mut folded_commitment_elems = vec![RingElement::zero(); kappa];
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fc_elem) in folded_commitment_elems.iter_mut().enumerate() {
-            let scaled = stmt.commitment.value.elements[i].mul_ntt(&beta[ell], &ajtai.ntt);
-            *fc_elem = fc_elem.add(&scaled, q);
+            let scaled = mul_by_beta(&stmt.commitment.value.elements[i], &beta_ntt[ell]);
+            fc_elem.add_assign(&scaled, q);
         }
     }
     let folded_commitment = Commitment {
@@ -242,8 +250,8 @@ pub fn prove(
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fp_elem) in folded_public_input.iter_mut().enumerate() {
             let x_ring = RingElement::from_constant(stmt.public_input[i]);
-            let scaled = x_ring.mul_ntt(&beta[ell], &ajtai.ntt);
-            *fp_elem = fp_elem.add(&scaled, q);
+            let scaled = mul_by_beta(&x_ring, &beta_ntt[ell]);
+            fp_elem.add_assign(&scaled, q);
         }
     }
 
@@ -252,8 +260,8 @@ pub fn prove(
     let mut folded_witness_elems = vec![RingElement::zero(); n_w];
     for (ell, stmt) in statements.iter().enumerate() {
         for (i, fw_elem) in folded_witness_elems.iter_mut().enumerate() {
-            let scaled = stmt.witness.elements[i].mul_ntt(&beta[ell], &ajtai.ntt);
-            *fw_elem = fw_elem.add(&scaled, q);
+            let scaled = mul_by_beta(&stmt.witness.elements[i], &beta_ntt[ell]);
+            fw_elem.add_assign(&scaled, q);
         }
     }
 
@@ -273,7 +281,7 @@ pub fn prove(
                     let row = RingElement {
                         coeffs: lin.evaluation_values[i].data[t],
                     };
-                    let scaled = row.mul_ntt(&beta[ell], &ajtai.ntt);
+                    let scaled = mul_by_beta(&row, &beta_ntt[ell]);
                     let current = RingElement {
                         coeffs: f_elem.data[t],
                     };
@@ -298,8 +306,8 @@ pub fn prove(
                         .iter_mut()
                         .zip(proof.range_proof.monomial_vectors[layer].iter())
                     {
-                        let scaled = mono_elem.mul_ntt(&beta[ell], &ajtai.ntt);
-                        *f_elem = f_elem.add(&scaled, q);
+                        let scaled = mul_by_beta(mono_elem, &beta_ntt[ell]);
+                        f_elem.add_assign(&scaled, q);
                     }
                 }
             }
@@ -367,6 +375,7 @@ pub fn verify(
 ) -> Result<FoldedInstance, FoldingError> {
     let q = ctx.q;
     let ell_np = proof.gr1cs_proofs.len();
+    let ntt = &ajtai.ntt;
 
     if proof.commitments.len() != ell_np || public_inputs.len() != ell_np {
         return Err(FoldingError::FoldingInconsistent);
@@ -424,14 +433,21 @@ pub fn verify(
             return Err(FoldingError::FoldingInconsistent);
         }
     }
+    let beta_ntt: Vec<[u64; D]> = proof.beta.iter().map(|b| ntt.forward(b)).collect();
+
+    let mul_by_beta = |x: &RingElement, beta_ntt: &[u64; D]| -> RingElement {
+        let x_ntt = ntt.forward(x);
+        let prod_ntt = ntt.pointwise_mul(&x_ntt, beta_ntt);
+        ntt.inverse(&prod_ntt)
+    };
 
     // Step 5: Verify folded commitment: c* = Σ β_ℓ · c_ℓ
     let kappa = proof.commitments[0].value.len();
     let mut expected_folded_commitment = vec![RingElement::zero(); kappa];
     for (ell, commitment) in proof.commitments.iter().enumerate() {
         for (i, efc_elem) in expected_folded_commitment.iter_mut().enumerate() {
-            let scaled = commitment.value.elements[i].mul_ntt(&proof.beta[ell], &ajtai.ntt);
-            *efc_elem = efc_elem.add(&scaled, q);
+            let scaled = mul_by_beta(&commitment.value.elements[i], &beta_ntt[ell]);
+            efc_elem.add_assign(&scaled, q);
         }
     }
     for (i, efc_elem) in expected_folded_commitment.iter().enumerate() {
@@ -448,8 +464,8 @@ pub fn verify(
     for (ell, pi) in public_inputs.iter().enumerate() {
         for (i, efi_elem) in expected_folded_input.iter_mut().enumerate() {
             let x_ring = RingElement::from_constant(pi[i]);
-            let scaled = x_ring.mul_ntt(&proof.beta[ell], &ajtai.ntt);
-            *efi_elem = efi_elem.add(&scaled, q);
+            let scaled = mul_by_beta(&x_ring, &beta_ntt[ell]);
+            efi_elem.add_assign(&scaled, q);
         }
     }
     for (i, efi_elem) in expected_folded_input.iter().enumerate() {

@@ -38,6 +38,7 @@ impl ExtFieldContext {
     }
 
     /// Addition in K.
+    #[inline]
     pub fn add(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
         ExtFieldElement {
             c0: self.reduce(a.c0 as i128 + b.c0 as i128),
@@ -46,6 +47,7 @@ impl ExtFieldContext {
     }
 
     /// Subtraction in K.
+    #[inline]
     pub fn sub(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
         ExtFieldElement {
             c0: self.reduce(a.c0 as i128 - b.c0 as i128),
@@ -57,6 +59,7 @@ impl ExtFieldContext {
     ///
     /// All intermediate products are reduced before summation to prevent
     /// i128 overflow when q is large (up to ~2^60).
+    #[inline]
     pub fn mul(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
         let a1b1_alpha = self.reduce(
             self.reduce(a.c1 as i128 * b.c1 as i128) as i128 * self.alpha as i128,
@@ -71,6 +74,7 @@ impl ExtFieldContext {
     }
 
     /// Scalar multiplication by an Fq element.
+    #[inline]
     pub fn scalar_mul(&self, a: &ExtFieldElement, s: i64) -> ExtFieldElement {
         ExtFieldElement {
             c0: self.reduce(a.c0 as i128 * s as i128),
@@ -79,6 +83,7 @@ impl ExtFieldContext {
     }
 
     /// Multiplicative inverse in K using the norm: a^{-1} = conj(a) / N(a).
+    #[inline]
     pub fn inv(&self, a: &ExtFieldElement) -> Option<ExtFieldElement> {
         let norm = self
             .reduce(a.c0 as i128 * a.c0 as i128 - self.alpha as i128 * a.c1 as i128 * a.c1 as i128);

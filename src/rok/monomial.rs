@@ -114,6 +114,8 @@ pub fn prove(
     // Max degree per variable = 4.
     let mut round_messages = Vec::with_capacity(num_vars);
     let mut eq_tab = eq_table;
+    let mut eq_scratch: Vec<ExtFieldElement> = Vec::with_capacity(table_size);
+    let mut tab_scratch: Vec<ExtFieldElement> = Vec::with_capacity(table_size);
 
     for round in 0..num_vars {
         let half = 1 << (num_vars - round - 1);
@@ -133,18 +135,24 @@ pub fn prove(
                 let idx0 = rest_idx;
                 let idx1 = half + rest_idx;
 
-                let eq_val = ctx.add(
-                    &ctx.mul(&one_minus_t, &eq_tab[idx0]),
-                    &ctx.mul(&t, &eq_tab[idx1]),
-                );
+                let eq_val = match eval_idx {
+                    0 => eq_tab[idx0],
+                    1 => eq_tab[idx1],
+                    _ => ctx.add(
+                        &ctx.mul(&one_minus_t, &eq_tab[idx0]),
+                        &ctx.mul(&t, &eq_tab[idx1]),
+                    ),
+                };
 
                 // Part 1: per-coefficient cubic checks
                 let mut combined = ctx.zero();
                 for (tab_idx, table) in coeff_tables.iter().enumerate() {
-                    let c_val = ctx.add(
-                        &ctx.mul(&one_minus_t, &table[idx0]),
-                        &ctx.mul(&t, &table[idx1]),
-                    );
+                    let (v0, v1) = (table[idx0], table[idx1]);
+                    let c_val = match eval_idx {
+                        0 => v0,
+                        1 => v1,
+                        _ => ctx.add(&ctx.mul(&one_minus_t, &v0), &ctx.mul(&t, &v1)),
+                    };
                     let c_minus_1 = ctx.sub(&c_val, &one);
                     let c_plus_1 = ctx.add(&c_val, &one);
                     let prod = ctx.mul(&c_val, &ctx.mul(&c_minus_1, &c_plus_1));
@@ -154,10 +162,12 @@ pub fn prove(
 
                 // Part 2: at-most-one-nonzero checks via sum-of-squares
                 for (i, sq_table) in sq_tables.iter().enumerate() {
-                    let sq_val = ctx.add(
-                        &ctx.mul(&one_minus_t, &sq_table[idx0]),
-                        &ctx.mul(&t, &sq_table[idx1]),
-                    );
+                    let (v0, v1) = (sq_table[idx0], sq_table[idx1]);
+                    let sq_val = match eval_idx {
+                        0 => v0,
+                        1 => v1,
+                        _ => ctx.add(&ctx.mul(&one_minus_t, &v0), &ctx.mul(&t, &v1)),
+                    };
                     // sq · (sq - 1) = 0 ensures sq ∈ {0, 1}
                     let sq_minus_1 = ctx.sub(&sq_val, &one);
                     let prod = ctx.mul(&sq_val, &sq_minus_1);
@@ -182,26 +192,29 @@ pub fn prove(
             ctx.add(&ctx.mul(&one_minus_r, v0), &ctx.mul(&r, v1))
         };
 
-        let mut new_eq = Vec::with_capacity(half);
+        eq_scratch.clear();
         for rest_idx in 0..half {
-            new_eq.push(fold(&eq_tab[rest_idx], &eq_tab[half + rest_idx]));
+            eq_scratch.push(fold(&eq_tab[rest_idx], &eq_tab[half + rest_idx]));
         }
-        eq_tab = new_eq;
+        eq_tab.clear();
+        eq_tab.extend_from_slice(&eq_scratch);
 
         for table in coeff_tables.iter_mut() {
-            let mut new_tab = Vec::with_capacity(half);
+            tab_scratch.clear();
             for rest_idx in 0..half {
-                new_tab.push(fold(&table[rest_idx], &table[half + rest_idx]));
+                tab_scratch.push(fold(&table[rest_idx], &table[half + rest_idx]));
             }
-            *table = new_tab;
+            table.clear();
+            table.extend_from_slice(&tab_scratch);
         }
 
         for table in sq_tables.iter_mut() {
-            let mut new_tab = Vec::with_capacity(half);
+            tab_scratch.clear();
             for rest_idx in 0..half {
-                new_tab.push(fold(&table[rest_idx], &table[half + rest_idx]));
+                tab_scratch.push(fold(&table[rest_idx], &table[half + rest_idx]));
             }
-            *table = new_tab;
+            table.clear();
+            table.extend_from_slice(&tab_scratch);
         }
     }
 

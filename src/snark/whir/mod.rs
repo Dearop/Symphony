@@ -680,7 +680,7 @@ fn build_eq_table_bb(tau: &[BabyBear], num_vars: usize) -> Vec<BabyBear> {
             if bit == 1 {
                 table[j] = table[j - half] * ti;
             } else {
-                table[j] = table[j] * (BabyBear::ONE - ti);
+                table[j] *= BabyBear::ONE - ti;
             }
         }
     }

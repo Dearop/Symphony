@@ -18,6 +18,11 @@ pub struct NttContext {
     pub forward_twiddles: [u64; D],
     /// Precomputed powers of ω^{-1} for the inverse transform.
     pub inverse_twiddles: [u64; D],
+    /// Per-stage butterfly twiddles for the forward transform.
+    /// `stage_twiddles_forward[s][j]` is the twiddle used at stage `s` for butterfly index `j`.
+    stage_twiddles_forward: Vec<Vec<u64>>,
+    /// Per-stage butterfly twiddles for the inverse transform.
+    stage_twiddles_inverse: Vec<Vec<u64>>,
     /// Multiplicative inverse of d modulo q.
     pub d_inv: u64,
 }
@@ -43,11 +48,37 @@ impl NttContext {
             w_inv = ((w_inv as u128 * omega_inv as u128) % q as u128) as u64;
         }
 
+        // Precompute per-stage butterfly twiddles so `ntt_core` does not call mod_pow/mod_inv.
+        let mut stage_twiddles_forward = Vec::new();
+        let mut stage_twiddles_inverse = Vec::new();
+        let mut len = 2usize;
+        while len <= D {
+            let half = len / 2;
+            let w_step_fwd = mod_pow(omega, (2 * D as u64) / len as u64, q);
+            let w_step_inv = mod_pow(omega_inv, (2 * D as u64) / len as u64, q);
+
+            let mut tw_fwd = Vec::with_capacity(half);
+            let mut tw_inv = Vec::with_capacity(half);
+            let mut wf = 1u64;
+            let mut wi = 1u64;
+            for _ in 0..half {
+                tw_fwd.push(wf);
+                tw_inv.push(wi);
+                wf = ((wf as u128 * w_step_fwd as u128) % q as u128) as u64;
+                wi = ((wi as u128 * w_step_inv as u128) % q as u128) as u64;
+            }
+            stage_twiddles_forward.push(tw_fwd);
+            stage_twiddles_inverse.push(tw_inv);
+            len <<= 1;
+        }
+
         Self {
             q,
             omega,
             forward_twiddles,
             inverse_twiddles,
+            stage_twiddles_forward,
+            stage_twiddles_inverse,
             d_inv,
         }
     }
@@ -145,27 +176,26 @@ impl NttContext {
 
         // Cooley-Tukey butterfly
         let mut len = 2;
+        let mut stage = 0usize;
         while len <= n {
             let half = len / 2;
-            // The step for twiddle factor selection depends on direction
-            let w_step = if inverse {
-                // For inverse, we use a generator of the appropriate subgroup
-                mod_pow(mod_inv(self.omega, q), (2 * D as u64) / len as u64, q)
+            let twiddles = if inverse {
+                &self.stage_twiddles_inverse[stage]
             } else {
-                mod_pow(self.omega, (2 * D as u64) / len as u64, q)
+                &self.stage_twiddles_forward[stage]
             };
 
             for start in (0..n).step_by(len) {
-                let mut w = 1u64;
                 for j in 0..half {
                     let u = a[start + j];
+                    let w = twiddles[j];
                     let v = ((a[start + j + half] as u128 * w as u128) % q as u128) as u64;
                     a[start + j] = (u + v) % q;
                     a[start + j + half] = (u + q - v) % q;
-                    w = ((w as u128 * w_step as u128) % q as u128) as u64;
                 }
             }
             len <<= 1;
+            stage += 1;
         }
     }
 }

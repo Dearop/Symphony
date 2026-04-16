@@ -136,11 +136,14 @@ pub fn prove(
     // Run sumcheck round by round
     let mut round_messages = Vec::with_capacity(num_vars);
 
+    let mut eq_scratch: Vec<ExtFieldElement> = Vec::with_capacity(table_size);
+    let mut g_scratch: Vec<ExtFieldElement> = Vec::with_capacity(table_size);
+
     for round in 0..num_vars {
         let half = 1 << (num_vars - round - 1);
         let mut evals = vec![ctx.zero(); 4]; // degree 3 → 4 evaluation points
 
-        for eval_idx in 0..4u32 {
+        for (eval_idx, eval_slot) in evals.iter_mut().enumerate() {
             let t = ExtFieldElement {
                 c0: eval_idx as i64,
                 c1: 0,
@@ -152,27 +155,39 @@ pub fn prove(
                 let idx0 = rest_idx;
                 let idx1 = half + rest_idx;
 
-                // Interpolate eq
-                let eq_val = ctx.add(
-                    &ctx.mul(&one_minus_t, &eq_tab[idx0]),
-                    &ctx.mul(&t, &eq_tab[idx1]),
-                );
+                // Interpolate eq (special-case t=0 and t=1).
+                let eq_val = match eval_idx {
+                    0 => eq_tab[idx0],
+                    1 => eq_tab[idx1],
+                    _ => ctx.add(
+                        &ctx.mul(&one_minus_t, &eq_tab[idx0]),
+                        &ctx.mul(&t, &eq_tab[idx1]),
+                    ),
+                };
 
-                // Sum over j: α^{j-1} · (g1j_interp · g2j_interp - g3j_interp)
+                // Sum over j: α^{j} · (g1j_interp · g2j_interp - g3j_interp)
                 let mut combined = ctx.zero();
                 for j in 0..D {
-                    let g1 = ctx.add(
-                        &ctx.mul(&one_minus_t, &g_tabs[j][0][idx0]),
-                        &ctx.mul(&t, &g_tabs[j][0][idx1]),
-                    );
-                    let g2 = ctx.add(
-                        &ctx.mul(&one_minus_t, &g_tabs[j][1][idx0]),
-                        &ctx.mul(&t, &g_tabs[j][1][idx1]),
-                    );
-                    let g3 = ctx.add(
-                        &ctx.mul(&one_minus_t, &g_tabs[j][2][idx0]),
-                        &ctx.mul(&t, &g_tabs[j][2][idx1]),
-                    );
+                    let (g10, g11) = (g_tabs[j][0][idx0], g_tabs[j][0][idx1]);
+                    let (g20, g21) = (g_tabs[j][1][idx0], g_tabs[j][1][idx1]);
+                    let (g30, g31) = (g_tabs[j][2][idx0], g_tabs[j][2][idx1]);
+
+                    let g1 = match eval_idx {
+                        0 => g10,
+                        1 => g11,
+                        _ => ctx.add(&ctx.mul(&one_minus_t, &g10), &ctx.mul(&t, &g11)),
+                    };
+                    let g2 = match eval_idx {
+                        0 => g20,
+                        1 => g21,
+                        _ => ctx.add(&ctx.mul(&one_minus_t, &g20), &ctx.mul(&t, &g21)),
+                    };
+                    let g3 = match eval_idx {
+                        0 => g30,
+                        1 => g31,
+                        _ => ctx.add(&ctx.mul(&one_minus_t, &g30), &ctx.mul(&t, &g31)),
+                    };
+
                     let prod = ctx.mul(&g1, &g2);
                     let diff = ctx.sub(&prod, &g3);
                     let term = ctx.mul(&alpha_powers[j], &diff);
@@ -183,7 +198,7 @@ pub fn prove(
                 sum = ctx.add(&sum, &val);
             }
 
-            evals[eval_idx as usize] = sum;
+            *eval_slot = sum;
         }
 
         round_messages.push(crate::sumcheck::SumcheckRoundMessage { evaluations: evals });
@@ -195,19 +210,21 @@ pub fn prove(
             ctx.add(&ctx.mul(&one_minus_r, v0), &ctx.mul(&r, v1))
         };
 
-        let mut new_eq = Vec::with_capacity(half);
+        eq_scratch.clear();
         for rest_idx in 0..half {
-            new_eq.push(fold(&eq_tab[rest_idx], &eq_tab[half + rest_idx]));
+            eq_scratch.push(fold(&eq_tab[rest_idx], &eq_tab[half + rest_idx]));
         }
-        eq_tab = new_eq;
+        eq_tab.clear();
+        eq_tab.extend_from_slice(&eq_scratch);
 
         for g_tab in &mut g_tabs {
             for tab in g_tab {
-                let mut new_tab = Vec::with_capacity(half);
+                g_scratch.clear();
                 for rest_idx in 0..half {
-                    new_tab.push(fold(&tab[rest_idx], &tab[half + rest_idx]));
+                    g_scratch.push(fold(&tab[rest_idx], &tab[half + rest_idx]));
                 }
-                *tab = new_tab;
+                tab.clear();
+                tab.extend_from_slice(&g_scratch);
             }
         }
     }

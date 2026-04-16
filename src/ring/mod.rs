@@ -63,6 +63,13 @@ impl RingElement {
         Self { coeffs }
     }
 
+    /// In-place coefficient-wise addition mod q.
+    pub fn add_assign(&mut self, other: &Self, q: u64) {
+        for (a, &b) in self.coeffs.iter_mut().zip(other.coeffs.iter()) {
+            *a = centered_mod(*a as i128 + b as i128, q);
+        }
+    }
+
     /// Coefficient-wise subtraction mod q.
     pub fn sub(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];

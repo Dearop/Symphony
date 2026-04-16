@@ -74,6 +74,7 @@ pub fn prove_bookkeeping(
     assert_eq!(challenges.len(), num_vars);
 
     let mut round_messages = Vec::with_capacity(num_vars);
+    let mut factor_vals = vec![ctx.zero(); factor_tables.len()];
 
     for (round, &r) in challenges.iter().enumerate() {
         let half = 1 << (num_vars - round - 1);
@@ -91,12 +92,14 @@ pub fn prove_bookkeeping(
                 let idx0 = rest_idx;
                 let idx1 = half + rest_idx;
 
-                let mut factor_vals = Vec::with_capacity(factor_tables.len());
-                for table in factor_tables.iter() {
+                for (k, table) in factor_tables.iter().enumerate() {
                     let v0 = table[idx0];
                     let v1 = table[idx1];
-                    let interp = ctx.add(&ctx.mul(&one_minus_t, &v0), &ctx.mul(&t, &v1));
-                    factor_vals.push(interp);
+                    factor_vals[k] = match eval_idx {
+                        0 => v0,
+                        1 => v1,
+                        _ => ctx.add(&ctx.mul(&one_minus_t, &v0), &ctx.mul(&t, &v1)),
+                    };
                 }
 
                 let val = combiner(&factor_vals, ctx);

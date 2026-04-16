@@ -518,7 +518,7 @@ fn m5_projection_ceiling_division() {
     // n_blocks = ceil(192 / 128) = 2
     let n = 3;
     let total_coeffs = n * D;
-    let n_blocks = (total_coeffs + ell_h - 1) / ell_h;
+    let n_blocks = total_coeffs.div_ceil(ell_h);
     assert_eq!(n_blocks, 2, "M5: ceiling division should yield 2 blocks");
 
     let flat_coeffs = vec![1i64; total_coeffs];
@@ -631,8 +631,8 @@ fn l1_ntt_bit_reversal_correctness() {
     let ctx = NttContext::new(q);
 
     let mut coeffs = [0i64; D];
-    for i in 0..D {
-        coeffs[i] = (i as i64 * 37 + 13) % (q as i64 / 2);
+    for (i, c) in coeffs.iter_mut().enumerate() {
+        *c = (i as i64 * 37 + 13) % (q as i64 / 2);
     }
     let a = RingElement { coeffs };
 
