@@ -1,5 +1,6 @@
 //! Global parameters matching Table 1 of the Symphony paper.
 
+use crate::ring::arith::mod_pow;
 use crate::ring::ntt::NttContext;
 
 /// Ring dimension d = 64 (power-of-two cyclotomic ring X^64 + 1).
@@ -177,7 +178,6 @@ pub(crate) fn is_probably_prime(n: u64) -> bool {
         return false;
     }
 
-    // Write n-1 as 2^r * d
     let mut d = n - 1;
     let mut r = 0u32;
     while d.is_multiple_of(2) {
@@ -185,7 +185,6 @@ pub(crate) fn is_probably_prime(n: u64) -> bool {
         r += 1;
     }
 
-    // Test with a few small witnesses
     let witnesses = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
     'outer: for &a in &witnesses {
         if a >= n {
@@ -196,7 +195,7 @@ pub(crate) fn is_probably_prime(n: u64) -> bool {
             continue;
         }
         for _ in 0..r - 1 {
-            x = mod_mul(x, x, n);
+            x = mod_pow(x, 2, n);
             if x == n - 1 {
                 continue 'outer;
             }
@@ -204,25 +203,6 @@ pub(crate) fn is_probably_prime(n: u64) -> bool {
         return false;
     }
     true
-}
-
-fn mod_pow(mut base: u64, mut exp: u64, modulus: u64) -> u64 {
-    let mut result = 1u128;
-    let m = modulus as u128;
-    base %= modulus;
-    let mut b = base as u128;
-    while exp > 0 {
-        if exp % 2 == 1 {
-            result = (result * b) % m;
-        }
-        exp /= 2;
-        b = (b * b) % m;
-    }
-    result as u64
-}
-
-fn mod_mul(a: u64, b: u64, m: u64) -> u64 {
-    ((a as u128 * b as u128) % m as u128) as u64
 }
 
 #[cfg(test)]

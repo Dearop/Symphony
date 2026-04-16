@@ -3,6 +3,8 @@
 pub mod conversion;
 pub mod generalized;
 
+use crate::ring::arith::centered_mod;
+
 /// Sparse matrix in COO (coordinate) format.
 #[derive(Debug, Clone)]
 pub struct SparseMatrix {
@@ -50,18 +52,10 @@ impl SparseMatrix {
     /// Sparse matrix-vector multiply with modular reduction.
     pub fn mul_vec_mod(&self, x: &[i64], q: u64) -> Vec<i64> {
         assert_eq!(x.len(), self.num_cols);
-        let q_half = (q / 2) as i64;
         let mut y = vec![0i64; self.num_rows];
         for &(r, c, v) in &self.entries {
-            let prod = (v as i128 * x[c] as i128) % q as i128;
-            let sum = (y[r] as i128 + prod) % q as i128;
-            let mut s = sum as i64;
-            if s > q_half {
-                s -= q as i64;
-            } else if s < -q_half {
-                s += q as i64;
-            }
-            y[r] = s;
+            let sum = y[r] as i128 + v as i128 * x[c] as i128;
+            y[r] = centered_mod(sum, q);
         }
         y
     }
@@ -128,19 +122,9 @@ impl R1CSMatrices {
         let az = self.a.mul_vec_mod(z, q);
         let bz = self.b.mul_vec_mod(z, q);
         let cz = self.c.mul_vec_mod(z, q);
-        let q_half = (q / 2) as i64;
-        for i in 0..self.num_constraints {
-            let mut prod = ((az[i] as i128 * bz[i] as i128) % q as i128) as i64;
-            if prod > q_half {
-                prod -= q as i64;
-            } else if prod < -q_half {
-                prod += q as i64;
-            }
-            if prod != cz[i] {
-                return false;
-            }
-        }
-        true
+        (0..self.num_constraints).all(|i| {
+            centered_mod(az[i] as i128 * bz[i] as i128, q) == cz[i]
+        })
     }
 }
 

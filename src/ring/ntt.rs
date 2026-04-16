@@ -5,6 +5,7 @@
 
 use crate::params::D;
 use crate::ring::RingElement;
+use super::arith::{mod_pow, mod_inv};
 
 /// Precomputed NTT tables for a specific modulus q.
 #[derive(Debug, Clone)]
@@ -182,34 +183,6 @@ fn find_primitive_root(q: u64, n: u64) -> u64 {
         }
     }
     panic!("no primitive {n}-th root of unity found mod {q}");
-}
-
-/// Modular exponentiation.
-fn mod_pow(mut base: u64, mut exp: u64, modulus: u64) -> u64 {
-    let mut result = 1u128;
-    let m = modulus as u128;
-    base %= modulus;
-    let mut b = base as u128;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = (result * b) % m;
-        }
-        exp >>= 1;
-        b = (b * b) % m;
-    }
-    result as u64
-}
-
-/// Modular inverse via extended Euclidean algorithm.
-fn mod_inv(a: u64, m: u64) -> u64 {
-    let (mut old_r, mut r) = (a as i128, m as i128);
-    let (mut old_s, mut s) = (1i128, 0i128);
-    while r != 0 {
-        let quotient = old_r / r;
-        (old_r, r) = (r, old_r - quotient * r);
-        (old_s, s) = (s, old_s - quotient * s);
-    }
-    ((old_s % m as i128 + m as i128) % m as i128) as u64
 }
 
 #[cfg(test)]

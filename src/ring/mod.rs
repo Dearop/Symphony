@@ -1,10 +1,12 @@
 //! Cyclotomic ring Rq = Zq[X] / <X^d + 1> arithmetic with NTT acceleration.
 
+pub mod arith;
 pub mod extension;
 pub mod ntt;
 pub mod tensor;
 
 use crate::params::D;
+use arith::centered_mod;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A polynomial in Rq, stored as d coefficients in centered representation [−q/2, q/2).
@@ -52,19 +54,11 @@ impl RingElement {
     /// Coefficient-wise addition mod q.
     pub fn add(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];
-        let q_half = (q / 2) as i64;
         for (out, (&a, &b)) in coeffs
             .iter_mut()
             .zip(self.coeffs.iter().zip(other.coeffs.iter()))
         {
-            let sum = a as i128 + b as i128;
-            let mut r = (sum % q as i128) as i64;
-            if r > q_half {
-                r -= q as i64;
-            } else if r < -q_half {
-                r += q as i64;
-            }
-            *out = r;
+            *out = centered_mod(a as i128 + b as i128, q);
         }
         Self { coeffs }
     }
@@ -72,66 +66,42 @@ impl RingElement {
     /// Coefficient-wise subtraction mod q.
     pub fn sub(&self, other: &Self, q: u64) -> Self {
         let mut coeffs = [0i64; D];
-        let q_half = (q / 2) as i64;
         for (out, (&a, &b)) in coeffs
             .iter_mut()
             .zip(self.coeffs.iter().zip(other.coeffs.iter()))
         {
-            let diff = a as i128 - b as i128;
-            let mut r = (diff % q as i128) as i64;
-            if r > q_half {
-                r -= q as i64;
-            } else if r < -q_half {
-                r += q as i64;
-            }
-            *out = r;
+            *out = centered_mod(a as i128 - b as i128, q);
         }
         Self { coeffs }
     }
 
     /// Polynomial multiplication mod (X^d + 1, q).
-    /// Uses schoolbook for now; NTT-accelerated version in `ntt` module.
+    /// Uses schoolbook; NTT-accelerated version in `ntt` module.
     pub fn mul(&self, other: &Self, q: u64) -> Self {
-        let mut coeffs = [0i128; D];
+        let mut acc = [0i128; D];
         for i in 0..D {
             for j in 0..D {
                 let prod = self.coeffs[i] as i128 * other.coeffs[j] as i128;
                 let idx = i + j;
                 if idx < D {
-                    coeffs[idx] += prod;
+                    acc[idx] += prod;
                 } else {
-                    // X^d = -1 in the cyclotomic ring
-                    coeffs[idx - D] -= prod;
+                    acc[idx - D] -= prod;
                 }
             }
         }
-        let q_half = (q / 2) as i64;
-        let mut result = [0i64; D];
-        for i in 0..D {
-            let mut r = (coeffs[i] % q as i128) as i64;
-            if r > q_half {
-                r -= q as i64;
-            } else if r < -q_half {
-                r += q as i64;
-            }
-            result[i] = r;
+        let mut coeffs = [0i64; D];
+        for (out, &a) in coeffs.iter_mut().zip(acc.iter()) {
+            *out = centered_mod(a, q);
         }
-        Self { coeffs: result }
+        Self { coeffs }
     }
 
     /// Scalar multiplication by a constant.
     pub fn scalar_mul(&self, scalar: i64, q: u64) -> Self {
         let mut coeffs = [0i64; D];
-        let q_half = (q / 2) as i64;
         for (out, &c) in coeffs.iter_mut().zip(self.coeffs.iter()) {
-            let prod = c as i128 * scalar as i128;
-            let mut r = (prod % q as i128) as i64;
-            if r > q_half {
-                r -= q as i64;
-            } else if r < -q_half {
-                r += q as i64;
-            }
-            *out = r;
+            *out = centered_mod(c as i128 * scalar as i128, q);
         }
         Self { coeffs }
     }
@@ -163,6 +133,12 @@ impl RingElement {
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct RingVector {
     pub elements: Vec<RingElement>,
+}
+
+impl From<Vec<RingElement>> for RingVector {
+    fn from(elements: Vec<RingElement>) -> Self {
+        Self { elements }
+    }
 }
 
 impl RingVector {

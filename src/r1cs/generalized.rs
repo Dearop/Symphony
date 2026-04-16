@@ -9,6 +9,7 @@
 
 use crate::params::D;
 use crate::r1cs::R1CSMatrices;
+use crate::ring::arith::centered_mod;
 use crate::ring::RingElement;
 
 /// Parameters for the generalized committed R1CS.
@@ -76,20 +77,12 @@ pub fn check_hadamard(
             z_j.push(w.coeffs[j]);
         }
 
-        // Check (M_1 · z_j) ∘ (M_2 · z_j) = M_3 · z_j mod q
         let az = params.matrices.a.mul_vec_mod(&z_j, q);
         let bz = params.matrices.b.mul_vec_mod(&z_j, q);
         let cz = params.matrices.c.mul_vec_mod(&z_j, q);
 
-        let q_half = (q / 2) as i64;
         for i in 0..m {
-            let mut prod = ((az[i] as i128 * bz[i] as i128) % q as i128) as i64;
-            if prod > q_half {
-                prod -= q as i64;
-            } else if prod < -q_half {
-                prod += q as i64;
-            }
-            if prod != cz[i] {
+            if centered_mod(az[i] as i128 * bz[i] as i128, q) != cz[i] {
                 return false;
             }
         }

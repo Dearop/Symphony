@@ -233,9 +233,7 @@ pub fn prove(
         }
     }
     let folded_commitment = Commitment {
-        value: RingVector {
-            elements: folded_commitment_elems,
-        },
+        value: RingVector::from(folded_commitment_elems),
     };
 
     // Fold public inputs: x*_in = Σ β_ℓ · cf^{-1}(X^ℓ_in)
@@ -305,7 +303,7 @@ pub fn prove(
                     }
                 }
             }
-            folded_monomial_vecs.push(RingVector { elements: folded });
+            folded_monomial_vecs.push(RingVector::from(folded));
         }
     }
 
@@ -316,9 +314,7 @@ pub fn prove(
     };
 
     let folded_witness = FoldedWitness {
-        witness: RingVector {
-            elements: folded_witness_elems,
-        },
+        witness: RingVector::from(folded_witness_elems),
         monomial_vectors: folded_monomial_vecs,
     };
 

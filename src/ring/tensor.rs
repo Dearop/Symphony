@@ -5,6 +5,7 @@
 //! - Rq^T (each row is an Rq-element) — useful for folding
 
 use crate::params::{D, T};
+use crate::ring::arith::centered_mod;
 use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
 use crate::ring::RingElement;
 
@@ -33,7 +34,7 @@ impl TensorElement {
         assert!(j < D);
         ExtFieldElement {
             c0: self.data[0][j],
-            c1: if T > 1 { self.data[1][j] } else { 0 },
+            c1: self.data[1][j],
         }
     }
 
@@ -51,16 +52,13 @@ impl TensorElement {
         let mut data = [[0i64; D]; T];
         for j in 0..D {
             data[0][j] = cols[j].c0;
-            if T > 1 {
-                data[1][j] = cols[j].c1;
-            }
+            data[1][j] = cols[j].c1;
         }
         Self { data }
     }
 
     /// Addition over Zq.
     pub fn add(&self, other: &Self, q: u64) -> Self {
-        let q_half = (q / 2) as i64;
         let mut data = [[0i64; D]; T];
         for ((out_row, self_row), other_row) in
             data.iter_mut().zip(self.data.iter()).zip(other.data.iter())
@@ -70,14 +68,7 @@ impl TensorElement {
                 .zip(self_row.iter())
                 .zip(other_row.iter())
             {
-                let sum = s as i128 + o as i128;
-                let mut r = (sum % q as i128) as i64;
-                if r > q_half {
-                    r -= q as i64;
-                } else if r < -q_half {
-                    r += q as i64;
-                }
-                *out = r;
+                *out = centered_mod(s as i128 + o as i128, q);
             }
         }
         Self { data }
@@ -87,13 +78,10 @@ impl TensorElement {
     pub fn k_scalar_mul(&self, scalar: &ExtFieldElement, ctx: &ExtFieldContext) -> Self {
         let mut data = [[0i64; D]; T];
         let (row0, rest) = data.split_first_mut().unwrap();
-        for (j, d0) in row0.iter_mut().enumerate() {
-            let col = self.col(j);
-            let prod = ctx.mul(&col, scalar);
-            *d0 = prod.c0;
-            if T > 1 {
-                rest[0][j] = prod.c1;
-            }
+        for j in 0..D {
+            let prod = ctx.mul(&self.col(j), scalar);
+            row0[j] = prod.c0;
+            rest[0][j] = prod.c1;
         }
         Self { data }
     }

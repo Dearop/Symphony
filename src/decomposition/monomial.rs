@@ -13,7 +13,7 @@ use crate::ring::RingElement;
 ///
 /// Since X^d = −1, we have X^{−i} = −X^{d−i}, but the paper defines
 /// X^{−i} = X^{d−i} since we work modulo X^d + 1.
-pub fn table_polynomial(_q: u64) -> RingElement {
+pub fn table_polynomial() -> RingElement {
     let mut coeffs = [0i64; D];
     let half_d = D / 2;
     // ct(X^a · t(X)) = a requires negated coefficients because X^d = -1.
@@ -55,12 +55,9 @@ pub fn exp_map(a: i64) -> RingElement {
 /// Verify the monomial property: ct(Exp(a) · t(X)) = a.
 pub fn verify_monomial_property(a: i64, ntt: &NttContext) -> bool {
     if a == 0 {
-        // Exp(0) = 0, so ct(0 · t(X)) = 0
         return true;
     }
-    let b = exp_map(a);
-    let t = table_polynomial(ntt.q);
-    let product = b.mul_ntt(&t, ntt);
+    let product = exp_map(a).mul_ntt(&table_polynomial(), ntt);
     product.ct() == a
 }
 
@@ -82,23 +79,13 @@ pub fn is_monomial(f: &RingElement) -> bool {
     }
 }
 
-/// Decompose a value into monomial layers for the range proof.
-///
-/// Given H with entries in some range, decompose into k_g layers H^(1), ..., H^(k_g)
-/// where H = H^(1) + d'·H^(2) + ... + d'^{k_g-1}·H^(k_g) and ‖H^(i)‖_∞ ≤ d'/2.
-pub fn monomial_decompose(value: i64, d_prime: i64, k_g: usize) -> Vec<i64> {
-    crate::decomposition::decompose(value, d_prime, k_g)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const TEST_Q: u64 = 257;
-
     #[test]
     fn test_table_polynomial() {
-        let t = table_polynomial(TEST_Q);
+        let t = table_polynomial();
         assert_eq!(t.coeffs[0], 0);
         assert_eq!(t.coeffs[1], -1);
         assert_eq!(t.coeffs[D - 1], -1);
@@ -107,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_monomial_property() {
-        let ntt = crate::ring::ntt::NttContext::new(TEST_Q);
+        let ntt = crate::ring::ntt::NttContext::new(257);
         for a in -((D as i64) / 2 - 1)..((D as i64) / 2) {
             assert!(
                 verify_monomial_property(a, &ntt),

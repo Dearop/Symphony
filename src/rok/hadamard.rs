@@ -226,9 +226,7 @@ pub fn prove(
             assert_eq!(tab.len(), 1);
             let val = tab[0];
             evaluation_matrix[i].data[0][j] = val.c0;
-            if crate::params::T > 1 {
-                evaluation_matrix[i].data[1][j] = val.c1;
-            }
+            evaluation_matrix[i].data[1][j] = val.c1;
         }
     }
 

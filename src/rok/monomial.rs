@@ -216,9 +216,7 @@ pub fn prove(
             assert_eq!(coeff_tables[tab_idx].len(), 1);
             let val = coeff_tables[tab_idx][0];
             te.data[0][j] = val.c0;
-            if crate::params::T > 1 {
-                te.data[1][j] = val.c1;
-            }
+            te.data[1][j] = val.c1;
         }
         evaluations.push(te);
     }

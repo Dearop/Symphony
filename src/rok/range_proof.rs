@@ -11,7 +11,7 @@
 //! 5. Verifier checks consistency via the table polynomial
 
 use crate::commitment::{AjtaiParams, Commitment};
-use crate::decomposition::monomial::{exp_map, monomial_decompose};
+use crate::decomposition::monomial::exp_map;
 use crate::params::D;
 use crate::ring::extension::ExtFieldContext;
 use crate::ring::ntt::NttContext;
@@ -155,7 +155,7 @@ pub fn prove(
     let n_blocks = if total_coeffs == 0 {
         1
     } else {
-        (total_coeffs + params.ell_h - 1) / params.ell_h // ceil division
+        total_coeffs.div_ceil(params.ell_h)
     };
     let projected = challenges
         .projection
@@ -166,7 +166,7 @@ pub fn prove(
     let k_g = params.k_g;
     let mut layers: Vec<Vec<i64>> = vec![Vec::new(); k_g];
     for &h_val in &projected {
-        let digits = monomial_decompose(h_val, d_prime, k_g);
+        let digits = crate::decomposition::decompose(h_val, d_prime, k_g);
         for (layer, &digit) in layers.iter_mut().zip(digits.iter()) {
             layer.push(digit);
         }
@@ -242,7 +242,7 @@ pub fn verify(
     // Step 2: Verify consistency via the table polynomial.
     // For each monomial g^(i)[b], check that ct(g^(i)[b] · t(X)) gives
     // the decomposition digit, and that the digits reconstruct the projected values.
-    let table_poly = crate::decomposition::monomial::table_polynomial(ctx.q);
+    let table_poly = crate::decomposition::monomial::table_polynomial();
     let ntt = NttContext::new(ctx.q);
     let d_prime = params.d_prime;
 
