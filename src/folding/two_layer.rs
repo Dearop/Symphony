@@ -96,7 +96,7 @@ pub fn prove_two_layer(
     let q = ctx.q;
 
     // Layer 1: Standard high-arity fold
-    let (layer1_proof, layer1_witness) =
+    let (layer1_proof, layer1_witness, _) =
         crate::folding::prove(statements, r1cs, ajtai, range_params, ctx);
     let layer1_instance = layer1_proof.folded_instance.clone();
 
@@ -132,7 +132,7 @@ pub fn prove_two_layer(
     // Layer 2: Fold the linear statements
     let layer2_r1cs = R1CSMatrices::new(1, layer2_n, 0);
 
-    let (layer2_proof, layer2_witness) = crate::folding::prove(
+    let (layer2_proof, layer2_witness, _) = crate::folding::prove(
         &layer2_statements,
         &layer2_r1cs,
         &layer2_ajtai,

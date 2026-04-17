@@ -452,9 +452,15 @@ symphony/
 │   │   ├── mod.rs            // Commit-and-open + FS transform (Section 5)
 │   │   └── transcript.rs     // Transcript management
 │   ├── snark/
-│   │   ├── mod.rs            // Construction 6.1 compiler
+│   │   ├── mod.rs            // Construction 6.1 compiler + BackendSnark trait
 │   │   ├── cp_snark.rs       // Commit-and-prove SNARK interface
-│   │   └── prover.rs         // Full SNARK prover
+│   │   ├── prover.rs         // Full SNARK prover
+│   │   ├── sumcheck_snark.rs // Demo backend (transcript binding checks)
+│   │   ├── spartan/          // Spartan backend (Pedersen + IPA over Ristretto)
+│   │   │   ├── mod.rs, commitment.rs, ipa.rs, r1cs_sumcheck.rs,
+│   │   │   │   scalar_field.rs, serialize.rs, sumcheck.rs
+│   │   └── whir/             // WHIR backend (feature-gated, PQ Merkle PCS)
+│   │       ├── mod.rs, field.rs, serialize.rs
 │   ├── r1cs/
 │   │   ├── mod.rs            // R1CS relation definition
 │   │   ├── generalized.rs    // Generalized committed R1CS (Eq. 38)
@@ -556,9 +562,16 @@ pub trait BackendSnark {
 }
 ```
 
-Possible backends:
+Implemented backends:
 
-- **Post-quantum:** LaBRADOR, WHIR (proof size 50–100KB)
+- **`WhirSnark`** *(feature = `whir`)*: Post-quantum, Merkle-based WHIR PCS from whir-p3 over BabyBear. Succinct proofs.
+- **`SpartanSnark`**: R1CS-to-sumcheck + Pedersen + IPA over Ristretto. Not post-quantum.
+- **`SumcheckSnark`**: Demo backend with transcript binding checks.
+- **`DummySnark`**: Trivial backend for API testing.
+
+Possible external backends:
+
+- **Post-quantum:** LaBRADOR (proof size 50–100KB)
 - **Pairing-based:** HyperPlonk + KZG (proof size < 50KB, not PQ)
 
 ### 10.4 Trait for Fiat-Shamir Commitment Π_cm
@@ -648,18 +661,19 @@ MSIS parameters are set for 117-bit security using the lattice estimator. Both |
 - R1CS constraint definition (the application logic)
 - Public input format
 - Witness generation
-- The external SNARK backend (LaBRADOR, WHIR, HyperPlonk, etc.) — Symphony is a compiler on top
+- The external SNARK backend — Symphony is a compiler on top (WHIR and Spartan are included; LaBRADOR, HyperPlonk, etc. can be added)
 
 ---
 
 ## 13. Open Problems and Caveats
 
-1. **Reference implementations exist, but production hardening remains open.** This crate includes an end-to-end implementation and demo backends; deploying in production still requires a concrete audited backend SNARK integration.
+1. **Production hardening remains open.** The crate includes end-to-end implementations with two concrete backends (Spartan, WHIR); deploying in production still requires security audits and backend-specific benchmarks.
 2. **Approximate range proofs** mean extracted witnesses have slightly larger norms (B' vs B). This is fine for depth ≤ 2 but requires care if extending to deeper folding.
 3. **Concrete probability analysis for folded witness norms** is left to future work (Remark 4.2). The worst-case bound (Eq. 50) is conservative.
 4. **Two-layer folding** requires the structured MSIS matrix assumption (Eq. 56), which is slightly stronger than standard MSIS.
 5. **One-pass streaming** for the non-recursive setting remains an open problem. Current algorithm requires 2 + log log(n) passes.
-6. **The CP-SNARK and backend SNARK** are not specified by Symphony — they are pluggable components. You need to choose and integrate an existing implementation (e.g., LaBRADOR for PQ, HyperPlonk+KZG for non-PQ).
+6. **Output SNARK inner-product reduction** (WHIR backend): The output SNARK path verifies that the sumcheck final evaluation is consistent with the WHIR-committed polynomial, but does not yet perform the full inner-product reduction to independently verify Az(r*), Bz(r*), Cz(r*) from z(r*) alone (see `verify_output` TODO comment). This is a follow-up enhancement.
+7. **WHIR security level** is currently set to 32 bits for testing. Production deployment should increase this.
 
 ---
 

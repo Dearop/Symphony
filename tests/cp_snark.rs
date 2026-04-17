@@ -554,6 +554,29 @@ mod soundness_tests {
     }
 
     #[test]
+    fn tampered_transcript_digest_rejected() {
+        let scheme = HashCommitment::new();
+        let cp = CPSnark::<DummySnark, HashCommitment>::setup(1, 64);
+        let (c, o) = scheme.commit(b"secret");
+        let mut proof = cp
+            .prove(
+                &scheme,
+                &[b"secret".as_slice()],
+                &[o],
+                &[c],
+                b"",
+                &IdentityRelation,
+            )
+            .unwrap();
+        assert!(cp.verify(&[c], b"", &proof));
+        proof.transcript_digest[0] ^= 0xFF;
+        assert!(
+            !cp.verify(&[c], b"", &proof),
+            "tampered transcript_digest must be rejected"
+        );
+    }
+
+    #[test]
     fn proof_transcript_digest_is_deterministic() {
         let scheme = HashCommitment::new();
         let msg = b"deterministic";

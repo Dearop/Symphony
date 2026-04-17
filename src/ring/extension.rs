@@ -61,9 +61,8 @@ impl ExtFieldContext {
     /// i128 overflow when q is large (up to ~2^60).
     #[inline]
     pub fn mul(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
-        let a1b1_alpha = self.reduce(
-            self.reduce(a.c1 as i128 * b.c1 as i128) as i128 * self.alpha as i128,
-        );
+        let a1b1_alpha =
+            self.reduce(self.reduce(a.c1 as i128 * b.c1 as i128) as i128 * self.alpha as i128);
         let a0b0 = self.reduce(a.c0 as i128 * b.c0 as i128);
         let c0 = a0b0 as i128 + a1b1_alpha as i128;
         let c1 = a.c0 as i128 * b.c1 as i128 + a.c1 as i128 * b.c0 as i128;

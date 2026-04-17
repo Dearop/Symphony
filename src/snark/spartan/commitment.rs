@@ -91,7 +91,12 @@ mod tests {
     #[test]
     fn commit_deterministic() {
         let key = PedersenKey::setup(4, b"test-seed");
-        let values = vec![Scalar::from(1u64), Scalar::from(2u64), Scalar::from(3u64), Scalar::from(4u64)];
+        let values = vec![
+            Scalar::from(1u64),
+            Scalar::from(2u64),
+            Scalar::from(3u64),
+            Scalar::from(4u64),
+        ];
         let r = Scalar::from(42u64);
         let c1 = key.commit(&values, r);
         let c2 = key.commit(&values, r);

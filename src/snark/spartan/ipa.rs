@@ -196,27 +196,10 @@ pub fn ipa_verify(
         p = l_point * (x * x) + p + r_point * (x_inv * x_inv);
     }
 
-    // Compute folded generator G_final and folded b
-    // s_i = prod_j x_j^{e_j(i)} where e_j(i) = x_inv if bit j of i is 0, x if bit j is 1
-    let mut s = vec![Scalar::ONE; n];
-    for (j, x) in challenges.iter().enumerate() {
-        let x_inv = x.invert();
-        let stride = 1 << (num_rounds - 1 - j);
-        for (i, si) in s.iter_mut().enumerate().take(n) {
-            if (i / stride).is_multiple_of(2) {
-                *si *= x_inv;
-            } else {
-                *si *= *x;
-            }
-        }
-    }
+    // Compute folded generator G_final: O(N) group operations (inherent to IPA)
+    let (g_final, _s) = compute_g_final(&key.generators[..n], &challenges, num_rounds);
 
-    let mut g_final = key.generators[0] * s[0];
-    for (gi, si) in key.generators[1..n].iter().zip(s[1..n].iter()) {
-        g_final += gi * si;
-    }
-
-    // Fold b
+    // Fold b: O(N) scalar operations
     let mut b_vec = b.to_vec();
     for x in &challenges {
         let half = b_vec.len() / 2;
@@ -235,6 +218,107 @@ pub fn ipa_verify(
         + key.blinding_gen * proof.final_r;
 
     p == expected
+}
+
+/// IPA verification specialized for eq-structured `b` vectors.
+///
+/// When `b = eq(eq_point, ·)` (a tensor-product multilinear extension), the
+/// folded value `b_final` can be computed in O(log N) instead of expanding the
+/// full 2^n eq table and folding it in O(N).
+///
+/// The generator-side computation (`g_final`) is still O(N) — this is inherent
+/// to Bulletproofs-style IPA. But this function eliminates the O(N) allocation
+/// and scalar work for the `b` vector.
+pub fn ipa_verify_eq(
+    key: &PedersenKey,
+    commitment: RistrettoPoint,
+    eq_point: &[Scalar],
+    claimed_ip: Scalar,
+    proof: &IPAProof,
+    transcript: &mut Vec<u8>,
+) -> bool {
+    let num_rounds = eq_point.len();
+    let n = 1usize << num_rounds;
+
+    if proof.lr_pairs.len() != num_rounds {
+        return false;
+    }
+    if key.generators.len() < n {
+        return false;
+    }
+
+    let u_gen = derive_u_generator(transcript);
+    let mut p = commitment + u_gen * claimed_ip;
+
+    let mut challenges = Vec::with_capacity(num_rounds);
+    for round in 0..num_rounds {
+        let (l_point, r_point) = proof.lr_pairs[round];
+        transcript.extend_from_slice(l_point.compress().as_bytes());
+        transcript.extend_from_slice(r_point.compress().as_bytes());
+        let x = derive_challenge(transcript);
+        let x_inv = x.invert();
+        challenges.push(x);
+        p = l_point * (x * x) + p + r_point * (x_inv * x_inv);
+    }
+
+    // O(N) group operations for g_final (inherent to IPA)
+    let (g_final, _s) = compute_g_final(&key.generators[..n], &challenges, num_rounds);
+
+    // O(log N) computation of b_final using eq tensor-product structure:
+    // b = eq(r, ·) = ⊗_j (1-r_j, r_j)
+    // After IPA folding with challenges x_j:
+    //   b_final = prod_j ((1-r_j)*x_j^{-1} + r_j*x_j)
+    let b_final = compute_eq_b_final(eq_point, &challenges);
+
+    let expected = g_final * proof.final_a
+        + u_gen * (proof.final_a * b_final)
+        + key.blinding_gen * proof.final_r;
+
+    p == expected
+}
+
+/// Compute the folded eq value directly from the eq point and IPA challenges.
+///
+/// For b = eq(r, ·) = ⊗_j (1-r_j, r_j), folding with IPA challenge x_j gives:
+///   b_final = prod_j ((1-r_j) * x_j^{-1} + r_j * x_j)
+///
+/// This is O(k) = O(log N) instead of expanding the full 2^k table and folding.
+fn compute_eq_b_final(eq_point: &[Scalar], ipa_challenges: &[Scalar]) -> Scalar {
+    assert_eq!(eq_point.len(), ipa_challenges.len());
+    let mut result = Scalar::ONE;
+    for (r_j, x_j) in eq_point.iter().zip(ipa_challenges.iter()) {
+        let x_inv = x_j.invert();
+        result *= (Scalar::ONE - *r_j) * x_inv + *r_j * *x_j;
+    }
+    result
+}
+
+/// Factor out the s_i / g_final computation shared by both IPA verify variants.
+fn compute_g_final(
+    generators: &[RistrettoPoint],
+    challenges: &[Scalar],
+    num_rounds: usize,
+) -> (RistrettoPoint, Vec<Scalar>) {
+    let n = generators.len();
+    let mut s = vec![Scalar::ONE; n];
+    for (j, x) in challenges.iter().enumerate() {
+        let x_inv = x.invert();
+        let stride = 1 << (num_rounds - 1 - j);
+        for (i, si) in s.iter_mut().enumerate().take(n) {
+            if (i / stride) % 2 == 0 {
+                *si *= x_inv;
+            } else {
+                *si *= *x;
+            }
+        }
+    }
+
+    let mut g_final = generators[0] * s[0];
+    for (gi, si) in generators[1..].iter().zip(s[1..].iter()) {
+        g_final += gi * si;
+    }
+
+    (g_final, s)
 }
 
 #[cfg(test)]
@@ -323,7 +407,14 @@ mod tests {
         let proof = ipa_prove(&key, &a, &b, r, &mut transcript_p);
 
         let mut transcript_v = b"test".to_vec();
-        assert!(ipa_verify(&key, commitment, &b, ip, &proof, &mut transcript_v));
+        assert!(ipa_verify(
+            &key,
+            commitment,
+            &b,
+            ip,
+            &proof,
+            &mut transcript_v
+        ));
     }
 
     #[test]
@@ -340,6 +431,87 @@ mod tests {
         let proof = ipa_prove(&key, &a, &b, r, &mut transcript_p);
 
         let mut transcript_v = b"test8".to_vec();
-        assert!(ipa_verify(&key, commitment, &b, ip, &proof, &mut transcript_v));
+        assert!(ipa_verify(
+            &key,
+            commitment,
+            &b,
+            ip,
+            &proof,
+            &mut transcript_v
+        ));
+    }
+
+    #[test]
+    fn ipa_verify_eq_matches_full_verify() {
+        use super::super::sumcheck::build_eq_table;
+
+        let num_vars = 3;
+        let n = 1 << num_vars;
+        let key = PedersenKey::setup(n, b"test-ipa-eq");
+
+        let a: Vec<Scalar> = (0..n).map(|i| Scalar::from((i * 7 + 3) as u64)).collect();
+        let eq_point: Vec<Scalar> = (0..num_vars)
+            .map(|i| Scalar::from((i * 11 + 5) as u64))
+            .collect();
+        let b = build_eq_table(&eq_point, num_vars);
+        let r = Scalar::from(77u64);
+        let commitment = key.commit(&a, r);
+        let ip: Scalar = a.iter().zip(b.iter()).map(|(ai, bi)| ai * bi).sum();
+
+        let mut transcript_p = b"test-eq".to_vec();
+        let proof = ipa_prove(&key, &a, &b, r, &mut transcript_p);
+
+        // Verify with full b vector
+        let mut transcript_v1 = b"test-eq".to_vec();
+        assert!(ipa_verify(
+            &key,
+            commitment,
+            &b,
+            ip,
+            &proof,
+            &mut transcript_v1
+        ));
+
+        // Verify with eq_point (structured, no full expansion)
+        let mut transcript_v2 = b"test-eq".to_vec();
+        assert!(ipa_verify_eq(
+            &key,
+            commitment,
+            &eq_point,
+            ip,
+            &proof,
+            &mut transcript_v2
+        ));
+    }
+
+    #[test]
+    fn ipa_verify_eq_rejects_wrong_ip() {
+        use super::super::sumcheck::build_eq_table;
+
+        let num_vars = 3;
+        let n = 1 << num_vars;
+        let key = PedersenKey::setup(n, b"test-ipa-eq-rej");
+
+        let a: Vec<Scalar> = (0..n).map(|i| Scalar::from((i + 1) as u64)).collect();
+        let eq_point: Vec<Scalar> = (0..num_vars)
+            .map(|i| Scalar::from((i * 3 + 1) as u64))
+            .collect();
+        let b = build_eq_table(&eq_point, num_vars);
+        let r = Scalar::from(42u64);
+        let commitment = key.commit(&a, r);
+
+        let mut transcript_p = b"test-eq-rej".to_vec();
+        let proof = ipa_prove(&key, &a, &b, r, &mut transcript_p);
+
+        let wrong_ip = Scalar::from(999u64);
+        let mut transcript_v = b"test-eq-rej".to_vec();
+        assert!(!ipa_verify_eq(
+            &key,
+            commitment,
+            &eq_point,
+            wrong_ip,
+            &proof,
+            &mut transcript_v
+        ));
     }
 }

@@ -25,6 +25,7 @@ pub mod cp_snark;
 pub mod decomposition;
 pub mod fiat_shamir;
 pub mod folding;
+pub mod modular;
 pub mod params;
 pub mod r1cs;
 pub mod ring;
@@ -32,16 +33,28 @@ pub mod rok;
 pub mod snark;
 pub mod sumcheck;
 
+// Preserve existing crate-level module paths while keeping implementation grouped.
+pub use modular::adapter_symphony;
+pub use modular::cp_backend_api;
+pub use modular::cp_relation_core;
+pub use modular::digest_core;
+pub use modular::folding_core;
+pub use modular::output_backend_api;
+pub use modular::proof_orchestrator;
+pub use modular::transcript_core;
+
 pub use commitment::{AjtaiParams, Commitment};
+pub use cp_relation_core::{CpPublicInstance as ModularCpPublicInstance, CpWitnessBundle};
 pub use cp_snark::{CPProof, CPSnark, CommittedRelation};
 pub use fiat_shamir::hash_commitment::HashCommitment;
 pub use params::SymphonyParams;
+pub use proof_orchestrator::{ProofBundle, Prover as ModularProver, Verifier as ModularVerifier};
 pub use r1cs::R1CSMatrices;
+pub use snark::spartan::{SpartanProof, SpartanProvingKey, SpartanSnark, SpartanVerifyingKey};
 pub use snark::sumcheck_snark::{
     SumcheckProofData, SumcheckProvingKey, SumcheckSnark, SumcheckVerifyingKey,
 };
+#[cfg(feature = "whir")]
+pub use snark::whir::{WhirProof, WhirProvingKey, WhirSnark, WhirVerifyingKey};
 pub use snark::{BackendSnark, SymphonyProof, SymphonyProver, SymphonyVerifier};
 pub use snark::{DummySnark, DummySymphonyProof, DummySymphonyProver, DummySymphonyVerifier};
-pub use snark::spartan::{SpartanSnark, SpartanProof, SpartanProvingKey, SpartanVerifyingKey};
-#[cfg(feature = "whir")]
-pub use snark::whir::{WhirSnark, WhirProof, WhirProvingKey, WhirVerifyingKey};

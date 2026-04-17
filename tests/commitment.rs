@@ -191,15 +191,13 @@ mod commitment_proptest {
     use super::*;
 
     fn arb_small_witness(n: usize) -> impl Strategy<Value = RingVector> {
-        prop::collection::vec(
-            prop::array::uniform(-10i64..=10),
-            n..=n,
-        )
-        .prop_map(|vecs| RingVector {
-            elements: vecs
-                .into_iter()
-                .map(|coeffs| RingElement { coeffs })
-                .collect(),
+        prop::collection::vec(prop::array::uniform(-10i64..=10), n..=n).prop_map(|vecs| {
+            RingVector {
+                elements: vecs
+                    .into_iter()
+                    .map(|coeffs| RingElement { coeffs })
+                    .collect(),
+            }
         })
     }
 

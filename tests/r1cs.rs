@@ -10,6 +10,21 @@ mod r1cs_conversion {
     use symphony::r1cs::conversion;
 
     #[test]
+    fn kronecker_expansion_panics_on_overflow() {
+        let mut original = R1CSMatrices::new(1, 2, 1);
+        original.a.insert(0, 0, i64::MAX / 2);
+        original.b.insert(0, 0, 1);
+        original.c.insert(0, 0, 1);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            conversion::kronecker_expand(&original, i64::MAX, 2);
+        }));
+        assert!(
+            result.is_err(),
+            "kronecker expansion should panic on overflow"
+        );
+    }
+
+    #[test]
     fn kronecker_expansion_larger() {
         let (r1cs, z) = common::multi_r1cs();
         assert!(r1cs.is_satisfied_mod(&z, Q));
@@ -39,6 +54,51 @@ mod r1cs_conversion {
 
 mod r1cs_extended {
     use super::*;
+    use symphony::r1cs::SparseMatrix;
+
+    #[test]
+    fn mul_vec_panics_on_overflow() {
+        let mut m = SparseMatrix::new(1, 2);
+        m.insert(0, 0, i64::MAX);
+        m.insert(0, 1, i64::MAX);
+        let x = vec![i64::MAX, i64::MAX];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            m.mul_vec(&x);
+        }));
+        assert!(
+            result.is_err(),
+            "mul_vec should panic on overflow instead of silent truncation"
+        );
+    }
+
+    #[test]
+    fn mul_vec_normal_operation() {
+        let mut m = SparseMatrix::new(1, 2);
+        m.insert(0, 0, 3);
+        m.insert(0, 1, 5);
+        let x = vec![7i64, 11];
+        let y = m.mul_vec(&x);
+        assert_eq!(y[0], 3 * 7 + 5 * 11);
+    }
+
+    #[test]
+    fn is_satisfied_mod_with_reduction() {
+        let q = 257u64;
+        let mut r1cs = R1CSMatrices::new(1, 3, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 1, 1);
+        r1cs.c.insert(0, 2, 1);
+        let x_val = 100i64;
+        let y_val = ((x_val as i128 * x_val as i128) % q as i128) as i64;
+        let y_centered = if y_val > (q / 2) as i64 {
+            y_val - q as i64
+        } else {
+            y_val
+        };
+        let z = vec![1, x_val, y_centered];
+        assert!(r1cs.is_satisfied_mod(&z, q));
+        assert!(!r1cs.is_satisfied(&z));
+    }
 
     #[test]
     fn modular_satisfaction() {
