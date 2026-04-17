@@ -25,6 +25,7 @@ fn c1_setup_calls_validate() {
         m: 1 << 16,
         b: 16,
         k_cs: 16,
+        n_in: 1,
         ntt: SymphonyParams::try_ntt(257, D),
     };
     let result = std::panic::catch_unwind(|| {
@@ -50,6 +51,7 @@ fn c2_validate_rejects_non_prime_q() {
         m: 1 << 16,
         b: 16,
         k_cs: 16,
+        n_in: 1,
         ntt: SymphonyParams::try_ntt(128, D),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
@@ -70,6 +72,7 @@ fn c2_validate_rejects_q_not_1_mod_2d() {
         m: 1 << 16,
         b: 16,
         k_cs: 16,
+        n_in: 1,
         ntt: SymphonyParams::try_ntt(127, D),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
@@ -90,6 +93,7 @@ fn c2_validate_rejects_b_less_than_2() {
         m: 1 << 16,
         b: 1, // invalid
         k_cs: 16,
+        n_in: 1,
         ntt: SymphonyParams::try_ntt(params.q, D),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params2.validate()));
@@ -110,6 +114,7 @@ fn c2_validate_rejects_k_cs_zero() {
         m: 1 << 16,
         b: 16,
         k_cs: 0, // invalid
+        n_in: 1,
         ntt: SymphonyParams::try_ntt(good.q, D),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
@@ -293,10 +298,10 @@ fn h3_bytes_to_scalars_injective() {
     assert!(SpartanSnark::verify(&vk, b"inst", &proof1));
     assert!(SpartanSnark::verify(&vk, b"inst", &proof2));
 
-    // The witness hashes should differ because of the length sentinel
+    // The witness commitments should differ because of the length sentinel
     assert_ne!(
-        proof1.witness_hash, proof2.witness_hash,
-        "H3: different-length inputs must produce different witness hashes"
+        proof1.witness_commitment, proof2.witness_commitment,
+        "H3: different-length inputs must produce different witness commitments"
     );
 }
 
