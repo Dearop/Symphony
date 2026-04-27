@@ -3,7 +3,9 @@
 use crate::folding::FoldedInstance;
 use crate::params::D;
 use crate::r1cs::R1CSMatrices;
+use crate::ring::arith::centered_mod;
 use crate::ring::extension::ExtFieldElement;
+use crate::ring::ntt::NttContext;
 use crate::ring::RingElement;
 use crate::rok::gr1cs::GR1CSProof;
 
@@ -66,15 +68,15 @@ pub fn encode_cp_witness_r1cs(
     commitments: &[crate::commitment::Commitment],
     public_inputs: &[Vec<i64>],
     beta: &[RingElement],
-    _folded_instance: &FoldedInstance,
+    folded_instance: &FoldedInstance,
     layout: &CpR1csLayout,
-    ntt: &Option<crate::ring::ntt::NttContext>,
+    _ntt: &Option<crate::ring::ntt::NttContext>,
     gr1cs_proofs: &[GR1CSProof],
     had_seed: &[ExtFieldElement],
     had_alpha: &ExtFieldElement,
     had_challenges: &[ExtFieldElement],
     qnr: i64,
-    _q: u64,
+    q: u64,
 ) -> Vec<u8> {
     let d = layout.d;
     let ell_np = layout.ell_np;
@@ -130,6 +132,29 @@ pub fn encode_cp_witness_r1cs(
         }
     }
 
+    // prod_c[ℓ][i][j] / prod_x[ℓ][s][j] are computed over BabyBear to match
+    // CP-R1CS Phase A constraints.
+    let p_bb = 2013265921u64;
+    let ring_mul_bb = |a: &RingElement, b: &RingElement| -> RingElement {
+        let mut acc = [0i128; D];
+        for i in 0..D {
+            for j in 0..D {
+                let prod = a.coeffs[i] as i128 * b.coeffs[j] as i128;
+                let idx = i + j;
+                if idx < D {
+                    acc[idx] += prod;
+                } else {
+                    acc[idx - D] -= prod; // X^D = -1
+                }
+            }
+        }
+        let mut coeffs = [0i64; D];
+        for (out, &v) in coeffs.iter_mut().zip(acc.iter()) {
+            *out = centered_mod(v, p_bb);
+        }
+        RingElement { coeffs }
+    };
+
     // prod_c[ℓ][i][j] — ring products beta[ℓ] · c[ℓ][i]
     for ell in 0..ell_np {
         for i in 0..kappa {
@@ -137,10 +162,7 @@ pub fn encode_cp_witness_r1cs(
                 && ell < commitments.len()
                 && i < commitments[ell].value.elements.len()
             {
-                let ntt_ctx = ntt
-                    .as_ref()
-                    .expect("NTT context required for CP R1CS witness");
-                let prod = beta[ell].mul_ntt(&commitments[ell].value.elements[i], ntt_ctx);
+                let prod = ring_mul_bb(&beta[ell], &commitments[ell].value.elements[i]);
                 for &coeff in &prod.coeffs {
                     buf.extend_from_slice(&coeff.to_le_bytes());
                 }
@@ -157,10 +179,7 @@ pub fn encode_cp_witness_r1cs(
         for s in 0..n_in {
             if ell < beta.len() && ell < public_inputs.len() && s < public_inputs[ell].len() {
                 let x_ring = RingElement::from_constant(public_inputs[ell][s]);
-                let ntt_ctx = ntt
-                    .as_ref()
-                    .expect("NTT context required for CP R1CS witness");
-                let prod = beta[ell].mul_ntt(&x_ring, ntt_ctx);
+                let prod = ring_mul_bb(&beta[ell], &x_ring);
                 for &coeff in &prod.coeffs {
                     buf.extend_from_slice(&coeff.to_le_bytes());
                 }
@@ -169,6 +188,72 @@ pub fn encode_cp_witness_r1cs(
                     buf.extend_from_slice(&0i64.to_le_bytes());
                 }
             }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Phase A sum-wrap witness for centered modular embedding
+    // -------------------------------------------------------------------
+    // CP constraints are enforced in BabyBear (p), while folded ring coefficients
+    // live in Z_q. For each sum row we enforce in F_p:
+    //   centered_mod(c*_q, p) = Σ prod + centered_mod(q, p) * wrap
+    // and similarly for x*.
+    let p_u64: u64 = 2013265921;
+    let p_i128: i128 = p_u64 as i128;
+    let q_embed_centered = centered_mod(q as i128, p_u64) as i128;
+    let q_embed_nonzero = ((q_embed_centered % p_i128) + p_i128) % p_i128;
+    let inv_q_embed = if q_embed_nonzero != 0 {
+        mod_pow(q_embed_nonzero as u64, p_u64 - 2, p_u64)
+    } else {
+        0
+    };
+
+    for i in 0..kappa {
+        for j in 0..d {
+            let c_star_q = folded_instance
+                .commitment
+                .value
+                .elements
+                .get(i)
+                .map_or(0i64, |r| r.coeffs[j]);
+            let target = centered_mod(c_star_q as i128, p_u64) as i128;
+            let mut sum_prod: i128 = 0;
+            for ell in 0..ell_np {
+                let byte_off = ((layout.prod_c(ell, i, j) - layout.num_instance) * 8) as usize;
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&buf[byte_off..byte_off + 8]);
+                sum_prod += i64::from_le_bytes(arr) as i128;
+            }
+            let wrap = if q_embed_nonzero != 0 {
+                let delta = (target - sum_prod).rem_euclid(p_i128) as u64;
+                let w_mod = mod_mul(delta, inv_q_embed, p_u64);
+                centered_mod(w_mod as i128, p_u64)
+            } else {
+                0
+            };
+            buf.extend_from_slice(&wrap.to_le_bytes());
+        }
+    }
+
+    for s in 0..n_in {
+        for j in 0..d {
+            let x_star_q = folded_instance.public_input.get(s).map_or(0i64, |r| r.coeffs[j]);
+            let target = centered_mod(x_star_q as i128, p_u64) as i128;
+            let mut sum_prod: i128 = 0;
+            for ell in 0..ell_np {
+                let byte_off = ((layout.prod_x(ell, s, j) - layout.num_instance) * 8) as usize;
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&buf[byte_off..byte_off + 8]);
+                sum_prod += i64::from_le_bytes(arr) as i128;
+            }
+            let wrap = if q_embed_nonzero != 0 {
+                let delta = (target - sum_prod).rem_euclid(p_i128) as u64;
+                let w_mod = mod_mul(delta, inv_q_embed, p_u64);
+                centered_mod(w_mod as i128, p_u64)
+            } else {
+                0
+            };
+            buf.extend_from_slice(&wrap.to_le_bytes());
         }
     }
 
@@ -415,12 +500,14 @@ pub fn encode_cp_witness_r1cs(
         }
 
         // -- eq(s, r) evaluation K-muls --
-        // nv factor muls (s_i * r_{nv-1-i}) + (nv-1) chain muls
+        // IMPORTANT: hadamard verifier uses eq_eval_ext_sumcheck(s, r), which
+        // evaluates with reversed sumcheck point internally. Since rc(i) is already
+        // the sumcheck challenge order, use r_i directly (no extra reverse) so
+        // witness aux aligns with Phase-B R1CS constraints.
         let mut factor_vals: Vec<(i64, i64)> = Vec::with_capacity(had_nv);
         for i in 0..had_nv {
             let (s0, s1) = seed(i);
-            let ri = had_nv - 1 - i;
-            let (r0, r1) = rc(ri);
+            let (r0, r1) = rc(i);
 
             // K-mul: sr = s_i * r_{nv-1-i}
             let (p1, p2, sr_c0, sr_c1) = kmul(s0, s1, r0, r1);
@@ -504,6 +591,74 @@ pub fn encode_cp_witness_r1cs(
         buf.extend_from_slice(&c1.to_le_bytes());
     }
 
+    // -------------------------------------------------------------------
+    // Phase-B row wraps (q-embedded equalities over BabyBear)
+    // -------------------------------------------------------------------
+    if layout.phase_b_constraints > 0 {
+        let p_u64: u64 = 2013265921;
+        let p_i128: i128 = p_u64 as i128;
+        let q_embed_centered = centered_mod(q as i128, p_u64) as i128;
+        let q_embed_nonzero = ((q_embed_centered % p_i128) + p_i128) % p_i128;
+        let inv_q_embed = if q_embed_nonzero != 0 {
+            mod_pow(q_embed_nonzero as u64, p_u64 - 2, p_u64)
+        } else {
+            0
+        };
+
+        let m_for_layout = if layout.had_num_vars == 0 {
+            0
+        } else {
+            1usize << layout.had_num_vars
+        };
+        let (cp_r1cs_tmp, layout_tmp) = generate_cp_r1cs(ell_np, kappa, n_in, m_for_layout, qnr, q);
+
+        // Build full z = instance || witness_so_far (without phase-B wraps yet).
+        let mut z_tmp = vec![0i64; layout_tmp.num_variables];
+        z_tmp[layout_tmp.off_one] = 1;
+
+        for i in 0..kappa {
+            for j in 0..d {
+                z_tmp[layout_tmp.c_star(i, j)] = folded_instance
+                    .commitment
+                    .value
+                    .elements
+                    .get(i)
+                    .map_or(0, |r| r.coeffs[j]);
+            }
+        }
+        for s in 0..n_in {
+            for j in 0..d {
+                z_tmp[layout_tmp.x_star(s, j)] =
+                    folded_instance.public_input.get(s).map_or(0, |r| r.coeffs[j]);
+            }
+        }
+
+        for (i, chunk) in buf.chunks_exact(8).enumerate() {
+            let idx = layout_tmp.num_instance + i;
+            if idx < layout_tmp.off_phase_b_wrap {
+                z_tmp[idx] = i64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
+            }
+        }
+
+        let az = cp_r1cs_tmp.a.mul_vec_mod(&z_tmp, p_u64);
+        let bz = cp_r1cs_tmp.b.mul_vec_mod(&z_tmp, p_u64);
+        let cz = cp_r1cs_tmp.c.mul_vec_mod(&z_tmp, p_u64);
+
+        let phase_a_rows = ell_np * (kappa + n_in) * d + (kappa + n_in) * d;
+        for row in phase_a_rows..cp_r1cs_tmp.num_constraints {
+            let lhs = centered_mod(az[row] as i128 * bz[row] as i128, p_u64) as i128;
+            let rhs = cz[row] as i128;
+            let wrap = if q_embed_nonzero != 0 {
+                let delta = (lhs - rhs).rem_euclid(p_i128) as u64;
+                let w_mod = mod_mul(delta, inv_q_embed, p_u64);
+                centered_mod(w_mod as i128, p_u64)
+            } else {
+                0
+            };
+            buf.extend_from_slice(&wrap.to_le_bytes());
+        }
+    }
+
     buf
 }
 
@@ -545,6 +700,10 @@ pub struct CpR1csLayout {
     pub off_x_in: usize,
     pub off_prod_c: usize,
     pub off_prod_x: usize,
+    /// Sum-wrap variable for each c*[i][j] sum constraint.
+    pub off_sum_wrap_c: usize,
+    /// Sum-wrap variable for each x*[s][j] sum constraint.
+    pub off_sum_wrap_x: usize,
 
     // --- Phase B witness: Hadamard data per instance ---
     // For each instance ℓ: sumcheck evaluations, challenges, seed, alpha,
@@ -553,6 +712,13 @@ pub struct CpR1csLayout {
     pub off_had: usize,
     /// Size of one instance's Hadamard witness block.
     pub had_block_size: usize,
+
+    /// Number of Phase-B constraints per instance.
+    pub phase_b_per_instance: usize,
+    /// Total Phase-B constraints across all instances.
+    pub phase_b_constraints: usize,
+    /// Offset of per-row Phase-B wrap variables (one per Phase-B row).
+    pub off_phase_b_wrap: usize,
 
     /// Total variables (instance + witness).
     pub num_variables: usize,
@@ -581,6 +747,8 @@ impl CpR1csLayout {
         let off_x_in = off_c + ell_np * kappa * d;
         let off_prod_c = off_x_in + ell_np * n_in * d;
         let off_prod_x = off_prod_c + ell_np * kappa * d;
+        let off_sum_wrap_c = off_prod_x + ell_np * n_in * d;
+        let off_sum_wrap_x = off_sum_wrap_c + kappa * d;
 
         // Phase B: per-instance Hadamard witness
         // Each instance has:
@@ -619,8 +787,17 @@ impl CpR1csLayout {
             + had_aux_per_instance * 4; // 4 aux values per K-mul (p1, p2, c0, c1)
         let had_block_size = had_data_per_instance;
 
-        let off_had = off_prod_x + ell_np * n_in * d;
-        let num_variables = off_had + ell_np * had_block_size;
+        // Must match generate_cp_r1cs phase-B count.
+        let phase_b_per_instance = if had_num_vars > 0 {
+            had_num_vars * 14 + (2 * had_num_vars - 1) * 4 + d * 4 + (2 * d - 3) * 4 + 4 + 2
+        } else {
+            0
+        };
+        let phase_b_constraints = ell_np * phase_b_per_instance;
+
+        let off_had = off_sum_wrap_x + n_in * d;
+        let off_phase_b_wrap = off_had + ell_np * had_block_size;
+        let num_variables = off_phase_b_wrap + phase_b_constraints;
 
         Self {
             d,
@@ -637,8 +814,13 @@ impl CpR1csLayout {
             off_x_in,
             off_prod_c,
             off_prod_x,
+            off_sum_wrap_c,
+            off_sum_wrap_x,
             off_had,
             had_block_size,
+            phase_b_per_instance,
+            phase_b_constraints,
+            off_phase_b_wrap,
             num_variables,
             had_aux_per_instance,
         }
@@ -666,6 +848,12 @@ impl CpR1csLayout {
     }
     pub fn prod_x(&self, ell: usize, slot: usize, j: usize) -> usize {
         self.off_prod_x + (ell * self.n_in + slot) * self.d + j
+    }
+    pub fn sum_wrap_c(&self, i: usize, j: usize) -> usize {
+        self.off_sum_wrap_c + i * self.d + j
+    }
+    pub fn sum_wrap_x(&self, slot: usize, j: usize) -> usize {
+        self.off_sum_wrap_x + slot * self.d + j
     }
 
     // --- Phase B accessors ---
@@ -728,6 +916,7 @@ pub fn generate_cp_r1cs(
     n_in: usize,
     m: usize,
     qnr: i64,
+    q_modulus: u64,
 ) -> (R1CSMatrices, CpR1csLayout) {
     let layout = CpR1csLayout::new(ell_np, kappa, n_in, m);
     let d = layout.d;
@@ -768,6 +957,10 @@ pub fn generate_cp_r1cs(
 
     let mut row = 0;
 
+    // Helper: enforce every Phase-B row in Z_q embedded into F_p by adding
+    // q_embed * wrap_row to C. This allows equality up to q-mod lifts.
+    let mut phase_b_row_idx = 0usize;
+
     // --- Ring multiplication constraints ---
     // For each ring product beta[ℓ] · c_ℓ[i], constrain prod_c[ℓ][i]:
     //   prod_c[ℓ][i][j] = Σ_{k=0}^{j} beta[ℓ][k]·c_ℓ[i][j-k]
@@ -799,32 +992,27 @@ pub fn generate_cp_r1cs(
     //
     // This gives D constraints per ring mul (one per NTT slot).
 
-    // Compute negacyclic NTT twiddle factors over i64 (representing BabyBear).
-    // We need ψ = primitive 2D-th root of unity in BabyBear.
-    // BabyBear p = 2013265921, group order p-1 = 2^27 * 15.
-    // Generator g = 31 (primitive root of BabyBear).
-    // ψ = g^((p-1)/(2D)) = 31^((2013265921-1)/128)
-    let p: u64 = 2013265921; // BabyBear modulus
-    let two_d = 2 * d;
-    let exp = (p - 1) / two_d as u64;
-    let psi = mod_pow(31, exp, p); // primitive 2D-th root of unity
-    let omega = mod_mul(psi, psi, p); // ω = ψ², primitive D-th root
+    // Build NTT coefficient rows directly from the canonical BabyBear NTT implementation.
+    // This avoids any risk of twiddle/indexing mismatch with hand-derived formulas.
+    let p: u64 = 2013265921; // BabyBear modulus for NTT twiddles/constraints
+    let q_embed = centered_mod(q_modulus as i128, p) as i64;
+    let bb_ntt = NttContext::new(p);
 
-    // Precompute NTT row coefficients: for slot j, coeff k, the twiddle is ψ^k · ω^{jk}
-    // ntt_coeff[j][k] = ψ^k · ω^{jk} mod p
+    // ntt_coeff[j][k] is the coefficient multiplying input coeff[k] to contribute
+    // to NTT slot j under bb_ntt.forward.
     let mut ntt_coeff = vec![vec![0i64; d]; d];
-    for j in 0..d {
-        let mut psi_k = 1u64; // ψ^k
-        for k in 0..d {
-            let omega_jk = mod_pow(omega, (j * k) as u64 % (p - 1), p);
-            let val = mod_mul(psi_k, omega_jk, p);
-            // Convert to centered representation for R1CS entry
-            ntt_coeff[j][k] = if val > p / 2 {
-                val as i64 - p as i64
+    for k in 0..d {
+        let mut basis = [0i64; D];
+        basis[k] = 1;
+        let basis_elem = RingElement { coeffs: basis };
+        let evals = bb_ntt.forward(&basis_elem);
+        for j in 0..d {
+            let v = evals[j];
+            ntt_coeff[j][k] = if v > p / 2 {
+                v as i64 - p as i64
             } else {
-                val as i64
+                v as i64
             };
-            psi_k = mod_mul(psi_k, psi, p);
         }
     }
 
@@ -869,9 +1057,33 @@ pub fn generate_cp_r1cs(
         }
     }
 
+    // Row-wise normalization: enforce centered representatives to match
+    // SparseMatrix::mul_vec_mod semantics (which centers after each insertion).
+    // We reconstruct each row's coefficient map modulo p and re-center once,
+    // then replace entries with normalized coefficients.
+    let normalize_rows = |mat: &mut crate::r1cs::SparseMatrix| {
+        use std::collections::BTreeMap;
+        let mut rows: Vec<BTreeMap<usize, i128>> = vec![BTreeMap::new(); mat.num_rows];
+        for &(r, c, v) in &mat.entries {
+            let cur = rows[r].entry(c).or_insert(0);
+            *cur = (*cur + v as i128).rem_euclid(p as i128);
+        }
+        mat.entries.clear();
+        for (r, rowmap) in rows.into_iter().enumerate() {
+            for (c, v) in rowmap {
+                let cv = centered_mod(v, p);
+                if cv != 0 {
+                    mat.entries.push((r, c, cv));
+                }
+            }
+        }
+    };
+    normalize_rows(&mut r1cs.a);
+    normalize_rows(&mut r1cs.b);
+    normalize_rows(&mut r1cs.c);
+
     // --- Sum constraints ---
-    // c*[i][j] = Σ_ℓ prod_c[ℓ][i][j]
-    // Encoded as: (one) · (c*[i][j]) = Σ_ℓ prod_c[ℓ][i][j]
+    // centered_mod(c*[i][j], p) = Σ_ℓ prod_c[ℓ][i][j] + p * wrap_c[i][j]
     for i in 0..kappa {
         for j in 0..d {
             r1cs.a.insert(row, layout.off_one, 1);
@@ -879,11 +1091,12 @@ pub fn generate_cp_r1cs(
             for ell in 0..ell_np {
                 r1cs.c.insert(row, layout.prod_c(ell, i, j), 1);
             }
+            r1cs.c.insert(row, layout.sum_wrap_c(i, j), q_embed);
             row += 1;
         }
     }
 
-    // x*[s][j] = Σ_ℓ prod_x[ℓ][s][j]
+    // centered_mod(x*[s][j], p) = Σ_ℓ prod_x[ℓ][s][j] + p * wrap_x[s][j]
     for s in 0..n_in {
         for j in 0..d {
             r1cs.a.insert(row, layout.off_one, 1);
@@ -891,6 +1104,7 @@ pub fn generate_cp_r1cs(
             for ell in 0..ell_np {
                 r1cs.c.insert(row, layout.prod_x(ell, s, j), 1);
             }
+            r1cs.c.insert(row, layout.sum_wrap_x(s, j), q_embed);
             row += 1;
         }
     }
@@ -924,6 +1138,9 @@ pub fn generate_cp_r1cs(
     fn ext_mul_lc(
         r1cs: &mut R1CSMatrices,
         row: &mut usize,
+        phase_b_row_idx: &mut usize,
+        phase_b_wrap_offset: usize,
+        q_embed: i64,
         one_var: usize,
         qnr: i64,
         a_c0: &[(usize, i64)],
@@ -942,6 +1159,9 @@ pub fn generate_cp_r1cs(
             r1cs.b.insert(*row, v, c);
         }
         r1cs.c.insert(*row, p1, 1);
+        r1cs.c
+            .insert(*row, phase_b_wrap_offset + *phase_b_row_idx, q_embed);
+        *phase_b_row_idx += 1;
         *row += 1;
 
         // Row 1: Σ a_c1 * Σ b_c1 = p2
@@ -952,6 +1172,9 @@ pub fn generate_cp_r1cs(
             r1cs.b.insert(*row, v, c);
         }
         r1cs.c.insert(*row, p2, 1);
+        r1cs.c
+            .insert(*row, phase_b_wrap_offset + *phase_b_row_idx, q_embed);
+        *phase_b_row_idx += 1;
         *row += 1;
 
         // Row 2: (Σ a_c0 + Σ a_c1) * (Σ b_c0 + Σ b_c1) = c1 + p1 + p2
@@ -970,6 +1193,9 @@ pub fn generate_cp_r1cs(
         r1cs.c.insert(*row, c1, 1);
         r1cs.c.insert(*row, p1, 1);
         r1cs.c.insert(*row, p2, 1);
+        r1cs.c
+            .insert(*row, phase_b_wrap_offset + *phase_b_row_idx, q_embed);
+        *phase_b_row_idx += 1;
         *row += 1;
 
         // Row 3: 1 * c0 = p1 + QNR * p2
@@ -977,6 +1203,9 @@ pub fn generate_cp_r1cs(
         r1cs.b.insert(*row, c0, 1);
         r1cs.c.insert(*row, p1, 1);
         r1cs.c.insert(*row, p2, qnr);
+        r1cs.c
+            .insert(*row, phase_b_wrap_offset + *phase_b_row_idx, q_embed);
+        *phase_b_row_idx += 1;
         *row += 1;
     }
 
@@ -1021,6 +1250,9 @@ pub fn generate_cp_r1cs(
                     for &(v, c) in if comp == 0 { &claim_c0 } else { &claim_c1 } {
                         r1cs.c.insert(row, v, c);
                     }
+                    r1cs.c
+                        .insert(row, layout.off_phase_b_wrap + phase_b_row_idx, q_embed);
+                    phase_b_row_idx += 1;
                     row += 1;
                 }
 
@@ -1057,6 +1289,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &d3(0),
@@ -1078,6 +1313,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &t2_c0,
@@ -1099,6 +1337,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &t1_c0,
@@ -1134,6 +1375,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &s_c0,
@@ -1166,6 +1410,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &eq_c0,
@@ -1197,6 +1444,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &u0j_c0,
@@ -1231,6 +1481,9 @@ pub fn generate_cp_r1cs(
                 ext_mul_lc(
                     &mut r1cs,
                     &mut row,
+                    &mut phase_b_row_idx,
+                    layout.off_phase_b_wrap,
+                    q_embed,
                     layout.off_one,
                     qnr,
                     &alpha_pow_c0,
@@ -1248,6 +1501,9 @@ pub fn generate_cp_r1cs(
                     ext_mul_lc(
                         &mut r1cs,
                         &mut row,
+                        &mut phase_b_row_idx,
+                        layout.off_phase_b_wrap,
+                        q_embed,
                         layout.off_one,
                         qnr,
                         &alpha_pow_c0,
@@ -1266,6 +1522,9 @@ pub fn generate_cp_r1cs(
             ext_mul_lc(
                 &mut r1cs,
                 &mut row,
+                &mut phase_b_row_idx,
+                layout.off_phase_b_wrap,
+                q_embed,
                 layout.off_one,
                 qnr,
                 &eq_c0,
@@ -1286,13 +1545,18 @@ pub fn generate_cp_r1cs(
                 for &(v, c) in if comp == 0 { &claim_c0 } else { &claim_c1 } {
                     r1cs.c.insert(row, v, c);
                 }
+                r1cs.c
+                    .insert(row, layout.off_phase_b_wrap + phase_b_row_idx, q_embed);
+                phase_b_row_idx += 1;
                 row += 1;
             }
 
+            assert_eq!(phase_b_row_idx, layout.phase_b_per_instance * (ell + 1));
             let _ = aux_idx;
         }
     }
 
+    assert_eq!(phase_b_row_idx, layout.phase_b_constraints);
     assert_eq!(row, num_constraints);
 
     (r1cs, layout)

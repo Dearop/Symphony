@@ -87,6 +87,7 @@ pub fn generate_proof<S: BackendSnark>(
     ajtai: &AjtaiParams,
     cp_pk: &S::ProvingKey,
     snark_pk: &S::ProvingKey,
+    snark_pk_for_context: &dyn Fn(Vec<u8>) -> S::ProvingKey,
     cp_layout: &cp_snark::CpR1csLayout,
     statements: &[(Commitment, Vec<i64>, RingVector)],
     r1cs: &R1CSMatrices,
@@ -186,13 +187,14 @@ pub fn generate_proof<S: BackendSnark>(
         folded_instance: folding_proof.folded_instance.clone(),
     };
     let cp_instance = cp_snark::encode_cp_backend_instance(&cp_public_instance, cp_layout);
+    let cp_ntt = Some(crate::ring::ntt::NttContext::new(2013265921));
     let cp_witness = cp_snark::encode_cp_witness_r1cs(
         &commitments_for_cp,
         &public_input_vecs_for_cp,
         &folding_proof.beta,
         &folding_proof.folded_instance,
         cp_layout,
-        &params.ntt,
+        &cp_ntt,
         &folding_proof.gr1cs_proofs,
         &shared_challenges.sumcheck_seed_had,
         &shared_challenges.alpha,
@@ -200,6 +202,7 @@ pub fn generate_proof<S: BackendSnark>(
         ext_ctx.alpha, // QNR from extension field context
         params.q,
     );
+
     let cp_proof = S::prove(cp_pk, &cp_instance, &cp_witness);
 
     let t_cp = t_cp_start.elapsed();
@@ -219,17 +222,10 @@ pub fn generate_proof<S: BackendSnark>(
     let total_flat = r1cs.num_variables * d;
 
     let output_pk = if total_elems <= total_flat {
-        // R1CS dimensions are compatible with the folded encoding — use full
-        // R1CS verification in the backend.
+        // R1CS dimensions are compatible with the folded encoding — use cached
+        // R1CS-aware key keyed by serialized output context.
         let output_context = cp_snark::serialize_output_context(r1cs, params.q, d);
-        let output_relation = crate::snark::RelationDescription {
-            num_instance_vars: params.n(),
-            num_witness_vars: params.n(),
-            num_constraints: params.m,
-            context: Some(output_context),
-        };
-        let (pk, _) = S::setup(&output_relation);
-        pk
+        snark_pk_for_context(output_context)
     } else {
         // Dimensions don't align — fall back to stored key (CP path).
         // This is a known limitation: full R1CS verification requires

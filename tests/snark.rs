@@ -211,7 +211,7 @@ mod cp_r1cs_tests {
         let n_in = 1;
 
         // m=0 generates Phase A constraints only (no Hadamard sumcheck)
-        let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, 0, -1);
+        let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, 0, -1, BB_P);
 
         // Create simple ring elements (small values, no overflow issues)
         let mut beta = vec![vec![0i64; D]; ell_np];
@@ -314,7 +314,7 @@ mod cp_r1cs_tests {
         let kappa = 1;
         let n_in = 1;
 
-        let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, 0, -1);
+        let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, 0, -1, BB_P);
 
         // Same setup as above but simpler
         let beta = vec![
@@ -493,7 +493,7 @@ mod cp_r1cs_tests {
 
         let qnr: i64 = -1;
 
-        let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, m, qnr);
+        let (r1cs, layout) = cp_snark::generate_cp_r1cs(ell_np, kappa, n_in, m, qnr, BB_P);
         let had_nv = layout.had_num_vars;
         assert_eq!(had_nv, 2);
 
@@ -1012,6 +1012,8 @@ mod modular_spartan_backend {
 
 #[cfg(feature = "whir")]
 mod modular_whir_backend {
+    use symphony::folding_core::{FoldSemantics, Statement, SymphonyFoldSemantics};
+    use symphony::snark::cp_snark;
     use super::*;
     use p3_field::PrimeCharacteristicRing;
     use symphony::proof_orchestrator::Prover;
@@ -1050,6 +1052,229 @@ mod modular_whir_backend {
                 .collect(),
         };
         (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    #[test]
+    fn cp_backend_roundtrip_on_encoded_cp_instance() {
+        let params = params();
+        let (prover, _verifier) = Prover::<WhirSnark, WhirSnark>::setup(params.clone());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+
+        let rp = symphony::rok::range_proof::RangeProofParams {
+            lambda_pj: params.lambda_pj,
+            ell_h: params.ell_h,
+            d_prime: (params.d as i64) - 2,
+            k_g: params.k_g(),
+            input_bound: params.b_input(),
+        };
+        let ext_ctx = symphony::ring::extension::ExtFieldContext::new(params.q);
+
+        let fold_statements: Vec<Statement> = statements
+            .iter()
+            .map(|(c, pi, w)| Statement {
+                commitment: c.clone(),
+                public_input: pi.clone(),
+                witness: w.clone(),
+            })
+            .collect();
+
+        let semantics = SymphonyFoldSemantics;
+        let (folding_proof, _folded_witness, shared_challenges) =
+            semantics.fold(&fold_statements, &r1cs, &prover.ajtai, &rp, &ext_ctx);
+
+        let (cp_r1cs, cp_layout) = cp_snark::generate_cp_r1cs(
+            params.ell_np,
+            params.kappa,
+            params.n_in,
+            params.m,
+            ext_ctx.alpha,
+            params.q,
+        );
+        let cp_context = cp_snark::serialize_cp_context(&cp_r1cs, params.q, params.d as usize);
+        let cp_relation = symphony::snark::RelationDescription {
+            num_instance_vars: cp_layout.num_instance,
+            num_witness_vars: cp_layout.num_variables - cp_layout.num_instance,
+            num_constraints: cp_r1cs.num_constraints,
+            context: Some(cp_context),
+        };
+
+        let cp_public_instance = symphony::cp_relation_core::CpPublicInstance {
+            fs_root: [0u8; 32],
+            fold_root: [0u8; 32],
+            challenge_digest: [0u8; 32],
+            transcript_seed_digest: [0u8; 32],
+            x_folded: folding_proof.folded_instance.clone(),
+        };
+        let cp_instance = symphony::proof_orchestrator::encode_cp_backend_instance(
+            &cp_public_instance,
+            &cp_layout,
+        );
+
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let commitments_for_cp: Vec<_> = folding_proof.commitments.clone();
+        let cp_ntt = Some(symphony::ring::ntt::NttContext::new(2013265921));
+        let cp_witness = cp_snark::encode_cp_witness_r1cs(
+            &commitments_for_cp,
+            &public_inputs,
+            &folding_proof.beta,
+            &folding_proof.folded_instance,
+            &cp_layout,
+            &cp_ntt,
+            &folding_proof.gr1cs_proofs,
+            &shared_challenges.sumcheck_seed_had,
+            &shared_challenges.alpha,
+            &shared_challenges.hadamard_sumcheck_challenges,
+            ext_ctx.alpha,
+            params.q,
+        );
+
+        use symphony::snark::BackendSnark;
+        let (pk, vk) = WhirSnark::setup(&cp_relation);
+        let cp_proof = WhirSnark::prove(&pk, &cp_instance, &cp_witness);
+        assert!(WhirSnark::verify(&vk, &cp_instance, &cp_proof));
+    }
+
+    #[test]
+    fn cp_witness_satisfies_cp_r1cs_in_modular_whir_path() {
+        let params = params();
+        let (prover, _verifier) = Prover::<WhirSnark, WhirSnark>::setup(params.clone());
+        let (r1cs, z) = multi_r1cs();
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z, n_in),
+            make_statement(&prover, &z, n_in),
+        ];
+
+        let rp = symphony::rok::range_proof::RangeProofParams {
+            lambda_pj: params.lambda_pj,
+            ell_h: params.ell_h,
+            d_prime: (params.d as i64) - 2,
+            k_g: params.k_g(),
+            input_bound: params.b_input(),
+        };
+        let ext_ctx = symphony::ring::extension::ExtFieldContext::new(params.q);
+
+        let fold_statements: Vec<Statement> = statements
+            .iter()
+            .map(|(c, pi, w)| Statement {
+                commitment: c.clone(),
+                public_input: pi.clone(),
+                witness: w.clone(),
+            })
+            .collect();
+
+        let semantics = SymphonyFoldSemantics;
+        let (folding_proof, _folded_witness, shared_challenges) =
+            semantics.fold(&fold_statements, &r1cs, &prover.ajtai, &rp, &ext_ctx);
+
+        let (cp_r1cs, cp_layout) = cp_snark::generate_cp_r1cs(
+            params.ell_np,
+            params.kappa,
+            params.n_in,
+            params.m,
+            ext_ctx.alpha,
+            params.q,
+        );
+
+        let cp_public_instance = symphony::cp_relation_core::CpPublicInstance {
+            fs_root: [0u8; 32],
+            fold_root: [0u8; 32],
+            challenge_digest: [0u8; 32],
+            transcript_seed_digest: [0u8; 32],
+            x_folded: folding_proof.folded_instance.clone(),
+        };
+
+        let cp_instance = symphony::proof_orchestrator::encode_cp_backend_instance(
+            &cp_public_instance,
+            &cp_layout,
+        );
+
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let commitments_for_cp: Vec<_> = folding_proof.commitments.clone();
+        let cp_ntt = Some(symphony::ring::ntt::NttContext::new(2013265921));
+        let cp_witness = cp_snark::encode_cp_witness_r1cs(
+            &commitments_for_cp,
+            &public_inputs,
+            &folding_proof.beta,
+            &folding_proof.folded_instance,
+            &cp_layout,
+            &cp_ntt,
+            &folding_proof.gr1cs_proofs,
+            &shared_challenges.sumcheck_seed_had,
+            &shared_challenges.alpha,
+            &shared_challenges.hadamard_sumcheck_challenges,
+            ext_ctx.alpha,
+            params.q,
+        );
+
+        // Reconstruct full assignment z = instance_prefix || witness.
+        let mut z_full = vec![0i64; cp_layout.num_variables];
+        for (i, chunk) in cp_instance[..(cp_layout.num_instance * 8)]
+            .chunks_exact(8)
+            .enumerate()
+        {
+            z_full[i] = i64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
+        }
+        for (i, chunk) in cp_witness.chunks_exact(8).enumerate() {
+            z_full[cp_layout.num_instance + i] =
+                i64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
+        }
+
+        if !cp_r1cs.is_satisfied_mod(&z_full, 2013265921) {
+            let az = cp_r1cs.a.mul_vec_mod(&z_full, 2013265921);
+            let bz = cp_r1cs.b.mul_vec_mod(&z_full, 2013265921);
+            let cz = cp_r1cs.c.mul_vec_mod(&z_full, 2013265921);
+
+            // Extra diagnostics for first product block.
+            let d = cp_layout.d;
+            let mut beta0 = vec![0i64; d];
+            let mut c00 = vec![0i64; d];
+            let mut prod00 = vec![0i64; d];
+            for j in 0..d {
+                beta0[j] = z_full[cp_layout.beta(0, j)];
+                c00[j] = z_full[cp_layout.c(0, 0, j)];
+                prod00[j] = z_full[cp_layout.prod_c(0, 0, j)];
+            }
+            let p = 2013265921i128;
+            let mut exp = vec![0i64; d];
+            for i in 0..d {
+                for j in 0..d {
+                    let prod = beta0[i] as i128 * c00[j] as i128;
+                    let idx = i + j;
+                    if idx < d {
+                        exp[idx] = ((exp[idx] as i128 + prod).rem_euclid(p)) as i64;
+                    } else {
+                        exp[idx - d] = ((exp[idx - d] as i128 - prod).rem_euclid(p)) as i64;
+                    }
+                }
+            }
+
+            if let Some((row, (&a, (&b, &c)))) = az
+                .iter()
+                .zip(bz.iter().zip(cz.iter()))
+                .enumerate()
+                .find(|(_, (&a, (&b, &c)))| {
+                    let lhs = symphony::ring::arith::centered_mod(a as i128 * b as i128, 2013265921);
+                    lhs != c
+                })
+            {
+                let lhs = symphony::ring::arith::centered_mod(a as i128 * b as i128, 2013265921);
+                let phase_a_rows = params.ell_np * (params.kappa + params.n_in) * params.d as usize
+                    + (params.kappa + params.n_in) * params.d as usize;
+                let phase = if row < phase_a_rows { "phase-a" } else { "phase-b" };
+                panic!(
+                    "Modular+WHIR CP witness does not satisfy generated CP-R1CS: first_row={row} ({phase}) az={a} bz={b} lhs={lhs} cz={c}; beta0[:4]={:?} c00[:4]={:?} prod00[:4]={:?} exp[:4]={:?}"
+                    , &beta0[..4], &c00[..4], &prod00[..4], &exp[..4]
+                );
+            } else {
+                panic!("Modular+WHIR CP witness does not satisfy generated CP-R1CS: no first row");
+            }
+        }
     }
 
     #[test]

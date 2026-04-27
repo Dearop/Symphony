@@ -24,6 +24,7 @@ pub mod sumcheck_snark;
 #[cfg(feature = "whir")]
 pub mod whir;
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::commitment::Commitment;
@@ -138,6 +139,8 @@ pub struct SymphonyProver<S: BackendSnark> {
     pub cp_pk: S::ProvingKey,
     /// Proving key for the output (folded statement) relation.
     pub snark_pk: S::ProvingKey,
+    /// Cache of output proving keys keyed by serialized output context bytes.
+    pub snark_pk_cache: std::sync::Mutex<HashMap<Vec<u8>, S::ProvingKey>>,
     /// CP R1CS layout (used for R1CS-aware backends like WHIR).
     pub cp_layout: cp_snark::CpR1csLayout,
     _marker: PhantomData<S>,
@@ -151,12 +154,40 @@ pub struct SymphonyVerifier<S: BackendSnark> {
     pub cp_vk: S::VerifyingKey,
     /// Verifying key for the output (folded statement) relation.
     pub snark_vk: S::VerifyingKey,
+    /// Cache of output verifying keys keyed by serialized output context bytes.
+    pub snark_vk_cache: std::sync::Mutex<HashMap<Vec<u8>, S::VerifyingKey>>,
     /// CP R1CS layout (used for R1CS-aware backends like WHIR).
     pub cp_layout: cp_snark::CpR1csLayout,
     _marker: PhantomData<S>,
 }
 
 impl<S: BackendSnark> SymphonyProver<S> {
+    pub(crate) fn snark_pk_for_context(&self, output_context: Vec<u8>) -> S::ProvingKey {
+        if let Some(pk) = self
+            .snark_pk_cache
+            .lock()
+            .expect("snark_pk_cache mutex poisoned")
+            .get(&output_context)
+            .cloned()
+        {
+            return pk;
+        }
+
+        let relation = RelationDescription {
+            num_instance_vars: self.params.n(),
+            num_witness_vars: self.params.n(),
+            num_constraints: self.params.m,
+            context: Some(output_context.clone()),
+        };
+        let (pk, _) = S::setup(&relation);
+
+        self.snark_pk_cache
+            .lock()
+            .expect("snark_pk_cache mutex poisoned")
+            .insert(output_context, pk.clone());
+        pk
+    }
+
     /// Setup: generate MSIS matrix and SNARK parameters.
     ///
     /// Calls `S::setup` twice: once for the CP-SNARK relation (folding
@@ -175,6 +206,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             params.n_in,
             params.m,
             ext_ctx.alpha,
+            params.q,
         );
         let cp_context = cp_snark::serialize_cp_context(&cp_r1cs, params.q, params.d as usize);
         let cp_relation = RelationDescription {
@@ -198,6 +230,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             ajtai: ajtai.clone(),
             cp_vk,
             snark_vk,
+            snark_vk_cache: std::sync::Mutex::new(HashMap::new()),
             cp_layout: cp_layout.clone(),
             _marker: PhantomData,
         };
@@ -206,6 +239,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             ajtai,
             cp_pk,
             snark_pk,
+            snark_pk_cache: std::sync::Mutex::new(HashMap::new()),
             cp_layout,
             _marker: PhantomData,
         };
@@ -228,6 +262,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             &self.ajtai,
             &self.cp_pk,
             &self.snark_pk,
+            &|ctx| self.snark_pk_for_context(ctx),
             &self.cp_layout,
             statements,
             r1cs,
@@ -236,6 +271,32 @@ impl<S: BackendSnark> SymphonyProver<S> {
 }
 
 impl<S: BackendSnark> SymphonyVerifier<S> {
+    pub(crate) fn snark_vk_for_context(&self, output_context: Vec<u8>) -> S::VerifyingKey {
+        if let Some(vk) = self
+            .snark_vk_cache
+            .lock()
+            .expect("snark_vk_cache mutex poisoned")
+            .get(&output_context)
+            .cloned()
+        {
+            return vk;
+        }
+
+        let relation = RelationDescription {
+            num_instance_vars: self.params.n(),
+            num_witness_vars: self.params.n(),
+            num_constraints: self.params.m,
+            context: Some(output_context.clone()),
+        };
+        let (_, vk) = S::setup(&relation);
+
+        self.snark_vk_cache
+            .lock()
+            .expect("snark_vk_cache mutex poisoned")
+            .insert(output_context, vk.clone());
+        vk
+    }
+
     /// Verify a Symphony proof against public inputs.
     ///
     /// **O(1) + O(log N)** in the number of folding rounds k:
@@ -319,14 +380,7 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
 
         let output_vk = if instance_elems <= total_flat {
             let output_context = cp_snark::serialize_output_context(r1cs, self.params.q, d);
-            let output_relation = RelationDescription {
-                num_instance_vars: self.params.n(),
-                num_witness_vars: self.params.n(),
-                num_constraints: self.params.m,
-                context: Some(output_context),
-            };
-            let (_, vk) = S::setup(&output_relation);
-            vk
+            self.snark_vk_for_context(output_context)
         } else {
             self.snark_vk.clone()
         };

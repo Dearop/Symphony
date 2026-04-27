@@ -203,6 +203,7 @@ fn bench_pipeline_whir_vs_k(c: &mut Criterion) {
         let proof = prover.prove(&statements, &r1cs);
         let verify_ok = verifier.verify(&public_inputs, &proof, &r1cs);
         eprintln!("[pipeline_whir_vs_k k={k}] verify={verify_ok}");
+        assert!(verify_ok, "pipeline_whir_vs_k produced invalid proof for k={k}");
 
         group.throughput(Throughput::Elements(k as u64));
 
@@ -252,6 +253,7 @@ fn bench_modular_pipeline_whir_vs_k(c: &mut Criterion) {
             let proof = prover.prove(&statements, &r1cs);
             let verify_ok = verifier.verify(&public_inputs, &proof, &r1cs);
             eprintln!("[modular_pipeline k={k}] whir+whir verify={verify_ok}");
+            assert!(verify_ok, "modular_pipeline whir+whir produced invalid proof for k={k}");
 
             group.throughput(Throughput::Elements(k as u64));
 
@@ -282,6 +284,7 @@ fn bench_modular_pipeline_whir_vs_k(c: &mut Criterion) {
             let proof = prover.prove(&statements, &r1cs);
             let verify_ok = verifier.verify(&public_inputs, &proof, &r1cs);
             eprintln!("[modular_pipeline k={k}] whir+sum verify={verify_ok}");
+            assert!(verify_ok, "modular_pipeline whir+sum produced invalid proof for k={k}");
 
             group.bench_function(BenchmarkId::new("prove_whir_sum", k), |b| {
                 b.iter(|| {

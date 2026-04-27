@@ -1,5 +1,6 @@
 //! End-to-end proving/verifying flow with split CP/output backends.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::commitment::Commitment;
@@ -38,6 +39,8 @@ pub struct Prover<CPB: CpBackend, OB: OutputBackend> {
     pub ajtai: crate::commitment::AjtaiParams,
     pub cp_pk: CPB::ProvingKey,
     pub output_pk: OB::ProvingKey,
+    /// Cache of output proving keys keyed by serialized output context bytes.
+    pub output_pk_cache: std::sync::Mutex<HashMap<Vec<u8>, OB::ProvingKey>>,
     pub cp_layout: CpR1csLayout,
     _marker: PhantomData<(CPB, OB)>,
 }
@@ -47,6 +50,8 @@ pub struct Verifier<CPB: CpBackend, OB: OutputBackend> {
     pub ajtai: crate::commitment::AjtaiParams,
     pub cp_vk: CPB::VerifyingKey,
     pub output_vk: OB::VerifyingKey,
+    /// Cache of output verifying keys keyed by serialized output context bytes.
+    pub output_vk_cache: std::sync::Mutex<HashMap<Vec<u8>, OB::VerifyingKey>>,
     pub cp_layout: CpR1csLayout,
     _marker: PhantomData<(CPB, OB)>,
 }
@@ -127,6 +132,32 @@ fn build_transcript_bytes(
 }
 
 impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
+    fn output_pk_for_context(&self, output_context: Vec<u8>) -> OB::ProvingKey {
+        if let Some(pk) = self
+            .output_pk_cache
+            .lock()
+            .expect("output_pk_cache mutex poisoned")
+            .get(&output_context)
+            .cloned()
+        {
+            return pk;
+        }
+
+        let relation = RelationDescription {
+            num_instance_vars: self.params.n(),
+            num_witness_vars: self.params.n(),
+            num_constraints: self.params.m,
+            context: Some(output_context.clone()),
+        };
+        let (pk, _) = OB::setup(&relation);
+
+        self.output_pk_cache
+            .lock()
+            .expect("output_pk_cache mutex poisoned")
+            .insert(output_context, pk.clone());
+        pk
+    }
+
     pub fn setup(params: SymphonyParams) -> (Self, Verifier<CPB, OB>) {
         params.validate();
         let ajtai =
@@ -139,6 +170,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
             params.n_in,
             params.m,
             ext_ctx.alpha,
+            params.q,
         );
         let cp_context = cp_snark::serialize_cp_context(&cp_r1cs, params.q, params.d as usize);
         let cp_relation = RelationDescription {
@@ -163,6 +195,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
                 ajtai: ajtai.clone(),
                 cp_pk,
                 output_pk,
+                output_pk_cache: std::sync::Mutex::new(HashMap::new()),
                 cp_layout: cp_layout.clone(),
                 _marker: PhantomData,
             },
@@ -171,6 +204,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
                 ajtai,
                 cp_vk,
                 output_vk,
+                output_vk_cache: std::sync::Mutex::new(HashMap::new()),
                 cp_layout,
                 _marker: PhantomData,
             },
@@ -256,13 +290,14 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
 
         let cp_instance = encode_cp_backend_instance(&cp_public_instance, &self.cp_layout);
         let commitments_for_cp: Vec<_> = folding_proof.commitments.clone();
+        let cp_ntt = Some(crate::ring::ntt::NttContext::new(2013265921));
         let cp_witness = cp_snark::encode_cp_witness_r1cs(
             &commitments_for_cp,
             &public_inputs,
             &folding_proof.beta,
             &folding_proof.folded_instance,
             &self.cp_layout,
-            &self.params.ntt,
+            &cp_ntt,
             &folding_proof.gr1cs_proofs,
             &shared_challenges.sumcheck_seed_had,
             &shared_challenges.alpha,
@@ -270,6 +305,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
             ext_ctx.alpha,
             self.params.q,
         );
+
         let cp_proof = CPB::prove(&self.cp_pk, &cp_instance, &cp_witness);
 
         let output_instance = cp_snark::encode_folded_instance(&folding_proof.folded_instance);
@@ -283,14 +319,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
 
         let output_pk = if total_elems <= total_flat {
             let output_context = cp_snark::serialize_output_context(r1cs, self.params.q, d);
-            let output_relation = RelationDescription {
-                num_instance_vars: self.params.n(),
-                num_witness_vars: self.params.n(),
-                num_constraints: self.params.m,
-                context: Some(output_context),
-            };
-            let (pk, _) = OB::setup(&output_relation);
-            pk
+            self.output_pk_for_context(output_context)
         } else {
             self.output_pk.clone()
         };
@@ -314,6 +343,32 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
 }
 
 impl<CPB: CpBackend, OB: OutputBackend> Verifier<CPB, OB> {
+    fn output_vk_for_context(&self, output_context: Vec<u8>) -> OB::VerifyingKey {
+        if let Some(vk) = self
+            .output_vk_cache
+            .lock()
+            .expect("output_vk_cache mutex poisoned")
+            .get(&output_context)
+            .cloned()
+        {
+            return vk;
+        }
+
+        let relation = RelationDescription {
+            num_instance_vars: self.params.n(),
+            num_witness_vars: self.params.n(),
+            num_constraints: self.params.m,
+            context: Some(output_context.clone()),
+        };
+        let (_, vk) = OB::setup(&relation);
+
+        self.output_vk_cache
+            .lock()
+            .expect("output_vk_cache mutex poisoned")
+            .insert(output_context, vk.clone());
+        vk
+    }
+
     /// Verify a modular proof bundle against public inputs.
     ///
     /// **Design note:** This method does *not* call [`CpRelation::check`] explicitly.
@@ -355,14 +410,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Verifier<CPB, OB> {
 
         let output_vk = if instance_elems <= total_flat {
             let output_context = cp_snark::serialize_output_context(r1cs, self.params.q, d);
-            let output_relation = RelationDescription {
-                num_instance_vars: self.params.n(),
-                num_witness_vars: self.params.n(),
-                num_constraints: self.params.m,
-                context: Some(output_context),
-            };
-            let (_, vk) = OB::setup(&output_relation);
-            vk
+            self.output_vk_for_context(output_context)
         } else {
             self.output_vk.clone()
         };

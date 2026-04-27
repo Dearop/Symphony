@@ -383,13 +383,8 @@ fn prove_output(
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
     // Sumcheck for F(x) = eq(tau,x) * [Az(x)*Bz(x) - Cz(x)]
-    let (rounds, challenges) =
+    let (rounds, challenges, az_eval, bz_eval, cz_eval, _eq_final) =
         prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
-
-    // Evaluations at challenge point
-    let az_eval = mle_eval_bb(&az, &challenges);
-    let bz_eval = mle_eval_bb(&bz, &challenges);
-    let cz_eval = mle_eval_bb(&cz, &challenges);
 
     // --- WHIR PCS: commit to z polynomial and prove evaluation ---
     let z_eval = mle_eval_bb(&z_padded, &challenges[..z_num_vars.min(challenges.len())]);
@@ -455,7 +450,18 @@ fn verify_output(
     };
 
     // Check final evaluation: eq(tau, r*) * (Az_eval * Bz_eval - Cz_eval)
-    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
+    // Recompute eq(tau, r*) by folding the same eq table convention used by prover.
+    let mut eq_fold = build_eq_table_bb(&tau, num_vars);
+    for &r in &challenges {
+        let half = eq_fold.len() / 2;
+        let one_minus_r = BabyBear::ONE - r;
+        let mut next = Vec::with_capacity(half);
+        for j in 0..half {
+            next.push(eq_fold[j] * one_minus_r + eq_fold[half + j] * r);
+        }
+        eq_fold = next;
+    }
+    let eq_at_r = eq_fold[0];
     let [az_eval, bz_eval, cz_eval] = proof.evaluations;
     let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
     if final_eval != expected_final {
@@ -496,6 +502,23 @@ fn verify_output(
 // Reuses the same R1CS-over-BabyBear sumcheck as the output path, but with
 // CP-specific R1CS matrices (folding linear combination constraints).
 
+fn parse_i64_chunks_to_babybear(bytes: &[u8]) -> Vec<BabyBear> {
+    let mut out = Vec::with_capacity(bytes.len().div_ceil(8));
+    let mut i = 0;
+    while i + 8 <= bytes.len() {
+        let v = i64::from_le_bytes(bytes[i..i + 8].try_into().expect("8-byte chunk"));
+        out.push(BabyBear::from_i64(v));
+        i += 8;
+    }
+    if i < bytes.len() {
+        let mut buf = [0u8; 8];
+        buf[..bytes.len() - i].copy_from_slice(&bytes[i..]);
+        let v = i64::from_le_bytes(buf);
+        out.push(BabyBear::from_i64(v));
+    }
+    out
+}
+
 fn prove_cp_r1cs(
     pk: &WhirProvingKey,
     instance: &[u8],
@@ -504,13 +527,18 @@ fn prove_cp_r1cs(
 ) -> WhirProof {
     // Identical to prove_output but with a different transcript domain separator
     // and is_output = false on the proof.
-    let d = ctx.d;
+    //
+    // IMPORTANT: CP-R1CS context is already scalarized over BabyBear.
+    // Do NOT multiply dimensions by ring degree `d` again.
     let q = ctx.q;
 
-    let instance_bb = bytes_to_babybear_direct(instance);
-    let witness_bb = bytes_to_babybear_direct(witness);
+    // Parse only CP-R1CS public prefix from `instance`; ignore trailer bytes.
+    let mut instance_bb = parse_i64_chunks_to_babybear(instance);
+    let expected_instance_len = ctx.r1cs.num_public;
+    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
+    let witness_bb = parse_i64_chunks_to_babybear(witness);
 
-    let total_vars = ctx.r1cs.num_variables * d;
+    let total_vars = ctx.r1cs.num_variables;
     let mut z_flat = Vec::with_capacity(total_vars);
     z_flat.extend_from_slice(&instance_bb);
     z_flat.extend_from_slice(&witness_bb);
@@ -522,10 +550,10 @@ fn prove_cp_r1cs(
         &ctx.r1cs.c,
         ctx.r1cs.num_constraints,
         ctx.r1cs.num_variables,
-        d,
+        1,
         q,
     );
-    let num_constraints = ctx.r1cs.num_constraints * d;
+    let num_constraints = ctx.r1cs.num_constraints;
     let num_vars = ceil_log2(num_constraints.max(1));
 
     let (az, bz, cz) =
@@ -548,12 +576,8 @@ fn prove_cp_r1cs(
 
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
-    let (rounds, challenges) =
+    let (rounds, challenges, az_eval, bz_eval, cz_eval, _eq_final) =
         prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
-
-    let az_eval = mle_eval_bb(&az, &challenges);
-    let bz_eval = mle_eval_bb(&bz, &challenges);
-    let cz_eval = mle_eval_bb(&cz, &challenges);
 
     let z_eval = mle_eval_bb(
         &z_padded,
@@ -603,6 +627,12 @@ fn verify_cp_r1cs(
         return false;
     }
 
+    // CP-R1CS is already scalarized over BabyBear.
+    let expected_num_vars = ceil_log2(ctx.r1cs.num_constraints.max(1));
+    if proof.num_vars != expected_num_vars {
+        return false;
+    }
+
     let num_vars = proof.num_vars;
     if num_vars > 0 && proof.sumcheck_rounds_4.len() != num_vars {
         return false;
@@ -629,16 +659,27 @@ fn verify_cp_r1cs(
     };
 
     // Check final evaluation: eq(tau, r*) * (Az * Bz - Cz)
+    // Recompute eq(tau, r*) by folding the same eq table convention used by prover.
+    let mut eq_fold = build_eq_table_bb(&tau, num_vars);
+    for &r in &challenges {
+        let half = eq_fold.len() / 2;
+        let one_minus_r = BabyBear::ONE - r;
+        let mut next = Vec::with_capacity(half);
+        for j in 0..half {
+            next.push(eq_fold[j] * one_minus_r + eq_fold[half + j] * r);
+        }
+        eq_fold = next;
+    }
+    let eq_at_r = eq_fold[0];
     let [az_eval, bz_eval, cz_eval] = proof.evaluations;
-    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
     let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
     if final_eval != expected_final {
         return false;
     }
 
-    // Verify WHIR PCS opening
-    let d = ctx.d;
-    let total_vars = ctx.r1cs.num_variables * d;
+    // Verify WHIR PCS opening.
+    // CP witness polynomial length is based on scalar CP-R1CS variable count.
+    let total_vars = ctx.r1cs.num_variables;
     let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
     let z_num_vars = z_padded_len.trailing_zeros() as usize;
 
@@ -913,7 +954,14 @@ fn prove_sumcheck_r1cs(
     cz_table: &[BabyBear],
     num_vars: usize,
     transcript: &mut Vec<u8>,
-) -> (Vec<[BabyBear; 4]>, Vec<BabyBear>) {
+) -> (
+    Vec<[BabyBear; 4]>,
+    Vec<BabyBear>,
+    BabyBear,
+    BabyBear,
+    BabyBear,
+    BabyBear,
+) {
     let n = 1 << num_vars;
     assert_eq!(eq_table.len(), n);
     assert_eq!(az_table.len(), n);
@@ -981,7 +1029,12 @@ fn prove_sumcheck_r1cs(
         cz = new_cz;
     }
 
-    (rounds, challenges)
+    let final_az = az[0];
+    let final_bz = bz[0];
+    let final_cz = cz[0];
+    let final_eq = eq[0];
+
+    (rounds, challenges, final_az, final_bz, final_cz, final_eq)
 }
 
 /// Verify R1CS sumcheck (degree-3 round polynomials).
