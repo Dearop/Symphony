@@ -55,7 +55,7 @@ use whir_p3::{
     },
 };
 
-use rand::{rngs::SmallRng, SeedableRng};
+use rand::{rngs::ChaCha20Rng, SeedableRng};
 
 // ---------------------------------------------------------------------------
 // Concrete type aliases for WHIR PCS (Poseidon2-based, BabyBear)
@@ -90,8 +90,8 @@ struct WhirInfra {
 ///
 /// Both prover and verifier call this with the same arguments to get identical
 /// configurations, ensuring Fiat-Shamir transcript consistency.
-fn build_whir_infra(seed: u64, num_variables: usize) -> WhirInfra {
-    let mut rng = SmallRng::seed_from_u64(seed);
+fn build_whir_infra(seed: &[u8; 32], num_variables: usize) -> WhirInfra {
+    let mut rng = ChaCha20Rng::from_seed(*seed);
     let perm = Perm::new_from_rng_128(&mut rng);
 
     let merkle_hash = WhirHash::new(perm.clone());
@@ -144,7 +144,7 @@ pub struct WhirSnark;
 /// Proving key for the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirProvingKey {
-    pub seed: u64,
+    pub seed: [u8; 32],
     pub context_hash: [u8; 32],
     pub relation: RelationDescription,
 }
@@ -152,7 +152,7 @@ pub struct WhirProvingKey {
 /// Verifying key for the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirVerifyingKey {
-    pub seed: u64,
+    pub seed: [u8; 32],
     pub context_hash: [u8; 32],
     pub relation: RelationDescription,
 }
@@ -231,8 +231,7 @@ impl BackendSnark for WhirSnark {
             hasher.update((ctx_bytes.len() as u64).to_le_bytes());
             hasher.update(ctx_bytes);
         }
-        let hash: [u8; 32] = hasher.finalize().into();
-        let seed = u64::from_le_bytes(hash[..8].try_into().unwrap());
+        let seed: [u8; 32] = hasher.finalize().into();
 
         let context_hash = compute_context_hash(&relation.context);
 
@@ -468,7 +467,7 @@ fn prove_output(
     // Build transcript for Spartan sumcheck challenge derivation
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-output-v2");
-    transcript.extend_from_slice(&pk.seed.to_le_bytes());
+    transcript.extend_from_slice(&pk.seed);
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
 
@@ -499,7 +498,7 @@ fn prove_output(
     opening_points.extend(linear_points);
 
     let (whir_pcs_proof, opening_evals) =
-        whir_commit_and_prove_multi(pk.seed, z_num_vars, &z_padded, &opening_points);
+        whir_commit_and_prove_multi(&pk.seed, z_num_vars, &z_padded, &opening_points);
     assert_eq!(opening_evals.first().copied(), Some(z_eval));
 
     WhirProof {
@@ -535,7 +534,7 @@ fn verify_output(
     // Build transcript
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-output-v2");
-    transcript.extend_from_slice(&vk.seed.to_le_bytes());
+    transcript.extend_from_slice(&vk.seed);
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
 
@@ -606,7 +605,7 @@ fn verify_output(
     }
 
     whir_verify_opening_multi(
-        vk.seed,
+        &vk.seed,
         z_num_vars,
         &proof.whir_pcs_proof,
         &opening_points,
@@ -684,7 +683,7 @@ fn prove_cp_r1cs(
 
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-cp-r1cs-v1");
-    transcript.extend_from_slice(&pk.seed.to_le_bytes());
+    transcript.extend_from_slice(&pk.seed);
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
 
@@ -712,7 +711,7 @@ fn prove_cp_r1cs(
     opening_points.extend(linear_points);
 
     let (whir_pcs_proof, opening_evals) =
-        whir_commit_and_prove_multi(pk.seed, z_num_vars, &z_padded, &opening_points);
+        whir_commit_and_prove_multi(&pk.seed, z_num_vars, &z_padded, &opening_points);
     assert_eq!(opening_evals.first().copied(), Some(z_eval));
 
     WhirProof {
@@ -754,7 +753,7 @@ fn verify_cp_r1cs(
 
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-cp-r1cs-v1");
-    transcript.extend_from_slice(&vk.seed.to_le_bytes());
+    transcript.extend_from_slice(&vk.seed);
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
 
@@ -824,7 +823,7 @@ fn verify_cp_r1cs(
     }
 
     whir_verify_opening_multi(
-        vk.seed,
+        &vk.seed,
         z_num_vars,
         &proof.whir_pcs_proof,
         &opening_points,
@@ -850,7 +849,7 @@ fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
     // Build transcript for sumcheck challenge derivation
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-cp-v2");
-    transcript.extend_from_slice(&pk.seed.to_le_bytes());
+    transcript.extend_from_slice(&pk.seed);
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
 
@@ -865,7 +864,7 @@ fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
     let w_eval = mle_eval_bb(&table, &challenges);
 
     // --- WHIR PCS: commit to witness polynomial and prove evaluation ---
-    let whir_pcs_proof = whir_commit_and_prove(pk.seed, num_vars, &table, &challenges, w_eval);
+    let whir_pcs_proof = whir_commit_and_prove(&pk.seed, num_vars, &table, &challenges, w_eval);
 
     WhirProof {
         sumcheck_rounds_3: rounds,
@@ -904,13 +903,12 @@ fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool 
 
     // When the relation carries sizing metadata, enforce it.
     if vk.relation.num_instance_vars > 0 && instance.len() < vk.relation.num_instance_vars {
-        // Instance shorter than declared — could be a mismatched key.
-        // (Soft check: only reject when relation explicitly sizes the instance.)
+        return false;
     }
 
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-cp-v2");
-    transcript.extend_from_slice(&vk.seed.to_le_bytes());
+    transcript.extend_from_slice(&vk.seed);
     transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
     transcript.extend_from_slice(instance);
 
@@ -953,7 +951,7 @@ fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool 
 
     // Verify WHIR PCS opening
     if !whir_verify_opening(
-        vk.seed,
+        &vk.seed,
         num_vars,
         &proof.whir_pcs_proof,
         &challenges,
@@ -1034,7 +1032,7 @@ fn verify_linear_bindings(
 
 /// Commit to a multilinear polynomial and prove evaluation claims using WHIR.
 fn whir_commit_and_prove_multi(
-    seed: u64,
+    seed: &[u8; 32],
     num_variables: usize,
     evaluations: &[BabyBear],
     points: &[Vec<BabyBear>],
@@ -1106,7 +1104,7 @@ fn whir_commit_and_prove_multi(
 
 /// Verify a WHIR PCS opening proof with one or more evaluation constraints.
 fn whir_verify_opening_multi(
-    seed: u64,
+    seed: &[u8; 32],
     num_variables: usize,
     proof: &WhirPcsProof<F, EF, WhirMmcs>,
     points: &[Vec<BabyBear>],
@@ -1155,7 +1153,7 @@ fn whir_verify_opening_multi(
 }
 
 fn whir_commit_and_prove(
-    seed: u64,
+    seed: &[u8; 32],
     num_variables: usize,
     evaluations: &[BabyBear],
     point: &[BabyBear],
@@ -1168,7 +1166,7 @@ fn whir_commit_and_prove(
 }
 
 fn whir_verify_opening(
-    seed: u64,
+    seed: &[u8; 32],
     num_variables: usize,
     proof: &WhirPcsProof<F, EF, WhirMmcs>,
     point: &[BabyBear],
@@ -1642,6 +1640,13 @@ mod tests {
         let (pk, vk) = WhirSnark::setup(&test_relation());
         let proof = WhirSnark::prove(&pk, b"instance-A", b"witness");
         assert!(!WhirSnark::verify(&vk, b"instance-B", &proof));
+    }
+
+    #[test]
+    fn cp_snark_short_instance_rejected() {
+        let (pk, vk) = WhirSnark::setup(&test_relation());
+        let proof = WhirSnark::prove(&pk, b"abc", b"witness");
+        assert!(!WhirSnark::verify(&vk, b"abc", &proof));
     }
 
     #[test]
