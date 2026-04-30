@@ -44,13 +44,15 @@ fn make_statement(
     (c, z[..n_in].to_vec(), witness_part)
 }
 
-fn build_sumcheck_fixture() -> (
+type SumcheckFixture = (
     Prover<SumcheckSnark, SumcheckSnark>,
     symphony::proof_orchestrator::Verifier<SumcheckSnark, SumcheckSnark>,
     Vec<(Commitment, Vec<i64>, RingVector)>,
     Vec<Vec<i64>>,
     symphony::r1cs::R1CSMatrices,
-) {
+);
+
+fn build_sumcheck_fixture() -> SumcheckFixture {
     let (prover, verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(security_params());
     let (r1cs, z) = common::multi_r1cs();
     let n_in = r1cs.num_public;
@@ -73,12 +75,12 @@ fn baseline_sumcheck_pipeline_accepts_valid_proof() {
 }
 
 #[test]
-fn tampered_witness_bundle_does_not_affect_verification() {
+fn tampered_witness_bundle_is_rejected() {
     let (prover, verifier, statements, public_inputs, r1cs) = build_sumcheck_fixture();
     let mut proof = prover.prove(&statements, &r1cs);
 
     proof.witness_bundle.fs_commitments[0][0] ^= 0x01;
-    assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+    assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
 }
 
 #[test]

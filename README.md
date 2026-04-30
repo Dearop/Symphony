@@ -212,7 +212,7 @@ let proof = cp
     )
     .unwrap();
 
-assert!(cp.verify(&[c], b"", &proof));
+assert!(cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof));
 ```
 
 ## Modular CP pipeline

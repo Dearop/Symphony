@@ -453,8 +453,8 @@ mod ntt_extended {
         let q = 12289u64;
         let ctx = NttContext::new(q);
         let mut coeffs = [0i64; D];
-        for i in 0..D {
-            coeffs[i] = (i as i64 * 37 + 13) % (q as i64 / 2);
+        for (i, coeff) in coeffs.iter_mut().enumerate().take(D) {
+            *coeff = (i as i64 * 37 + 13) % (q as i64 / 2);
         }
         let a = RingElement { coeffs };
         let a_ntt = ctx.forward(&a);

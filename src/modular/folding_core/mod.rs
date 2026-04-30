@@ -7,7 +7,10 @@ use crate::rok::gr1cs::GR1CSChallenges;
 use crate::rok::range_proof::RangeProofParams;
 
 pub type Statement = crate::folding::FoldingStatement;
-pub use crate::folding::{FoldedInstance, FoldedWitness, FoldingProof};
+pub use crate::folding::{
+    folded_output_instance_from_proof, folded_output_witness_from_folded, FoldedInstance,
+    FoldedOutputInstance, FoldedOutputWitness, FoldedWitness, FoldingProof,
+};
 
 /// Backend-independent folding semantics.
 pub trait FoldSemantics {

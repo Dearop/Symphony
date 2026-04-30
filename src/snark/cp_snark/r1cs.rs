@@ -9,6 +9,36 @@ use crate::ring::ntt::NttContext;
 use crate::ring::RingElement;
 use crate::rok::gr1cs::GR1CSProof;
 
+const CP_WRAP_POSITIVE_BITS: usize = 30;
+const CP_WRAP_NEGATIVE_BITS: usize = 24;
+const CP_WRAP_BITS_PER_VAR: usize = 1 + CP_WRAP_POSITIVE_BITS + CP_WRAP_NEGATIVE_BITS;
+
+/// Fill the bit-decomposition witness slots for the Phase-A CP-R1CS wrap variables.
+///
+/// Wraps are encoded either as a non-negative 30-bit value or as a negative
+/// 24-bit magnitude, selected by one boolean sign bit. This helper is used by
+/// the byte encoder and by tests that construct raw `z` assignments manually.
+pub fn fill_cp_wrap_range_bits(z: &mut [i64], layout: &CpR1csLayout) {
+    assert_eq!(z.len(), layout.num_variables);
+    for wrap_idx in 0..layout.num_wrap_vars {
+        let wrap = z[layout.wrap_var(wrap_idx)];
+        let sign = i64::from(wrap < 0);
+        let pos = if wrap >= 0 { wrap } else { 0 };
+        let neg = if wrap < 0 { -wrap } else { 0 };
+        assert!(
+            pos < (1i64 << layout.wrap_positive_bits) && neg < (1i64 << layout.wrap_negative_bits),
+            "CP-R1CS wrap {wrap} is outside configured bounded range"
+        );
+        z[layout.wrap_sign_bit(wrap_idx)] = sign;
+        for bit in 0..layout.wrap_positive_bits {
+            z[layout.wrap_positive_bit(wrap_idx, bit)] = (pos >> bit) & 1;
+        }
+        for bit in 0..layout.wrap_negative_bits {
+            z[layout.wrap_negative_bit(wrap_idx, bit)] = (neg >> bit) & 1;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // R1CS-compatible CP instance/witness encoding (for WHIR CP R1CS path)
 // ---------------------------------------------------------------------------
@@ -64,6 +94,7 @@ pub fn encode_cp_instance_r1cs(folded_instance: &FoldedInstance, layout: &CpR1cs
 ///   seed, alpha, evaluation matrix) and auxiliary K-mul intermediate results.
 ///
 /// Layout: `[Phase A: beta, c, x_in, prod_c, prod_x] [Phase B: had_data per instance]`
+#[allow(clippy::too_many_arguments)]
 pub fn encode_cp_witness_r1cs(
     commitments: &[crate::commitment::Commitment],
     public_inputs: &[Vec<i64>],
@@ -82,6 +113,7 @@ pub fn encode_cp_witness_r1cs(
     let ell_np = layout.ell_np;
     let kappa = layout.kappa;
     let n_in = layout.n_in;
+    let mut wrap_values = Vec::with_capacity(layout.num_wrap_vars);
 
     let num_witness = layout.num_variables - layout.num_instance;
     let mut buf = Vec::with_capacity(num_witness * 8);
@@ -219,7 +251,7 @@ pub fn encode_cp_witness_r1cs(
             let target = centered_mod(c_star_q as i128, p_u64) as i128;
             let mut sum_prod: i128 = 0;
             for ell in 0..ell_np {
-                let byte_off = ((layout.prod_c(ell, i, j) - layout.num_instance) * 8) as usize;
+                let byte_off = (layout.prod_c(ell, i, j) - layout.num_instance) * 8;
                 let mut arr = [0u8; 8];
                 arr.copy_from_slice(&buf[byte_off..byte_off + 8]);
                 sum_prod += i64::from_le_bytes(arr) as i128;
@@ -232,16 +264,20 @@ pub fn encode_cp_witness_r1cs(
                 0
             };
             buf.extend_from_slice(&wrap.to_le_bytes());
+            wrap_values.push(wrap);
         }
     }
 
     for s in 0..n_in {
         for j in 0..d {
-            let x_star_q = folded_instance.public_input.get(s).map_or(0i64, |r| r.coeffs[j]);
+            let x_star_q = folded_instance
+                .public_input
+                .get(s)
+                .map_or(0i64, |r| r.coeffs[j]);
             let target = centered_mod(x_star_q as i128, p_u64) as i128;
             let mut sum_prod: i128 = 0;
             for ell in 0..ell_np {
-                let byte_off = ((layout.prod_x(ell, s, j) - layout.num_instance) * 8) as usize;
+                let byte_off = (layout.prod_x(ell, s, j) - layout.num_instance) * 8;
                 let mut arr = [0u8; 8];
                 arr.copy_from_slice(&buf[byte_off..byte_off + 8]);
                 sum_prod += i64::from_le_bytes(arr) as i128;
@@ -254,6 +290,7 @@ pub fn encode_cp_witness_r1cs(
                 0
             };
             buf.extend_from_slice(&wrap.to_le_bytes());
+            wrap_values.push(wrap);
         }
     }
 
@@ -346,15 +383,15 @@ pub fn encode_cp_witness_r1cs(
         // --- Write evaluation matrix: U[matrix_idx][row][col] ---
         // matrix_idx ∈ {0,1,2}, row ∈ {0,1} (K-components c0,c1), col ∈ {0..D-1}
         let eval_matrix = &proof.hadamard_proof.evaluation_matrix;
-        for mi in 0..3 {
+        for matrix in eval_matrix.iter().take(3) {
             // row 0 (c0): data[0][j] for j in 0..D
             for j in 0..d {
-                buf.extend_from_slice(&bb_red(eval_matrix[mi].data[0][j] as i128).to_le_bytes());
+                buf.extend_from_slice(&bb_red(matrix.data[0][j] as i128).to_le_bytes());
             }
             // row 1 (c1): data[1][j] if T > 1, else 0
             for j in 0..d {
-                let val = if eval_matrix[mi].data.len() > 1 {
-                    eval_matrix[mi].data[1][j]
+                let val = if matrix.data.len() > 1 {
+                    matrix.data[1][j]
                 } else {
                     0
                 };
@@ -524,8 +561,8 @@ pub fn encode_cp_witness_r1cs(
 
         // Chain-multiply: eq = f_0 * f_1 * ... * f_{nv-1}
         let mut eq_val = factor_vals[0];
-        for i in 1..had_nv {
-            let (p1, p2, c0, c1) = kmul(eq_val.0, eq_val.1, factor_vals[i].0, factor_vals[i].1);
+        for &(factor_c0, factor_c1) in factor_vals.iter().take(had_nv).skip(1) {
+            let (p1, p2, c0, c1) = kmul(eq_val.0, eq_val.1, factor_c0, factor_c1);
             buf.extend_from_slice(&p1.to_le_bytes());
             buf.extend_from_slice(&p2.to_le_bytes());
             buf.extend_from_slice(&c0.to_le_bytes());
@@ -556,10 +593,10 @@ pub fn encode_cp_witness_r1cs(
         );
 
         let mut alpha_pow = alpha_k; // α^1
-        for j in 1..d {
+        for (j, &(u0, u1)) in uprod_vals.iter().enumerate().take(d).skip(1) {
             // diff_j = uprod_j - U[2,j]
-            let diff_0 = bb_red(uprod_vals[j].0 as i128 - u_val(2, 0, j) as i128);
-            let diff_1 = bb_red(uprod_vals[j].1 as i128 - u_val(2, 1, j) as i128);
+            let diff_0 = bb_red(u0 as i128 - u_val(2, 0, j) as i128);
+            let diff_1 = bb_red(u1 as i128 - u_val(2, 1, j) as i128);
 
             // α^j * diff_j
             let (p1, p2, c0, c1) = kmul(alpha_pow.0, alpha_pow.1, diff_0, diff_1);
@@ -612,7 +649,6 @@ pub fn encode_cp_witness_r1cs(
         };
         let (cp_r1cs_tmp, layout_tmp) = generate_cp_r1cs(ell_np, kappa, n_in, m_for_layout, qnr, q);
 
-        // Build full z = instance || witness_so_far (without phase-B wraps yet).
         let mut z_tmp = vec![0i64; layout_tmp.num_variables];
         z_tmp[layout_tmp.off_one] = 1;
 
@@ -628,8 +664,10 @@ pub fn encode_cp_witness_r1cs(
         }
         for s in 0..n_in {
             for j in 0..d {
-                z_tmp[layout_tmp.x_star(s, j)] =
-                    folded_instance.public_input.get(s).map_or(0, |r| r.coeffs[j]);
+                z_tmp[layout_tmp.x_star(s, j)] = folded_instance
+                    .public_input
+                    .get(s)
+                    .map_or(0, |r| r.coeffs[j]);
             }
         }
 
@@ -645,7 +683,8 @@ pub fn encode_cp_witness_r1cs(
         let cz = cp_r1cs_tmp.c.mul_vec_mod(&z_tmp, p_u64);
 
         let phase_a_rows = ell_np * (kappa + n_in) * d + (kappa + n_in) * d;
-        for row in phase_a_rows..cp_r1cs_tmp.num_constraints {
+        let phase_b_end = phase_a_rows + layout_tmp.phase_b_constraints;
+        for row in phase_a_rows..phase_b_end {
             let lhs = centered_mod(az[row] as i128 * bz[row] as i128, p_u64) as i128;
             let rhs = cz[row] as i128;
             let wrap = if q_embed_nonzero != 0 {
@@ -656,6 +695,19 @@ pub fn encode_cp_witness_r1cs(
                 0
             };
             buf.extend_from_slice(&wrap.to_le_bytes());
+        }
+    }
+
+    assert_eq!(wrap_values.len(), layout.num_wrap_vars);
+    let mut range_z = vec![0i64; layout.num_variables];
+    for (wrap_idx, &wrap) in wrap_values.iter().enumerate() {
+        range_z[layout.wrap_var(wrap_idx)] = wrap;
+    }
+    fill_cp_wrap_range_bits(&mut range_z, layout);
+    for wrap_idx in 0..layout.num_wrap_vars {
+        for bit in 0..layout.wrap_bits_per_var {
+            let bit_val = range_z[layout.wrap_bit(wrap_idx, bit)];
+            buf.extend_from_slice(&bit_val.to_le_bytes());
         }
     }
 
@@ -719,6 +771,18 @@ pub struct CpR1csLayout {
     pub phase_b_constraints: usize,
     /// Offset of per-row Phase-B wrap variables (one per Phase-B row).
     pub off_phase_b_wrap: usize,
+    /// Offset of bit-decomposition variables for Phase-A wrap values.
+    pub off_wrap_bits: usize,
+    /// Positive magnitude bit width for each range-constrained Phase-A wrap.
+    pub wrap_positive_bits: usize,
+    /// Negative magnitude bit width for each range-constrained Phase-A wrap.
+    pub wrap_negative_bits: usize,
+    /// Total selector/magnitude bits per range-constrained Phase-A wrap.
+    pub wrap_bits_per_var: usize,
+    /// Total number of range-constrained Phase-A wrap values.
+    pub num_wrap_vars: usize,
+    /// Total constraints used to range-check Phase-A wrap values.
+    pub wrap_range_constraints: usize,
 
     /// Total variables (instance + witness).
     pub num_variables: usize,
@@ -795,9 +859,16 @@ impl CpR1csLayout {
         };
         let phase_b_constraints = ell_np * phase_b_per_instance;
 
+        let phase_a_wraps = (kappa + n_in) * d;
         let off_had = off_sum_wrap_x + n_in * d;
         let off_phase_b_wrap = off_had + ell_np * had_block_size;
-        let num_variables = off_phase_b_wrap + phase_b_constraints;
+        let num_wrap_vars = phase_a_wraps;
+        let off_wrap_bits = off_phase_b_wrap + phase_b_constraints;
+        let wrap_positive_bits = CP_WRAP_POSITIVE_BITS;
+        let wrap_negative_bits = CP_WRAP_NEGATIVE_BITS;
+        let wrap_bits_per_var = CP_WRAP_BITS_PER_VAR;
+        let wrap_range_constraints = num_wrap_vars * (wrap_bits_per_var + 3);
+        let num_variables = off_wrap_bits + num_wrap_vars * wrap_bits_per_var;
 
         Self {
             d,
@@ -821,6 +892,12 @@ impl CpR1csLayout {
             phase_b_per_instance,
             phase_b_constraints,
             off_phase_b_wrap,
+            off_wrap_bits,
+            wrap_positive_bits,
+            wrap_negative_bits,
+            wrap_bits_per_var,
+            num_wrap_vars,
+            wrap_range_constraints,
             num_variables,
             had_aux_per_instance,
         }
@@ -854,6 +931,32 @@ impl CpR1csLayout {
     }
     pub fn sum_wrap_x(&self, slot: usize, j: usize) -> usize {
         self.off_sum_wrap_x + slot * self.d + j
+    }
+    pub fn phase_b_wrap(&self, row: usize) -> usize {
+        self.off_phase_b_wrap + row
+    }
+    pub fn wrap_bit(&self, wrap_idx: usize, bit: usize) -> usize {
+        self.off_wrap_bits + wrap_idx * self.wrap_bits_per_var + bit
+    }
+    pub fn wrap_sign_bit(&self, wrap_idx: usize) -> usize {
+        self.wrap_bit(wrap_idx, 0)
+    }
+    pub fn wrap_positive_bit(&self, wrap_idx: usize, bit: usize) -> usize {
+        self.wrap_bit(wrap_idx, 1 + bit)
+    }
+    pub fn wrap_negative_bit(&self, wrap_idx: usize, bit: usize) -> usize {
+        self.wrap_bit(wrap_idx, 1 + self.wrap_positive_bits + bit)
+    }
+    pub fn wrap_var(&self, wrap_idx: usize) -> usize {
+        let c_wraps = self.kappa * self.d;
+        let x_wraps = self.n_in * self.d;
+        if wrap_idx < c_wraps {
+            self.off_sum_wrap_c + wrap_idx
+        } else if wrap_idx < c_wraps + x_wraps {
+            self.off_sum_wrap_x + wrap_idx - c_wraps
+        } else {
+            self.off_phase_b_wrap + wrap_idx - c_wraps - x_wraps
+        }
     }
 
     // --- Phase B accessors ---
@@ -951,7 +1054,8 @@ pub fn generate_cp_r1cs(
         0
     };
     let phase_b_constraints = ell_np * phase_b_per_instance;
-    let num_constraints = phase_a_constraints + phase_b_constraints;
+    debug_assert_eq!(phase_b_constraints, layout.phase_b_constraints);
+    let num_constraints = phase_a_constraints + phase_b_constraints + layout.wrap_range_constraints;
 
     let mut r1cs = R1CSMatrices::new(num_constraints, layout.num_variables, layout.num_instance);
 
@@ -995,7 +1099,7 @@ pub fn generate_cp_r1cs(
     // Build NTT coefficient rows directly from the canonical BabyBear NTT implementation.
     // This avoids any risk of twiddle/indexing mismatch with hand-derived formulas.
     let p: u64 = 2013265921; // BabyBear modulus for NTT twiddles/constraints
-    let q_embed = centered_mod(q_modulus as i128, p) as i64;
+    let q_embed = centered_mod(q_modulus as i128, p);
     let bb_ntt = NttContext::new(p);
 
     // ntt_coeff[j][k] is the coefficient multiplying input coeff[k] to contribute
@@ -1019,19 +1123,18 @@ pub fn generate_cp_r1cs(
     // Commitment ring products: prod_c[ℓ][i] = beta[ℓ] · c_ℓ[i]
     for ell in 0..ell_np {
         for i in 0..kappa {
-            for j in 0..d {
+            for coeffs in ntt_coeff.iter().take(d) {
                 // A: NTT of beta[ℓ], slot j
-                for k in 0..d {
-                    r1cs.a.insert(row, layout.beta(ell, k), ntt_coeff[j][k]);
+                for (k, &coeff) in coeffs.iter().enumerate().take(d) {
+                    r1cs.a.insert(row, layout.beta(ell, k), coeff);
                 }
                 // B: NTT of c_ℓ[i], slot j
-                for k in 0..d {
-                    r1cs.b.insert(row, layout.c(ell, i, k), ntt_coeff[j][k]);
+                for (k, &coeff) in coeffs.iter().enumerate().take(d) {
+                    r1cs.b.insert(row, layout.c(ell, i, k), coeff);
                 }
                 // C: NTT of prod_c[ℓ][i], slot j
-                for k in 0..d {
-                    r1cs.c
-                        .insert(row, layout.prod_c(ell, i, k), ntt_coeff[j][k]);
+                for (k, &coeff) in coeffs.iter().enumerate().take(d) {
+                    r1cs.c.insert(row, layout.prod_c(ell, i, k), coeff);
                 }
                 row += 1;
             }
@@ -1041,16 +1144,15 @@ pub fn generate_cp_r1cs(
     // Public input ring products: prod_x[ℓ][s] = beta[ℓ] · x_in[ℓ][s]
     for ell in 0..ell_np {
         for s in 0..n_in {
-            for j in 0..d {
-                for k in 0..d {
-                    r1cs.a.insert(row, layout.beta(ell, k), ntt_coeff[j][k]);
+            for coeffs in ntt_coeff.iter().take(d) {
+                for (k, &coeff) in coeffs.iter().enumerate().take(d) {
+                    r1cs.a.insert(row, layout.beta(ell, k), coeff);
                 }
-                for k in 0..d {
-                    r1cs.b.insert(row, layout.x_in(ell, s, k), ntt_coeff[j][k]);
+                for (k, &coeff) in coeffs.iter().enumerate().take(d) {
+                    r1cs.b.insert(row, layout.x_in(ell, s, k), coeff);
                 }
-                for k in 0..d {
-                    r1cs.c
-                        .insert(row, layout.prod_x(ell, s, k), ntt_coeff[j][k]);
+                for (k, &coeff) in coeffs.iter().enumerate().take(d) {
+                    r1cs.c.insert(row, layout.prod_x(ell, s, k), coeff);
                 }
                 row += 1;
             }
@@ -1083,7 +1185,7 @@ pub fn generate_cp_r1cs(
     normalize_rows(&mut r1cs.c);
 
     // --- Sum constraints ---
-    // centered_mod(c*[i][j], p) = Σ_ℓ prod_c[ℓ][i][j] + p * wrap_c[i][j]
+    // centered_mod(c*[i][j], p) = Σ_ℓ prod_c[ℓ][i][j] + q * wrap_c[i][j]
     for i in 0..kappa {
         for j in 0..d {
             r1cs.a.insert(row, layout.off_one, 1);
@@ -1096,7 +1198,7 @@ pub fn generate_cp_r1cs(
         }
     }
 
-    // centered_mod(x*[s][j], p) = Σ_ℓ prod_x[ℓ][s][j] + p * wrap_x[s][j]
+    // centered_mod(x*[s][j], p) = Σ_ℓ prod_x[ℓ][s][j] + q * wrap_x[s][j]
     for s in 0..n_in {
         for j in 0..d {
             r1cs.a.insert(row, layout.off_one, 1);
@@ -1135,6 +1237,7 @@ pub fn generate_cp_r1cs(
     // Row 1: A_c1 * B_c1 = p2
     // Row 2: (A_c0 + A_c1) * (B_c0 + B_c1) = c1 + p1 + p2
     // Row 3: 1 * c0 = p1 + QNR * p2
+    #[allow(clippy::too_many_arguments)]
     fn ext_mul_lc(
         r1cs: &mut R1CSMatrices,
         row: &mut usize,
@@ -1362,7 +1465,9 @@ pub fn generate_cp_r1cs(
             // Total: nv + (nv-1) = 2*nv - 1 K-muls.
 
             // First, compute each factor's K-mul (s_i * r_i)
-            let mut factor_vars: Vec<(Vec<(usize, i64)>, Vec<(usize, i64)>)> = Vec::new();
+            type LinComb = Vec<(usize, i64)>;
+            type ExtLinComb = (LinComb, LinComb);
+            let mut factor_vars: Vec<ExtLinComb> = Vec::new();
             for i in 0..had_nv {
                 let s_c0 = vec![(layout.had_seed(ell, i, 0), 1)];
                 let s_c1 = vec![(layout.had_seed(ell, i, 1), 1)];
@@ -1405,7 +1510,7 @@ pub fn generate_cp_r1cs(
             // Chain-multiply factors: eq_val = f_0 * f_1 * ... * f_{nv-1}
             let mut eq_c0 = factor_vars[0].0.clone();
             let mut eq_c1 = factor_vars[0].1.clone();
-            for i in 1..had_nv {
+            for factor in factor_vars.iter().take(had_nv).skip(1) {
                 let m = alloc_kmul();
                 ext_mul_lc(
                     &mut r1cs,
@@ -1417,8 +1522,8 @@ pub fn generate_cp_r1cs(
                     qnr,
                     &eq_c0,
                     &eq_c1,
-                    &factor_vars[i].0,
-                    &factor_vars[i].1,
+                    &factor.0,
+                    &factor.1,
                     m,
                 );
                 eq_c0 = vec![(m.2, 1)];
@@ -1557,6 +1662,58 @@ pub fn generate_cp_r1cs(
     }
 
     assert_eq!(phase_b_row_idx, layout.phase_b_constraints);
+
+    // Range-constrain the Phase-A q-embedding wraps that bind the folded
+    // commitment and folded public input. Without these constraints those rows
+    // would be satisfiable for arbitrary c*/x* by choosing a free BabyBear
+    // wrap. Phase-B rows still use per-row q-wraps for the legacy embedded
+    // Hadamard verifier and are not treated as an authoritative typed CP proof;
+    // the validated modular verifier must keep CpRelation::check_with_algebra
+    // mandatory until Phase B is replaced by a typed relation with bounded
+    // carries/lookups.
+    for wrap_idx in 0..layout.num_wrap_vars {
+        let wrap_var = layout.wrap_var(wrap_idx);
+        let sign_var = layout.wrap_sign_bit(wrap_idx);
+
+        for bit in 0..layout.wrap_bits_per_var {
+            let bit_var = layout.wrap_bit(wrap_idx, bit);
+            r1cs.a.insert(row, bit_var, 1);
+            r1cs.b.insert(row, bit_var, 1);
+            r1cs.c.insert(row, bit_var, 1);
+            row += 1;
+        }
+
+        // sign * positive_magnitude = 0
+        r1cs.a.insert(row, sign_var, 1);
+        for bit in 0..layout.wrap_positive_bits {
+            r1cs.b
+                .insert(row, layout.wrap_positive_bit(wrap_idx, bit), 1i64 << bit);
+        }
+        row += 1;
+
+        // (1 - sign) * negative_magnitude = 0
+        r1cs.a.insert(row, layout.off_one, 1);
+        r1cs.a.insert(row, sign_var, -1);
+        for bit in 0..layout.wrap_negative_bits {
+            r1cs.b
+                .insert(row, layout.wrap_negative_bit(wrap_idx, bit), 1i64 << bit);
+        }
+        row += 1;
+
+        // wrap = positive_magnitude - negative_magnitude
+        r1cs.a.insert(row, layout.off_one, 1);
+        r1cs.b.insert(row, wrap_var, 1);
+        for bit in 0..layout.wrap_positive_bits {
+            r1cs.c
+                .insert(row, layout.wrap_positive_bit(wrap_idx, bit), 1i64 << bit);
+        }
+        for bit in 0..layout.wrap_negative_bits {
+            r1cs.c
+                .insert(row, layout.wrap_negative_bit(wrap_idx, bit), -(1i64 << bit));
+        }
+        row += 1;
+    }
+
     assert_eq!(row, num_constraints);
 
     (r1cs, layout)

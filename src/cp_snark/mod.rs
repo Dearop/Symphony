@@ -1,8 +1,12 @@
 //! Standalone Commit-and-Prove SNARK.
 //!
 //! A CP-SNARK proves knowledge of values committed under an [`FSCommitment`]
-//! scheme that satisfy a user-defined [`CommittedRelation`], **without**
-//! revealing the committed values.
+//! scheme that satisfy a user-defined [`CommittedRelation`].
+//!
+//! **Important:** in the current generic implementation, sound verification is
+//! achieved by carrying the opened messages/openings inside the proof and
+//! re-checking them at verification time. So this standalone API is currently
+//! *sound but not zero-knowledge with respect to the committed messages*.
 //!
 //! This module is self-contained: it depends only on [`BackendSnark`],
 //! [`FSCommitment`], and the Fiat-Shamir transcript. It can be used
@@ -55,7 +59,7 @@
 //!     &IdentityRelation,
 //! ).unwrap();
 //!
-//! assert!(cp.verify(&[c1, c2], b"", &proof));
+//! assert!(cp.verify(&scheme, &[c1, c2], b"", &IdentityRelation, &proof));
 //! ```
 
 use std::marker::PhantomData;
@@ -153,11 +157,18 @@ impl<F: Fn(&[&[u8]], &[u8]) -> bool> CommittedRelation for FnRelation<F> {
 
 /// A CP-SNARK proof, generic over the backend SNARK.
 #[derive(Debug, Clone)]
-pub struct CPProof<S: BackendSnark> {
+pub struct CPProof<S: BackendSnark, C: FSCommitment> {
     /// The backend SNARK proof for the commit-and-prove relation.
     pub backend_proof: S::Proof,
     /// Transcript digest that binds commitments to the proof context.
     pub transcript_digest: Vec<u8>,
+    /// Revealed messages/openings used for soundness fallback verification.
+    ///
+    /// This makes the standalone generic API sound even when the backend does
+    /// not natively encode commitment-opening or relation checks, at the cost
+    /// of revealing the committed values.
+    pub revealed_messages: Vec<Vec<u8>>,
+    pub revealed_openings: Vec<C::Opening>,
 }
 
 // -----------------------------------------------------------------------
@@ -236,7 +247,7 @@ impl<S: BackendSnark, C: FSCommitment> CPSnark<S, C> {
         commitments: &[C::Commitment],
         public_statement: &[u8],
         relation: &dyn CommittedRelation,
-    ) -> Option<CPProof<S>> {
+    ) -> Option<CPProof<S, C>> {
         if messages.len() != self.num_messages
             || openings.len() != self.num_messages
             || commitments.len() != self.num_messages
@@ -273,23 +284,49 @@ impl<S: BackendSnark, C: FSCommitment> CPSnark<S, C> {
         Some(CPProof {
             backend_proof,
             transcript_digest: digest.to_vec(),
+            revealed_messages: messages.iter().map(|m| m.to_vec()).collect(),
+            revealed_openings: openings.to_vec(),
         })
     }
 
     /// Verify a CP-SNARK proof.
     ///
-    /// The verifier checks the proof given only:
-    /// - The commitments (not the opened values)
-    /// - The public statement
+    /// The verifier checks:
+    /// - the revealed message/opening pairs against the supplied commitments,
+    /// - the declared relation on the revealed messages,
+    /// - transcript binding,
+    /// - and the backend proof.
     ///
-    /// Returns `true` if the backend SNARK accepts.
+    /// Returns `true` if all checks accept.
     pub fn verify(
         &self,
+        scheme: &C,
         commitments: &[C::Commitment],
         public_statement: &[u8],
-        proof: &CPProof<S>,
+        relation: &dyn CommittedRelation,
+        proof: &CPProof<S, C>,
     ) -> bool {
         if commitments.len() != self.num_messages {
+            return false;
+        }
+        if proof.revealed_messages.len() != self.num_messages
+            || proof.revealed_openings.len() != self.num_messages
+        {
+            return false;
+        }
+
+        for (i, commitment) in commitments.iter().enumerate().take(self.num_messages) {
+            if !scheme.verify(
+                commitment,
+                &proof.revealed_messages[i],
+                &proof.revealed_openings[i],
+            ) {
+                return false;
+            }
+        }
+
+        let message_refs: Vec<&[u8]> = proof.revealed_messages.iter().map(Vec::as_slice).collect();
+        if !relation.check(&message_refs, public_statement) {
             return false;
         }
 
@@ -391,6 +428,8 @@ pub struct CPSnarkBuilder<S: BackendSnark, C: FSCommitment> {
     _phantom: PhantomData<S>,
 }
 
+type BuilderProofResult<S, C> = Option<(CPProof<S, C>, Vec<<C as FSCommitment>::Commitment>)>;
+
 impl<S: BackendSnark, C: FSCommitment> CPSnarkBuilder<S, C> {
     pub fn new() -> Self {
         Self {
@@ -437,11 +476,7 @@ impl<S: BackendSnark, C: FSCommitment> CPSnarkBuilder<S, C> {
     ///
     /// Internally calls `CPSnark::setup` with the appropriate sizing,
     /// then `CPSnark::prove`.
-    pub fn prove(
-        &self,
-        scheme: &C,
-        relation: &dyn CommittedRelation,
-    ) -> Option<(CPProof<S>, Vec<C::Commitment>)> {
+    pub fn prove(&self, scheme: &C, relation: &dyn CommittedRelation) -> BuilderProofResult<S, C> {
         let max_msg = self.max_message_size.max(1);
         let cp = CPSnark::<S, C>::setup(self.messages.len(), max_msg);
 
@@ -501,7 +536,7 @@ mod tests {
             )
             .expect("proof should succeed");
 
-        assert!(cp.verify(&[c1, c2], b"", &proof));
+        assert!(cp.verify(&scheme, &[c1, c2], b"", &IdentityRelation, &proof));
     }
 
     #[test]
@@ -564,7 +599,7 @@ mod tests {
             )
             .expect("proof should succeed");
 
-        assert!(cp.verify(&[c1, c2], &digest, &proof));
+        assert!(cp.verify(&scheme, &[c1, c2], &digest, &PreimageRelation, &proof));
     }
 
     #[test]
@@ -616,7 +651,7 @@ mod tests {
             )
             .expect("proof should succeed");
 
-        assert!(cp.verify(&[c1, c2], &expected, &proof));
+        assert!(cp.verify(&scheme, &[c1, c2], &expected, &relation, &proof));
     }
 
     #[test]
@@ -654,7 +689,10 @@ mod tests {
             )
             .unwrap();
 
-        assert!(!cp.verify(&[c1], b"", &proof), "wrong count should fail");
+        assert!(
+            !cp.verify(&scheme, &[c1], b"", &IdentityRelation, &proof),
+            "wrong count should fail"
+        );
     }
 
     #[test]
@@ -686,6 +724,6 @@ mod tests {
             )
             .expect("proof should succeed");
 
-        assert!(cp.verify(&[c1, c2], b"", &proof));
+        assert!(cp.verify(&scheme, &[c1, c2], b"", &IdentityRelation, &proof));
     }
 }

@@ -86,7 +86,9 @@ fn whir_proof_wire_bytes(proof: &symphony::WhirProof) -> usize {
 }
 
 #[cfg(feature = "whir")]
-fn cp_whir_proof_wire_bytes(proof: &symphony::CPProof<symphony::WhirSnark>) -> usize {
+fn cp_whir_proof_wire_bytes(
+    proof: &symphony::CPProof<symphony::WhirSnark, symphony::HashCommitment>,
+) -> usize {
     // CP wrapper adds only a transcript digest on top of the backend proof.
     whir_proof_wire_bytes(&proof.backend_proof) + proof.transcript_digest.len()
 }
@@ -452,7 +454,7 @@ fn bench_whir_cp_scaling(c: &mut Criterion) {
             )
             .expect("WHIR standalone CPSnark prove must succeed");
         assert!(
-            cp.verify(&commitments, b"", &proof),
+            cp.verify(&scheme, &commitments, b"", &relation, &proof),
             "WHIR standalone CPSnark verify must pass for witness_size={witness_size}"
         );
 
@@ -484,7 +486,13 @@ fn bench_whir_cp_scaling(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("verify", witness_size), |b| {
             b.iter(|| {
-                black_box(cp.verify(black_box(&commitments), black_box(b""), black_box(&proof)));
+                black_box(cp.verify(
+                    black_box(&scheme),
+                    black_box(&commitments),
+                    black_box(b""),
+                    black_box(&relation),
+                    black_box(&proof),
+                ));
             });
         });
     }

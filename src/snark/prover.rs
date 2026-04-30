@@ -10,69 +10,11 @@ use crate::folding::FoldingStatement;
 use crate::params::SymphonyParams;
 use crate::r1cs::R1CSMatrices;
 use crate::ring::RingVector;
-use crate::rok::range_proof::RangeProofParams;
 use crate::snark::cp_snark;
-use crate::snark::{BackendSnark, SymphonyProof};
-use crate::transcript_core::{
-    tags, CanonicalTranscriptCodec, Sha256ChallengeDeriver, TranscriptCodec, TranscriptEvent,
-    TranscriptSchema,
+use crate::snark::{
+    build_canonical_transcript_bytes, range_proof_params, BackendSnark, SymphonyProof,
 };
-
-/// Derive range proof parameters from global Symphony parameters.
-fn range_proof_params(params: &SymphonyParams) -> RangeProofParams {
-    RangeProofParams {
-        lambda_pj: params.lambda_pj,
-        ell_h: params.ell_h,
-        d_prime: (params.d as i64) - 2,
-        k_g: params.k_g(),
-        input_bound: params.b_input(),
-    }
-}
-
-/// Build canonical transcript bytes used for challenge derivation.
-///
-/// This is the prover-side transcript object that CP digest binding commits to.
-fn build_canonical_transcript_bytes(
-    public_inputs: &[Vec<i64>],
-    r1cs: &R1CSMatrices,
-    fs_commitments: &[Vec<u8>],
-) -> Vec<u8> {
-    let mut schema = TranscriptSchema::new(b"symphony-v1");
-    for pi in public_inputs {
-        let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
-        schema.push_event(TranscriptEvent::new(
-            tags::PUBLIC_INPUT,
-            b"public-input",
-            &bytes,
-        ));
-    }
-
-    schema.push_event(TranscriptEvent::new(
-        tags::R1CS_META,
-        b"r1cs-m",
-        &(r1cs.num_constraints as u64).to_le_bytes(),
-    ));
-    schema.push_event(TranscriptEvent::new(
-        tags::R1CS_META,
-        b"r1cs-n",
-        &(r1cs.num_variables as u64).to_le_bytes(),
-    ));
-    schema.push_event(TranscriptEvent::new(
-        tags::R1CS_META,
-        b"r1cs-pub",
-        &(r1cs.num_public as u64).to_le_bytes(),
-    ));
-
-    for comm in fs_commitments {
-        schema.push_event(TranscriptEvent::new(
-            tags::FS_COMMITMENT,
-            b"fs-commitment",
-            comm,
-        ));
-    }
-
-    CanonicalTranscriptCodec.encode(&schema)
-}
+use crate::transcript_core::Sha256ChallengeDeriver;
 
 /// Orchestrate the complete proof generation pipeline.
 ///
@@ -82,6 +24,7 @@ fn build_canonical_transcript_bytes(
 /// 3. Generate backend SNARK proof for the folded statement via `S::prove`
 /// 4. Generate CP-SNARK proof for folding correctness via `S::prove`
 /// 5. Bundle everything into a `SymphonyProof<S>`
+#[allow(clippy::too_many_arguments)]
 pub fn generate_proof<S: BackendSnark>(
     params: &SymphonyParams,
     ajtai: &AjtaiParams,
@@ -92,7 +35,7 @@ pub fn generate_proof<S: BackendSnark>(
     statements: &[(Commitment, Vec<i64>, RingVector)],
     r1cs: &R1CSMatrices,
 ) -> SymphonyProof<S> {
-    let timing = std::env::var("SYMPHONY_TIMING").map_or(false, |v| v == "1");
+    let timing = std::env::var("SYMPHONY_TIMING").is_ok_and(|v| v == "1");
     let t0 = std::time::Instant::now();
 
     // Step 1: Build FoldingStatements
@@ -179,6 +122,29 @@ pub fn generate_proof<S: BackendSnark>(
     let public_input_vecs_for_cp: Vec<Vec<i64>> =
         statements.iter().map(|(_, pi, _)| pi.clone()).collect();
     let commitments_for_cp: Vec<_> = folding_proof.commitments.clone();
+    let folded_output = crate::folding::folded_output_instance_from_proof(&folding_proof);
+    let folded_output_witness = crate::folding::folded_output_witness_from_folded(&folded_witness);
+    let typed_cp_public_instance = crate::cp_relation_core::CpPublicInstance {
+        fs_root,
+        fold_root,
+        challenge_digest,
+        transcript_seed_digest,
+        x_folded: folding_proof.folded_instance.clone(),
+        folded_output: folded_output.clone(),
+    };
+    let typed_cp_witness = crate::cp_relation_core::CpWitnessBundle {
+        transcript_bytes: transcript_bytes.clone(),
+        fs_commitments: fs_commitments.clone(),
+        fs_openings: fs_openings.iter().map(|o| o.to_vec()).collect(),
+        fs_messages: fs_messages.clone(),
+        fold_inputs: fold_inputs.clone(),
+        original_witnesses: statements.iter().map(|(_, _, w)| w.clone()).collect(),
+        folded_output: folding_proof.folded_instance.clone(),
+        folded_output_instance: folded_output.clone(),
+        folded_output_witness: folded_output_witness.clone(),
+        folded_witness: folded_witness.clone(),
+        folding_proof: folding_proof.clone(),
+    };
     let cp_public_instance = cp_snark::CpPublicInstance {
         fold_root,
         fs_root,
@@ -203,36 +169,46 @@ pub fn generate_proof<S: BackendSnark>(
         params.q,
     );
 
-    let cp_proof = S::prove(cp_pk, &cp_instance, &cp_witness);
+    let cp_proof = if let Some(proof) =
+        S::prove_typed_cp(cp_pk, &typed_cp_public_instance, &typed_cp_witness)
+    {
+        proof
+    } else {
+        S::prove(cp_pk, &cp_instance, &cp_witness)
+    };
 
     let t_cp = t_cp_start.elapsed();
 
-    // Step 6: Generate output proof for the folded statement via `S::prove`.
-    // Create a fresh output proving key with R1CS context so that backends
-    // (e.g. WHIR) can verify the actual R1CS relation, not just a generic sumcheck.
+    // Step 6: Generate output proof for the folded statement.
     let t_output_start = std::time::Instant::now();
     let output_instance = cp_snark::encode_folded_instance(&folding_proof.folded_instance);
     let output_witness = cp_snark::encode_folded_witness(&folded_witness);
 
     // Compute expected BabyBear z-vector length to check R1CS compatibility.
-    let d = params.d as usize;
+    let d = params.d;
     let instance_elems = output_instance.len() / 8; // i64-encoded
     let witness_elems = output_witness.len() / 8;
     let total_elems = instance_elems + witness_elems;
     let total_flat = r1cs.num_variables * d;
 
-    let output_pk = if total_elems <= total_flat {
-        // R1CS dimensions are compatible with the folded encoding — use cached
-        // R1CS-aware key keyed by serialized output context.
-        let output_context = cp_snark::serialize_output_context(r1cs, params.q, d);
-        snark_pk_for_context(output_context)
+    let output_proof = if let Some(output_context) = S::serialize_output_context(r1cs, params.q, d)
+    {
+        let output_pk = snark_pk_for_context(output_context);
+        if S::has_authoritative_typed_output() {
+            S::prove_typed_output(&output_pk, &folded_output, &folded_output_witness)
+                .expect("authoritative typed output backend rejected folded output relation")
+        } else if let Some(proof) =
+            S::prove_typed_output(&output_pk, &folded_output, &folded_output_witness)
+        {
+            proof
+        } else if total_elems <= total_flat {
+            S::prove(&output_pk, &output_instance, &output_witness)
+        } else {
+            S::prove(snark_pk, &output_instance, &output_witness)
+        }
     } else {
-        // Dimensions don't align — fall back to stored key (CP path).
-        // This is a known limitation: full R1CS verification requires
-        // the folded encoding to fit the flattened R1CS dimensions.
-        snark_pk.clone()
+        S::prove(snark_pk, &output_instance, &output_witness)
     };
-    let output_proof = S::prove(&output_pk, &output_instance, &output_witness);
     let t_output = t_output_start.elapsed();
 
     if timing {
@@ -250,6 +226,7 @@ pub fn generate_proof<S: BackendSnark>(
         cp_proof,
         snark_proof: output_proof,
         folded_instance: folding_proof.folded_instance.clone(),
+        folded_output,
         fold_root,
         challenge_digest,
         fs_root,
@@ -258,8 +235,12 @@ pub fn generate_proof<S: BackendSnark>(
             fs_commitments,
             fs_openings: fs_openings.iter().map(|o| o.to_vec()).collect(),
             fs_messages,
+            transcript_bytes,
             fold_inputs,
+            original_witnesses: statements.iter().map(|(_, _, w)| w.clone()).collect(),
             folding_proof,
+            folded_output_witness,
+            folded_witness,
         },
     }
 }

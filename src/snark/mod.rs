@@ -16,6 +16,8 @@
 //!   1. Recompute transcript seed digest from public inputs + relation metadata
 //!   2. Check Π_cp.Verify(π_cp) over full CP public binding digests
 //!   3. Check Π_out.Verify(π) for the folded statement
+//!   4. Run explicit witness-side consistency checks over the carried folding /
+//!      transcript data
 
 pub mod cp_snark;
 pub mod prover;
@@ -28,8 +30,11 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::commitment::Commitment;
+use crate::cp_relation_core::{
+    CpPublicInstance as TypedCpPublicInstance, CpWitnessBundle as TypedCpWitnessBundle,
+};
 use crate::folding::digest::Digest32;
-use crate::folding::FoldedInstance;
+use crate::folding::{FoldedInstance, FoldedOutputInstance, FoldedOutputWitness};
 use crate::params::SymphonyParams;
 use crate::r1cs::R1CSMatrices;
 use crate::ring::RingVector;
@@ -55,6 +60,74 @@ pub trait BackendSnark {
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey);
     fn prove(pk: &Self::ProvingKey, instance: &[u8], witness: &[u8]) -> Self::Proof;
     fn verify(vk: &Self::VerifyingKey, instance: &[u8], proof: &Self::Proof) -> bool;
+
+    /// Optional backend-specific serializer for an output-statement context.
+    fn serialize_output_context(_r1cs: &R1CSMatrices, _q: u64, _d: usize) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Whether this backend treats [`FoldedOutputInstance`] / [`FoldedOutputWitness`]
+    /// as the authoritative output relation when an output context is present.
+    ///
+    /// Backends returning `true` must fail closed if typed output proving or
+    /// verification returns `None`; falling back to legacy byte encodings would
+    /// reintroduce the composition issue documented in `docs/issues`.
+    fn has_authoritative_typed_output() -> bool {
+        false
+    }
+
+    /// Whether this backend treats [`TypedCpPublicInstance`] / [`TypedCpWitnessBundle`]
+    /// as the authoritative CP relation.
+    ///
+    /// Backends returning `true` must prove the full CP relation checked by
+    /// [`crate::cp_relation_core::CpRelation::check_with_algebra`] inside the
+    /// backend proof. Verifiers for the public-only v2 path fail closed when
+    /// this flag is `false`; they must not fall back to witness-side relation
+    /// checks.
+    fn has_authoritative_typed_cp() -> bool {
+        false
+    }
+
+    /// Optional backend-specific serializer for a CP relation context.
+    fn serialize_cp_context(_r1cs: &R1CSMatrices, _q: u64, _d: usize) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Optional typed CP proving path.
+    fn prove_typed_cp(
+        _pk: &Self::ProvingKey,
+        _instance: &TypedCpPublicInstance,
+        _witness: &TypedCpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        None
+    }
+
+    /// Optional typed CP verification path.
+    fn verify_typed_cp(
+        _vk: &Self::VerifyingKey,
+        _instance: &TypedCpPublicInstance,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        None
+    }
+
+    /// Optional typed folded-output proving path.
+    fn prove_typed_output(
+        _pk: &Self::ProvingKey,
+        _instance: &FoldedOutputInstance,
+        _witness: &FoldedOutputWitness,
+    ) -> Option<Self::Proof> {
+        None
+    }
+
+    /// Optional typed folded-output verification path.
+    fn verify_typed_output(
+        _vk: &Self::VerifyingKey,
+        _instance: &FoldedOutputInstance,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        None
+    }
 }
 
 /// Description of the relation to be proven by the backend SNARK.
@@ -69,13 +142,9 @@ pub struct RelationDescription {
 
 /// A complete Symphony proof, generic over the backend SNARK `S`.
 ///
-/// The verifier reads only top-level O(1) fields:
-/// - `cp_proof`
-/// - `snark_proof` (output proof)
-/// - `folded_instance`
-/// - `fold_root`, `challenge_digest`, `fs_root`, `transcript_seed_digest`
-///
-/// All O(k) transcript/folding objects remain in `witness_data`.
+/// Stage 1 note: the proof still stores the legacy `folded_instance` field for
+/// compatibility, but the intended typed public output boundary is now also
+/// available as `folded_output`.
 #[derive(Debug, Clone)]
 pub struct SymphonyProof<S: BackendSnark> {
     // -- Verifier-visible fields (O(1) total size) --
@@ -83,8 +152,10 @@ pub struct SymphonyProof<S: BackendSnark> {
     pub cp_proof: S::Proof,
     /// Output SNARK proof π (proves the folded statement).
     pub snark_proof: S::Proof,
-    /// The folded instance x_o.
+    /// Legacy folded instance projection kept for backwards compatibility.
     pub folded_instance: FoldedInstance,
+    /// Typed public folded-output boundary for the eventual output relation `R_o`.
+    pub folded_output: FoldedOutputInstance,
     /// SHA-256 digest binding all per-instance fold inputs.
     pub fold_root: Digest32,
     /// SHA-256 digest of the derived challenge sequence.
@@ -94,9 +165,9 @@ pub struct SymphonyProof<S: BackendSnark> {
     /// SHA-256 digest of static transcript metadata (public inputs + R1CS dims).
     pub transcript_seed_digest: Digest32,
 
-    // -- Witness data (O(k), not read by verifier) --
-    /// Full witness data needed for serialization and CP relation verification.
-    /// The verifier never inspects this; the CP-SNARK proves its consistency.
+    // -- Witness data (O(k), carried in the proof object) --
+    /// Full witness data needed for serialization, explicit soundness checks,
+    /// and backend-independent verification fallback.
     pub witness_data: ProofWitnessData,
 }
 
@@ -107,12 +178,48 @@ impl<S: BackendSnark> SymphonyProof<S> {
     pub fn output_proof(&self) -> &S::Proof {
         &self.snark_proof
     }
+
+    /// Drop all witness-side/debug data and keep only the public v2 proof
+    /// boundary.
+    #[must_use]
+    pub fn to_v2(&self) -> SymphonyProofV2<S> {
+        SymphonyProofV2 {
+            cp_proof: self.cp_proof.clone(),
+            output_proof: self.snark_proof.clone(),
+            fs_commitments: self.witness_data.fs_commitments.clone(),
+            folded_output: self.folded_output.clone(),
+            fs_root: self.fs_root,
+            fold_root: self.fold_root,
+            challenge_digest: self.challenge_digest,
+            transcript_seed_digest: self.transcript_seed_digest,
+        }
+    }
 }
 
-/// O(k) witness data bundled with the proof for serialization.
+/// Privacy-preserving v2 Symphony proof.
 ///
-/// The verifier does not read any of these fields — the CP-SNARK proves
-/// their consistency with the constant-size digests.
+/// This is the public verifier boundary: it carries backend proofs, public
+/// Fiat-Shamir commitments/digests, and the folded output instance. It does not
+/// contain FS openings/messages, original witnesses, folding proofs, folded
+/// witnesses, fold inputs, or any verifier-visible witness bundle.
+#[derive(Debug, Clone)]
+pub struct SymphonyProofV2<S: BackendSnark> {
+    pub cp_proof: S::Proof,
+    pub output_proof: S::Proof,
+    pub fs_commitments: Vec<Vec<u8>>,
+    pub folded_output: FoldedOutputInstance,
+    pub fs_root: Digest32,
+    pub fold_root: Digest32,
+    pub challenge_digest: Digest32,
+    pub transcript_seed_digest: Digest32,
+}
+
+/// O(k) witness data bundled with the proof for serialization and explicit
+/// verification.
+///
+/// In the current implementation, verifiers may inspect these fields to
+/// perform backend-independent soundness checks in addition to backend proof
+/// verification.
 #[derive(Debug, Clone)]
 pub struct ProofWitnessData {
     /// Fiat-Shamir commitments {c_{fs,i}}.
@@ -121,10 +228,315 @@ pub struct ProofWitnessData {
     pub fs_openings: Vec<Vec<u8>>,
     /// FS committed messages (deterministic folding round encodings).
     pub fs_messages: Vec<Vec<u8>>,
+    /// Canonical transcript bytes used for challenge derivation.
+    pub transcript_bytes: Vec<u8>,
     /// Per-instance fold inputs.
     pub fold_inputs: Vec<crate::folding::digest::FoldInput>,
+    /// Original witness parts for each proved statement.
+    pub original_witnesses: Vec<RingVector>,
     /// Full folding proof.
     pub folding_proof: crate::folding::FoldingProof,
+    /// Typed folded-output private witness boundary.
+    pub folded_output_witness: crate::folding::FoldedOutputWitness,
+    /// Folded witness used by the output-statement check.
+    pub folded_witness: crate::folding::FoldedWitness,
+}
+
+pub(crate) fn range_proof_params(
+    params: &SymphonyParams,
+) -> crate::rok::range_proof::RangeProofParams {
+    crate::rok::range_proof::RangeProofParams {
+        lambda_pj: params.lambda_pj,
+        ell_h: params.ell_h,
+        d_prime: (params.d as i64) - 2,
+        k_g: params.k_g(),
+        input_bound: params.b_input(),
+    }
+}
+
+pub(crate) fn build_canonical_transcript_bytes(
+    public_inputs: &[Vec<i64>],
+    r1cs: &R1CSMatrices,
+    fs_commitments: &[Vec<u8>],
+) -> Vec<u8> {
+    use crate::transcript_core::{
+        tags, CanonicalTranscriptCodec, TranscriptCodec, TranscriptEvent, TranscriptSchema,
+    };
+
+    let mut schema = TranscriptSchema::new(b"symphony-v1");
+    for pi in public_inputs {
+        let bytes: Vec<u8> = pi.iter().flat_map(|v| v.to_le_bytes()).collect();
+        schema.push_event(TranscriptEvent::new(
+            tags::PUBLIC_INPUT,
+            b"public-input",
+            &bytes,
+        ));
+    }
+
+    schema.push_event(TranscriptEvent::new(
+        tags::R1CS_META,
+        b"r1cs-m",
+        &(r1cs.num_constraints as u64).to_le_bytes(),
+    ));
+    schema.push_event(TranscriptEvent::new(
+        tags::R1CS_META,
+        b"r1cs-n",
+        &(r1cs.num_variables as u64).to_le_bytes(),
+    ));
+    schema.push_event(TranscriptEvent::new(
+        tags::R1CS_META,
+        b"r1cs-pub",
+        &(r1cs.num_public as u64).to_le_bytes(),
+    ));
+
+    for comm in fs_commitments {
+        schema.push_event(TranscriptEvent::new(
+            tags::FS_COMMITMENT,
+            b"fs-commitment",
+            comm,
+        ));
+    }
+
+    CanonicalTranscriptCodec.encode(&schema)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ExplicitSoundnessAssumptions {
+    pub transcript_seed_checked: bool,
+    pub cp_relation_checked: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_explicit_soundness(
+    params: &SymphonyParams,
+    ajtai: &crate::commitment::AjtaiParams,
+    public_inputs: &[Vec<i64>],
+    original_witnesses: &[RingVector],
+    fs_commitments: &[Vec<u8>],
+    fs_openings: &[Vec<u8>],
+    fs_messages: &[Vec<u8>],
+    fold_inputs: &[crate::folding::digest::FoldInput],
+    folding_proof: &crate::folding::FoldingProof,
+    folded_instance: &FoldedInstance,
+    folded_witness: &crate::folding::FoldedWitness,
+    fs_root: &Digest32,
+    fold_root: &Digest32,
+    challenge_digest: &Digest32,
+    transcript_seed_digest: &Digest32,
+    r1cs: &R1CSMatrices,
+    assumptions: ExplicitSoundnessAssumptions,
+) -> bool {
+    macro_rules! fail {
+        ($msg:expr) => {{
+            if std::env::var("SYMPHONY_DEBUG_VERIFY").ok().as_deref() == Some("1") {
+                eprintln!("[verify_explicit_soundness] {}", $msg);
+            }
+            return false;
+        }};
+    }
+    use crate::fiat_shamir::hash_commitment::HashCommitment;
+    use crate::fiat_shamir::FSCommitment;
+    use crate::folding::digest::{
+        digest_challenges, digest_fold_inputs, digest_fs_commitments, digest_transcript_seed,
+        FoldInput,
+    };
+    use crate::r1cs::generalized::{check_hadamard, GeneralizedR1CSParams};
+    use crate::ring::RingElement;
+    use crate::transcript_core::{ChallengeDeriver, Sha256ChallengeDeriver};
+
+    if public_inputs.len() != original_witnesses.len()
+        || public_inputs.len() != folding_proof.commitments.len()
+        || (!assumptions.cp_relation_checked
+            && (fs_commitments.len() != fs_openings.len()
+                || fs_commitments.len() != fs_messages.len()
+                || fs_messages.len() != folding_proof.gr1cs_proofs.len()))
+    {
+        fail!("length-mismatch-top");
+    }
+
+    let scheme = HashCommitment::new();
+    let generalized_params = GeneralizedR1CSParams {
+        n_in: r1cs.num_public,
+        n_w: r1cs.num_variables.saturating_sub(r1cs.num_public),
+        ell_h: params.ell_h,
+        bound: params.b_input(),
+        matrices: r1cs.clone(),
+    };
+
+    if !assumptions.cp_relation_checked {
+        for (((commitment, public_input), witness_part), fold_input) in folding_proof
+            .commitments
+            .iter()
+            .zip(public_inputs.iter())
+            .zip(original_witnesses.iter())
+            .zip(fold_inputs.iter())
+        {
+            if public_input.len() != r1cs.num_public {
+                fail!("public-input-len");
+            }
+            if witness_part.len() + public_input.len() != ajtai.n {
+                fail!("full-witness-len");
+            }
+
+            let full_witness =
+                crate::commitment::opening::assemble_full_witness(public_input, witness_part);
+
+            if !crate::commitment::opening::verify_strict(
+                ajtai,
+                commitment,
+                &full_witness,
+                u128::MAX,
+            ) {
+                fail!("ajtai-open");
+            }
+
+            let public_ring: Vec<RingElement> = public_input
+                .iter()
+                .copied()
+                .map(RingElement::from_constant)
+                .collect();
+            if !check_hadamard(
+                &generalized_params,
+                &public_ring,
+                &witness_part.elements,
+                params.q,
+            ) {
+                fail!("hadamard-original");
+            }
+
+            if crate::snark::cp_snark::encode_commitment_to_bytes(commitment)
+                != fold_input.commitment_bytes
+                || &fold_input.public_input != public_input
+            {
+                fail!("fold-input-prefix");
+            }
+        }
+    }
+
+    if !assumptions.cp_relation_checked {
+        for ((commitment, opening_bytes), message) in fs_commitments
+            .iter()
+            .zip(fs_openings.iter())
+            .zip(fs_messages.iter())
+        {
+            let Ok(opening): Result<[u8; 32], _> = opening_bytes.as_slice().try_into() else {
+                fail!("fs-opening-bytes");
+            };
+            let Ok(commitment_arr): Result<[u8; 32], _> = commitment.as_slice().try_into() else {
+                fail!("fs-commitment-bytes");
+            };
+            if !scheme.verify(&commitment_arr, message, &opening) {
+                fail!("fs-commitment-open");
+            }
+        }
+
+        let expected_messages: Vec<Vec<u8>> = folding_proof
+            .gr1cs_proofs
+            .iter()
+            .map(crate::snark::cp_snark::encode_gr1cs_round_message)
+            .collect();
+        if expected_messages != fs_messages {
+            fail!("fs-messages-mismatch");
+        }
+    }
+
+    if !assumptions.cp_relation_checked {
+        if digest_fs_commitments(fs_commitments) != *fs_root {
+            fail!("fs-root");
+        }
+        if digest_fold_inputs(fold_inputs) != *fold_root {
+            fail!("fold-root");
+        }
+    }
+    if !assumptions.transcript_seed_checked
+        && digest_transcript_seed(
+            public_inputs,
+            r1cs.num_constraints,
+            r1cs.num_variables,
+            r1cs.num_public,
+        ) != *transcript_seed_digest
+    {
+        fail!("tsd");
+    }
+
+    let transcript_bytes = build_canonical_transcript_bytes(public_inputs, r1cs, fs_commitments);
+    let deriver = Sha256ChallengeDeriver;
+    let challenges =
+        deriver.derive_challenges(b"symphony-v1", &transcript_bytes, fs_commitments.len(), 32);
+    if !assumptions.cp_relation_checked && digest_challenges(&challenges) != *challenge_digest {
+        fail!("challenge-digest");
+    }
+
+    if !assumptions.cp_relation_checked {
+        let expected_fold_inputs: Vec<FoldInput> = folding_proof
+            .commitments
+            .iter()
+            .zip(public_inputs.iter())
+            .zip(folding_proof.gr1cs_proofs.iter())
+            .map(|((c, pi), gr1cs)| FoldInput {
+                commitment_bytes: crate::snark::cp_snark::encode_commitment_to_bytes(c),
+                public_input: pi.clone(),
+                eval_values_bytes: crate::snark::cp_snark::encode_gr1cs_round_message(gr1cs),
+            })
+            .collect();
+        if expected_fold_inputs != fold_inputs
+            || digest_fold_inputs(&expected_fold_inputs) != *fold_root
+        {
+            fail!("expected-fold-inputs");
+        }
+    }
+
+    let ext_ctx = crate::ring::extension::ExtFieldContext::new(params.q);
+    let rp = range_proof_params(params);
+    let verified_fold =
+        match crate::folding::verify(folding_proof, public_inputs, r1cs, ajtai, &rp, &ext_ctx) {
+            Ok(fi) => fi,
+            Err(_) => fail!("folding-verify"),
+        };
+
+    let q = params.q;
+    let (recomputed_public_input, recomputed_folded_witness) =
+        match crate::folding::recompute_folded_witness_state(
+            folding_proof,
+            public_inputs,
+            original_witnesses,
+            q,
+            &ajtai.ntt,
+        ) {
+            Ok(v) => v,
+            Err(_) => fail!("recomputed-folded-state"),
+        };
+
+    let recomputed_evals =
+        match crate::folding::recompute_folded_evaluation_values(folding_proof, q, &ajtai.ntt) {
+            Ok(v) => v,
+            Err(_) => fail!("recomputed-folded-evals"),
+        };
+
+    if recomputed_public_input != folded_instance.public_input
+        || recomputed_evals != folded_instance.evaluation_values
+        || &recomputed_folded_witness != folded_witness
+    {
+        fail!("recomputed-folded-mismatch");
+    }
+
+    if !crate::commitment::opening::verify_folded_opening(
+        ajtai,
+        &folded_instance.commitment,
+        &recomputed_public_input,
+        &recomputed_folded_witness,
+        u128::MAX,
+    ) {
+        fail!("folded-ajtai-open");
+    }
+
+    if crate::snark::cp_snark::encode_folded_instance(&verified_fold)
+        != crate::snark::cp_snark::encode_folded_instance(folded_instance)
+    {
+        fail!("verified-folded-instance");
+    }
+
+    true
 }
 
 /// The main prover: batch-proves many R1CS statements.
@@ -208,12 +620,11 @@ impl<S: BackendSnark> SymphonyProver<S> {
             ext_ctx.alpha,
             params.q,
         );
-        let cp_context = cp_snark::serialize_cp_context(&cp_r1cs, params.q, params.d as usize);
         let cp_relation = RelationDescription {
             num_instance_vars: cp_layout.num_instance,
             num_witness_vars: cp_layout.num_variables - cp_layout.num_instance,
             num_constraints: cp_r1cs.num_constraints,
-            context: Some(cp_context),
+            context: S::serialize_cp_context(&cp_r1cs, params.q, params.d),
         };
         let (cp_pk, cp_vk) = S::setup(&cp_relation);
 
@@ -268,6 +679,19 @@ impl<S: BackendSnark> SymphonyProver<S> {
             r1cs,
         )
     }
+
+    /// Generate a public-only v2 proof.
+    ///
+    /// Proving still constructs witness-side data internally to feed the CP
+    /// backend, but the returned proof drops that data before it crosses the
+    /// public API boundary.
+    pub fn prove_v2(
+        &self,
+        statements: &[(Commitment, Vec<i64>, RingVector)],
+        r1cs: &R1CSMatrices,
+    ) -> SymphonyProofV2<S> {
+        self.prove(statements, r1cs).to_v2()
+    }
 }
 
 impl<S: BackendSnark> SymphonyVerifier<S> {
@@ -299,13 +723,15 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
 
     /// Verify a Symphony proof against public inputs.
     ///
-    /// **O(1) + O(log N)** in the number of folding rounds k:
-    /// 1. Check transcript_seed_digest matches public inputs — O(|public_inputs|)
-    /// 2. Verify CP-SNARK (proves folding correctness) — O(log N) via backend
-    /// 3. Verify output SNARK (proves folded statement) — O(log N) via backend
+    /// Verification proceeds in three layers:
+    /// 1. check `transcript_seed_digest` against the supplied public inputs,
+    /// 2. verify the backend CP proof,
+    /// 3. verify the backend output proof and then run explicit witness-side
+    ///    consistency checks over the carried proof data.
     ///
-    /// All O(k) checks (FS commitment replay, challenge derivation, fold input
-    /// verification, commitment opening) are proven by the CP-SNARK.
+    /// The current verifier therefore includes an O(k) explicit soundness pass
+    /// over witness-side transcript/folding data in addition to backend proof
+    /// verification.
     ///
     /// Timing: when `SYMPHONY_TIMING=1` is set, prints per-stage durations to stderr.
     #[must_use]
@@ -315,7 +741,7 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         proof: &SymphonyProof<S>,
         r1cs: &R1CSMatrices,
     ) -> bool {
-        let timing = std::env::var("SYMPHONY_TIMING").map_or(false, |v| v == "1");
+        let timing = std::env::var("SYMPHONY_TIMING").is_ok_and(|v| v == "1");
         let t0 = std::time::Instant::now();
 
         // ---------------------------------------------------------------
@@ -352,6 +778,39 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         // ---------------------------------------------------------------
         let t_cp_start = std::time::Instant::now();
 
+        let typed_cp_public_instance = TypedCpPublicInstance {
+            fs_root: proof.fs_root,
+            fold_root: proof.fold_root,
+            challenge_digest: proof.challenge_digest,
+            transcript_seed_digest: proof.transcript_seed_digest,
+            x_folded: proof.folded_instance.clone(),
+            folded_output: proof.folded_output.clone(),
+        };
+        let typed_cp_witness = TypedCpWitnessBundle {
+            transcript_bytes: proof.witness_data.transcript_bytes.clone(),
+            fs_commitments: proof.witness_data.fs_commitments.clone(),
+            fs_openings: proof.witness_data.fs_openings.clone(),
+            fs_messages: proof.witness_data.fs_messages.clone(),
+            fold_inputs: proof.witness_data.fold_inputs.clone(),
+            original_witnesses: proof.witness_data.original_witnesses.clone(),
+            folded_output: proof.folded_instance.clone(),
+            folded_output_instance: proof.folded_output.clone(),
+            folded_output_witness: proof.witness_data.folded_output_witness.clone(),
+            folded_witness: proof.witness_data.folded_witness.clone(),
+            folding_proof: proof.witness_data.folding_proof.clone(),
+        };
+        if crate::cp_relation_core::CpRelation::check_with_algebra(
+            &typed_cp_public_instance,
+            &typed_cp_witness,
+            &self.ajtai,
+            r1cs,
+            self.params.b_input(),
+        )
+        .is_err()
+        {
+            return false;
+        }
+
         let cp_public_instance = cp_snark::CpPublicInstance {
             fold_root: proof.fold_root,
             fs_root: proof.fs_root,
@@ -361,7 +820,14 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         };
         let cp_instance =
             cp_snark::encode_cp_backend_instance(&cp_public_instance, &self.cp_layout);
-        if !S::verify(&self.cp_vk, &cp_instance, &proof.cp_proof) {
+        let cp_backend_ok = if let Some(ok) =
+            S::verify_typed_cp(&self.cp_vk, &typed_cp_public_instance, &proof.cp_proof)
+        {
+            ok
+        } else {
+            S::verify(&self.cp_vk, &cp_instance, &proof.cp_proof)
+        };
+        if !cp_backend_ok {
             return false;
         }
         let t_cp = t_cp_start.elapsed();
@@ -374,17 +840,55 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         let t_output_start = std::time::Instant::now();
         let snark_instance = cp_snark::encode_folded_instance(&proof.folded_instance);
 
-        let d = self.params.d as usize;
+        let d = self.params.d;
         let instance_elems = snark_instance.len() / 8;
         let total_flat = r1cs.num_variables * d;
 
-        let output_vk = if instance_elems <= total_flat {
-            let output_context = cp_snark::serialize_output_context(r1cs, self.params.q, d);
-            self.snark_vk_for_context(output_context)
-        } else {
-            self.snark_vk.clone()
-        };
-        if !S::verify(&output_vk, &snark_instance, &proof.snark_proof) {
+        let output_backend_ok =
+            if let Some(output_context) = S::serialize_output_context(r1cs, self.params.q, d) {
+                let output_vk = self.snark_vk_for_context(output_context);
+                if S::has_authoritative_typed_output() {
+                    S::verify_typed_output(&output_vk, &proof.folded_output, &proof.snark_proof)
+                        .unwrap_or(false)
+                } else if let Some(ok) =
+                    S::verify_typed_output(&output_vk, &proof.folded_output, &proof.snark_proof)
+                {
+                    ok
+                } else if instance_elems <= total_flat {
+                    S::verify(&output_vk, &snark_instance, &proof.snark_proof)
+                } else {
+                    S::verify(&self.snark_vk, &snark_instance, &proof.snark_proof)
+                }
+            } else {
+                S::verify(&self.snark_vk, &snark_instance, &proof.snark_proof)
+            };
+        if !output_backend_ok {
+            return false;
+        }
+
+        let explicit_ok = verify_explicit_soundness(
+            &self.params,
+            &self.ajtai,
+            public_inputs,
+            &proof.witness_data.original_witnesses,
+            &proof.witness_data.fs_commitments,
+            &proof.witness_data.fs_openings,
+            &proof.witness_data.fs_messages,
+            &proof.witness_data.fold_inputs,
+            &proof.witness_data.folding_proof,
+            &proof.folded_instance,
+            &proof.witness_data.folded_witness,
+            &proof.fs_root,
+            &proof.fold_root,
+            &proof.challenge_digest,
+            &proof.transcript_seed_digest,
+            r1cs,
+            ExplicitSoundnessAssumptions {
+                transcript_seed_checked: true,
+                cp_relation_checked: true,
+            },
+        );
+        if !explicit_ok {
             return false;
         }
         let t_output = t_output_start.elapsed();
@@ -401,6 +905,60 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         }
 
         true
+    }
+
+    /// Verify a public-only v2 proof.
+    ///
+    /// This path uses only public inputs, public FS commitments/digests, the
+    /// folded output instance, and backend proofs. It deliberately does not run
+    /// [`verify_explicit_soundness`] or inspect witness-side CP data. Backends
+    /// must explicitly advertise authoritative typed CP and output support.
+    #[must_use]
+    pub fn verify_v2(
+        &self,
+        public_inputs: &[Vec<i64>],
+        proof: &SymphonyProofV2<S>,
+        r1cs: &R1CSMatrices,
+    ) -> bool {
+        let expected_tsd = crate::folding::digest::digest_transcript_seed(
+            public_inputs,
+            r1cs.num_constraints,
+            r1cs.num_variables,
+            r1cs.num_public,
+        );
+        if expected_tsd != proof.transcript_seed_digest {
+            return false;
+        }
+
+        if crate::folding::digest::digest_fs_commitments(&proof.fs_commitments) != proof.fs_root {
+            return false;
+        }
+
+        if !S::has_authoritative_typed_cp() {
+            return false;
+        }
+        let typed_cp_public_instance = TypedCpPublicInstance {
+            fs_root: proof.fs_root,
+            fold_root: proof.fold_root,
+            challenge_digest: proof.challenge_digest,
+            transcript_seed_digest: proof.transcript_seed_digest,
+            x_folded: proof.folded_output.folded_instance.clone(),
+            folded_output: proof.folded_output.clone(),
+        };
+        if S::verify_typed_cp(&self.cp_vk, &typed_cp_public_instance, &proof.cp_proof) != Some(true)
+        {
+            return false;
+        }
+
+        if !S::has_authoritative_typed_output() {
+            return false;
+        }
+        let d = self.params.d;
+        let Some(output_context) = S::serialize_output_context(r1cs, self.params.q, d) else {
+            return false;
+        };
+        let output_vk = self.snark_vk_for_context(output_context);
+        S::verify_typed_output(&output_vk, &proof.folded_output, &proof.output_proof) == Some(true)
     }
 }
 

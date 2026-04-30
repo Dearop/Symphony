@@ -135,14 +135,22 @@ fn bench_whir_cp_scaling(c: &mut Criterion) {
         let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
 
         let proof = cp
-            .prove(&scheme, &message_refs, &openings, &commitments, b"", &relation)
+            .prove(
+                &scheme,
+                &message_refs,
+                &openings,
+                &commitments,
+                b"",
+                &relation,
+            )
             .expect("WHIR CPSnark prove must succeed");
         assert!(
-            cp.verify(&commitments, b"", &proof),
+            cp.verify(&scheme, &commitments, b"", &relation, &proof),
             "WHIR CPSnark verify must pass for witness_size={witness_size}"
         );
 
-        let proof_bytes = whir_proof_wire_bytes(&proof.backend_proof) + proof.transcript_digest.len();
+        let proof_bytes =
+            whir_proof_wire_bytes(&proof.backend_proof) + proof.transcript_digest.len();
         eprintln!(
             "[whir_cp_scaling] witness_size={witness_size} proof_bytes~={proof_bytes} \
              num_vars={} whir_rounds={}",
@@ -170,7 +178,13 @@ fn bench_whir_cp_scaling(c: &mut Criterion) {
 
         group.bench_function(BenchmarkId::new("verify", witness_size), |b| {
             b.iter(|| {
-                black_box(cp.verify(black_box(&commitments), black_box(b""), black_box(&proof)));
+                black_box(cp.verify(
+                    black_box(&scheme),
+                    black_box(&commitments),
+                    black_box(b""),
+                    black_box(&relation),
+                    black_box(&proof),
+                ));
             });
         });
     }
@@ -197,13 +211,15 @@ fn bench_pipeline_whir_vs_k(c: &mut Criterion) {
         let statements: Vec<(Commitment, Vec<i64>, RingVector)> = (0..k)
             .map(|_| make_snark_statement(&prover, &z, n_in))
             .collect();
-        let public_inputs: Vec<Vec<i64>> =
-            statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|(_, pi, _)| pi.clone()).collect();
 
         let proof = prover.prove(&statements, &r1cs);
         let verify_ok = verifier.verify(&public_inputs, &proof, &r1cs);
         eprintln!("[pipeline_whir_vs_k k={k}] verify={verify_ok}");
-        assert!(verify_ok, "pipeline_whir_vs_k produced invalid proof for k={k}");
+        assert!(
+            verify_ok,
+            "pipeline_whir_vs_k produced invalid proof for k={k}"
+        );
 
         group.throughput(Throughput::Elements(k as u64));
 
@@ -253,7 +269,10 @@ fn bench_modular_pipeline_whir_vs_k(c: &mut Criterion) {
             let proof = prover.prove(&statements, &r1cs);
             let verify_ok = verifier.verify(&public_inputs, &proof, &r1cs);
             eprintln!("[modular_pipeline k={k}] whir+whir verify={verify_ok}");
-            assert!(verify_ok, "modular_pipeline whir+whir produced invalid proof for k={k}");
+            assert!(
+                verify_ok,
+                "modular_pipeline whir+whir produced invalid proof for k={k}"
+            );
 
             group.throughput(Throughput::Elements(k as u64));
 
@@ -284,7 +303,10 @@ fn bench_modular_pipeline_whir_vs_k(c: &mut Criterion) {
             let proof = prover.prove(&statements, &r1cs);
             let verify_ok = verifier.verify(&public_inputs, &proof, &r1cs);
             eprintln!("[modular_pipeline k={k}] whir+sum verify={verify_ok}");
-            assert!(verify_ok, "modular_pipeline whir+sum produced invalid proof for k={k}");
+            assert!(
+                verify_ok,
+                "modular_pipeline whir+sum produced invalid proof for k={k}"
+            );
 
             group.bench_function(BenchmarkId::new("prove_whir_sum", k), |b| {
                 b.iter(|| {

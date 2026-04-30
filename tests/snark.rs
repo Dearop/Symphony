@@ -12,6 +12,28 @@ fn multi_r1cs() -> (R1CSMatrices, Vec<i64>) {
     common::multi_r1cs()
 }
 
+fn make_statement_raw(
+    z: &[i64],
+    n_in: usize,
+    ajtai: &symphony::commitment::AjtaiParams,
+) -> symphony::folding::FoldingStatement {
+    let full_ring = RingVector {
+        elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
+    };
+    let (c, _) = ajtai.commit(&full_ring);
+    let witness_part = RingVector {
+        elements: z[n_in..]
+            .iter()
+            .map(|&v| RingElement::from_constant(v))
+            .collect(),
+    };
+    symphony::folding::FoldingStatement {
+        commitment: c,
+        public_input: z[..n_in].to_vec(),
+        witness: witness_part,
+    }
+}
+
 // =========================================================================
 // CP-SNARK encoding
 // =========================================================================
@@ -19,7 +41,9 @@ mod cp_snark_encoding {
     use super::*;
     use symphony::fiat_shamir::transcript::Transcript;
     use symphony::folding::digest::{digest_challenges, digest_fold_inputs, Digest32, FoldInput};
-    use symphony::folding::FoldedInstance;
+    use symphony::folding::{
+        FoldedInstance, FoldedOutputInstance, FoldedOutputWitness, FoldedWitness,
+    };
     use symphony::ring::tensor::TensorElement;
     use symphony::snark::cp_snark;
 
@@ -30,6 +54,28 @@ mod cp_snark_encoding {
             },
             public_input: vec![RingElement::from_constant(0)],
             evaluation_values: vec![TensorElement::zero()],
+        }
+    }
+
+    fn dummy_folded_output_instance() -> FoldedOutputInstance {
+        FoldedOutputInstance {
+            folded_instance: dummy_folded_instance(),
+            linear_relation: symphony::rok::LinearRelation {
+                commitment: Commitment {
+                    value: RingVector::zero(1),
+                },
+                evaluation_point: vec![],
+                evaluation_values: [
+                    TensorElement::zero(),
+                    TensorElement::zero(),
+                    TensorElement::zero(),
+                ],
+            },
+            batched_relation: symphony::rok::BatchedLinearRelation {
+                commitments: vec![],
+                evaluation_point: vec![],
+                evaluation_values: vec![],
+            },
         }
     }
 
@@ -158,12 +204,50 @@ mod cp_snark_encoding {
 
     #[test]
     fn encode_folded_witness_nonempty() {
-        let fw = symphony::folding::FoldedWitness {
+        let fw = FoldedWitness {
             witness: RingVector::zero(3),
             monomial_vectors: vec![RingVector::zero(2)],
         };
         let encoded = cp_snark::encode_folded_witness(&fw);
         assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn encode_folded_output_instance_nonempty() {
+        let foi = dummy_folded_output_instance();
+        let encoded = cp_snark::encode_folded_output_instance(&foi);
+        assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn encode_folded_output_witness_nonempty() {
+        let fow = FoldedOutputWitness {
+            folded_witness: FoldedWitness {
+                witness: RingVector::zero(3),
+                monomial_vectors: vec![RingVector::zero(2)],
+            },
+        };
+        let encoded = cp_snark::encode_folded_output_witness(&fow);
+        assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn encode_folded_output_instance_is_binding() {
+        let mut a = dummy_folded_output_instance();
+        let mut b = dummy_folded_output_instance();
+        b.linear_relation.evaluation_values[0].data[0][0] = 7;
+        assert_ne!(
+            cp_snark::encode_folded_output_instance(&a),
+            cp_snark::encode_folded_output_instance(&b)
+        );
+
+        a.batched_relation
+            .evaluation_point
+            .push(symphony::ring::extension::ExtFieldElement { c0: 1, c1: 2 });
+        assert_ne!(
+            cp_snark::encode_folded_output_instance(&a),
+            cp_snark::encode_folded_output_instance(&dummy_folded_output_instance())
+        );
     }
 }
 
@@ -182,9 +266,9 @@ mod cp_r1cs_tests {
         assert_eq!(a.len(), D);
         assert_eq!(b.len(), D);
         let mut out = vec![0i64; D];
-        for k in 0..D {
-            for m in 0..D {
-                let prod = ((a[k] as i128 * b[m] as i128) % BB_P as i128) as i64;
+        for (k, &a_coeff) in a.iter().enumerate().take(D) {
+            for (m, &b_coeff) in b.iter().enumerate().take(D) {
+                let prod = ((a_coeff as i128 * b_coeff as i128) % BB_P as i128) as i64;
                 let idx = k + m;
                 if idx < D {
                     out[idx] = ((out[idx] as i128 + prod as i128) % BB_P as i128) as i64;
@@ -201,6 +285,16 @@ mod cp_r1cs_tests {
             *v = ((*v as i128).rem_euclid(BB_P as i128)) as i64;
         }
         out
+    }
+
+    fn centered_mod_bb(value: i128) -> i64 {
+        let p = BB_P as i128;
+        let reduced = value.rem_euclid(p);
+        if reduced > p / 2 {
+            (reduced - p) as i64
+        } else {
+            reduced as i64
+        }
     }
 
     /// Build a z-vector for the Phase A CP R1CS and check satisfaction.
@@ -301,6 +395,8 @@ mod cp_r1cs_tests {
             }
         }
 
+        cp_snark::fill_cp_wrap_range_bits(&mut z, &layout);
+
         // Verify R1CS satisfaction over BabyBear
         assert!(
             r1cs.is_satisfied_mod(&z, BB_P),
@@ -352,17 +448,17 @@ mod cp_r1cs_tests {
         }
 
         let mut c_star = vec![0i64; D];
-        for ell in 0..ell_np {
+        for prod in prod_c.iter().take(ell_np) {
             for j in 0..D {
-                c_star[j] = ((c_star[j] as i128 + prod_c[ell][0][j] as i128)
-                    .rem_euclid(BB_P as i128)) as i64;
+                c_star[j] =
+                    ((c_star[j] as i128 + prod[0][j] as i128).rem_euclid(BB_P as i128)) as i64;
             }
         }
         let mut x_star = vec![0i64; D];
-        for ell in 0..ell_np {
+        for prod in prod_x.iter().take(ell_np) {
             for j in 0..D {
-                x_star[j] = ((x_star[j] as i128 + prod_x[ell][0][j] as i128)
-                    .rem_euclid(BB_P as i128)) as i64;
+                x_star[j] =
+                    ((x_star[j] as i128 + prod[0][j] as i128).rem_euclid(BB_P as i128)) as i64;
             }
         }
 
@@ -383,6 +479,7 @@ mod cp_r1cs_tests {
                 z[layout.prod_x(ell, 0, j)] = prod_x[ell][0][j];
             }
         }
+        cp_snark::fill_cp_wrap_range_bits(&mut z, &layout);
 
         assert!(
             !r1cs.is_satisfied_mod(&z, BB_P),
@@ -391,10 +488,53 @@ mod cp_r1cs_tests {
     }
 
     #[test]
+    fn cp_r1cs_rejects_unbounded_phase_a_wrap_forgery() {
+        let q_modulus = 257u64;
+        let (r1cs, layout) = cp_snark::generate_cp_r1cs(1, 1, 0, 0, -1, q_modulus);
+
+        let mut beta = vec![0i64; D];
+        beta[0] = 1;
+        let mut c = vec![0i64; D];
+        c[0] = 7;
+        let prod = ring_mul_bb(&beta, &c);
+
+        let mut z = vec![0i64; layout.num_variables];
+        z[layout.off_one] = 1;
+        for j in 0..D {
+            z[layout.beta(0, j)] = beta[j];
+            z[layout.c(0, 0, j)] = c[j];
+            z[layout.prod_c(0, 0, j)] = prod[j];
+            z[layout.c_star(0, j)] = prod[j];
+        }
+        cp_snark::fill_cp_wrap_range_bits(&mut z, &layout);
+        assert!(r1cs.is_satisfied_mod(&z, BB_P));
+
+        let malicious_wrap = -(1i64 << 24);
+        z[layout.c_star(0, 0)] =
+            centered_mod_bb(prod[0] as i128 + q_modulus as i128 * malicious_wrap as i128);
+        z[layout.sum_wrap_c(0, 0)] = malicious_wrap;
+        for wrap_idx in 0..layout.num_wrap_vars {
+            for bit in 0..layout.wrap_bits_per_var {
+                z[layout.wrap_bit(wrap_idx, bit)] = 0;
+            }
+        }
+
+        assert!(
+            !r1cs.is_satisfied_mod(&z, BB_P),
+            "Phase-A range constraints must reject the free-wrap folded commitment forgery"
+        );
+
+        assert!(
+            -malicious_wrap >= (1i64 << layout.wrap_negative_bits),
+            "out-of-range Phase-A wraps must not be witness-encodable"
+        );
+    }
+
+    #[test]
     fn cp_r1cs_layout_sizes_are_reasonable() {
         let layout = CpR1csLayout::new(2, 2, 1, 4);
         // Instance: 1 (one) + 2*64 (c*) + 1*64 (x*) = 193
-        assert_eq!(layout.num_instance, 1 + 2 * D + 1 * D);
+        assert_eq!(layout.num_instance, 1 + 2 * D + D);
         // Total vars should include all witness + aux
         assert!(layout.num_variables > layout.num_instance);
     }
@@ -433,41 +573,6 @@ mod cp_r1cs_tests {
             ((a.0 as i128 * s as i128).rem_euclid(p)) as i64,
             ((a.1 as i128 * s as i128).rem_euclid(p)) as i64,
         )
-    }
-
-    /// Lagrange interpolation of a degree-3 polynomial at point r,
-    /// given evaluations at {0,1,2,3}.
-    fn lagrange_interp(evals: &[(i64, i64); 4], r: (i64, i64), qnr: i64) -> (i64, i64) {
-        let p = BB_P as i128;
-        let inv2 = symphony::snark::cp_snark::mod_pow(2, BB_P - 2, BB_P) as i64;
-        let inv6 = symphony::snark::cp_snark::mod_pow(6, BB_P - 2, BB_P) as i64;
-
-        // Newton forward differences
-        let d0 = evals[0];
-        let d1 = ext_sub(evals[1], evals[0]);
-        let d2 = ext_scale(
-            ext_add(ext_sub(evals[2], ext_scale(evals[1], 2)), evals[0]),
-            inv2,
-        );
-        let d3 = ext_scale(
-            ext_add(
-                ext_sub(
-                    ext_add(evals[3], ext_scale(evals[1], 3)),
-                    ext_scale(evals[2], 3),
-                ),
-                ext_scale(evals[0], ((-(1i128)).rem_euclid(p)) as i64),
-            ),
-            inv6,
-        );
-
-        // Horner: f(r) = d0 + r*(d1 + (r-1)*(d2 + (r-2)*d3))
-        let one = (1i64, 0i64);
-        let two = (2i64, 0i64);
-        let t3 = d3;
-        let t2 = ext_add(ext_mul(t3, ext_sub(r, two), qnr), d2);
-        let t1 = ext_add(ext_mul(t2, ext_sub(r, one), qnr), d1);
-        let t0 = ext_add(ext_mul(t1, r, qnr), d0);
-        t0
     }
 
     /// Fill a K-mul's aux variables in the z-vector: p1, p2, c0, c1
@@ -599,11 +704,9 @@ mod cp_r1cs_tests {
         }
 
         // eq(s, r_rev) evaluation
-        let mut eq_val: (i64, i64) = (0, 0);
         let mut factor_vals: Vec<(i64, i64)> = Vec::new();
-        for i in 0..had_nv {
+        for (i, &si) in seed.iter().enumerate().take(had_nv) {
             let ri = had_nv - 1 - i;
-            let si = seed[i];
             let ri_val = challenges[ri];
             let sr = ext_mul(si, ri_val, qnr);
             fill_ext_mul_aux(&mut z, aux(aux_idx, 0), si, ri_val, qnr);
@@ -614,10 +717,10 @@ mod cp_r1cs_tests {
         }
 
         // Chain multiply factors
-        eq_val = factor_vals[0];
-        for i in 1..had_nv {
-            fill_ext_mul_aux(&mut z, aux(aux_idx, 0), eq_val, factor_vals[i], qnr);
-            eq_val = ext_mul(eq_val, factor_vals[i], qnr);
+        let mut eq_val = factor_vals[0];
+        for &factor in factor_vals.iter().take(had_nv).skip(1) {
+            fill_ext_mul_aux(&mut z, aux(aux_idx, 0), eq_val, factor, qnr);
+            eq_val = ext_mul(eq_val, factor, qnr);
             aux_idx += 1;
         }
 
@@ -654,6 +757,8 @@ mod cp_r1cs_tests {
         aux_idx += 1;
 
         let _ = aux_idx;
+
+        cp_snark::fill_cp_wrap_range_bits(&mut z, &layout);
 
         assert!(
             r1cs.is_satisfied_mod(&z, BB_P),
@@ -712,7 +817,7 @@ mod modular_pipeline {
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -729,7 +834,7 @@ mod modular_pipeline {
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -747,7 +852,7 @@ mod modular_pipeline {
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -765,7 +870,7 @@ mod modular_pipeline {
 
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -915,6 +1020,121 @@ mod modular_sumcheck_backend {
     }
 }
 
+#[test]
+#[ignore] // slow: validates the direct Spartan typed folded-output path.
+fn spartan_typed_output_roundtrip_direct() {
+    use symphony::folding::{folded_output_instance_from_proof, folded_output_witness_from_folded};
+    use symphony::snark::spartan::{serialize, SpartanSnark};
+    use symphony::snark::{BackendSnark, RelationDescription};
+
+    let params = SymphonyParams {
+        q: Q,
+        d: D,
+        kappa: 2,
+        ell_np: 2,
+        ell_h: D,
+        lambda_pj: 4,
+        n_bar: 4,
+        m: 4,
+        b: 16,
+        k_cs: 1,
+        n_in: 1,
+        ntt: SymphonyParams::try_ntt(Q, D),
+    };
+    let (r1cs, z) = multi_r1cs();
+    let n_in = r1cs.num_public;
+    let ext_ctx = symphony::ring::extension::ExtFieldContext::new(Q);
+    let rp = symphony::rok::range_proof::RangeProofParams {
+        lambda_pj: params.lambda_pj,
+        ell_h: params.ell_h,
+        d_prime: (params.d as i64) - 2,
+        k_g: params.k_g(),
+        input_bound: params.b_input(),
+    };
+    let ajtai =
+        symphony::commitment::AjtaiParams::setup(params.kappa, params.n(), params.q, params.ntt());
+
+    let s1 = make_statement_raw(&z, n_in, &ajtai);
+    let s2 = make_statement_raw(&z, n_in, &ajtai);
+    let fold_statements = vec![s1, s2];
+    let (folding_proof, folded_witness, _) =
+        symphony::folding::prove(&fold_statements, &r1cs, &ajtai, &rp, &ext_ctx);
+
+    let folded_output = folded_output_instance_from_proof(&folding_proof);
+    let folded_output_witness = folded_output_witness_from_folded(&folded_witness);
+    assert_eq!(
+        folded_output.linear_relation.commitment,
+        folded_output.folded_instance.commitment
+    );
+    assert_eq!(
+        folded_output.linear_relation.evaluation_values.to_vec(),
+        folded_output.folded_instance.evaluation_values
+    );
+
+    let ctx = serialize::serialize_context(&serialize::SpartanContext {
+        r1cs: r1cs.clone(),
+        q: params.q,
+        d: params.d,
+        n_pub: r1cs.num_public,
+        is_output_snark: true,
+    });
+    let relation = RelationDescription {
+        num_instance_vars: params.n(),
+        num_witness_vars: params.n(),
+        num_constraints: params.m,
+        context: Some(ctx),
+    };
+    let (pk, vk) = SpartanSnark::setup(&relation);
+
+    let proof = SpartanSnark::prove_typed_output(&pk, &folded_output, &folded_output_witness)
+        .expect("typed output proof");
+
+    assert!(
+        SpartanSnark::verify_typed_output(&vk, &folded_output, &proof).expect("typed verify path")
+    );
+
+    let legacy_instance =
+        symphony::snark::cp_snark::encode_folded_instance(&folded_output.folded_instance);
+    let legacy_witness =
+        symphony::snark::cp_snark::encode_folded_witness(&folded_output_witness.folded_witness);
+    let legacy_proof = SpartanSnark::prove(&pk, &legacy_instance, &legacy_witness);
+    assert!(
+        !SpartanSnark::verify_typed_output(&vk, &folded_output, &legacy_proof)
+            .expect("typed verify path")
+    );
+
+    let mut invalid_relation = folded_output.clone();
+    invalid_relation.linear_relation.evaluation_values[0].data[0][0] += 1;
+    assert!(
+        SpartanSnark::prove_typed_output(&pk, &invalid_relation, &folded_output_witness).is_none()
+    );
+
+    let mut invalid_witness = folded_output_witness.clone();
+    invalid_witness.folded_witness.witness.elements[0].coeffs[0] += 1;
+    assert!(SpartanSnark::prove_typed_output(&pk, &folded_output, &invalid_witness).is_none());
+
+    let mut tampered = folded_output.clone();
+    tampered.linear_relation.evaluation_values[0].data[0][0] += 1;
+    assert!(!SpartanSnark::verify_typed_output(&vk, &tampered, &proof).expect("typed verify path"));
+
+    let mut missing_summary = proof.clone();
+    missing_summary.typed_output_witness_summary = None;
+    assert!(
+        !SpartanSnark::verify_typed_output(&vk, &folded_output, &missing_summary)
+            .expect("typed verify path")
+    );
+
+    let mut bad_summary = proof.clone();
+    bad_summary
+        .typed_output_witness_summary
+        .as_mut()
+        .expect("summary present")
+        .folded_witness_len += 1;
+    assert!(
+        !SpartanSnark::verify_typed_output(&vk, &folded_output, &bad_summary)
+            .expect("typed verify path")
+    );
+}
 mod modular_spartan_backend {
     use super::*;
     use symphony::proof_orchestrator::Prover;
@@ -961,7 +1181,7 @@ mod modular_spartan_backend {
         let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -976,7 +1196,7 @@ mod modular_spartan_backend {
         let (prover, verifier) = Prover::<SpartanSnark, SpartanSnark>::setup(params());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -1012,11 +1232,11 @@ mod modular_spartan_backend {
 
 #[cfg(feature = "whir")]
 mod modular_whir_backend {
-    use symphony::folding_core::{FoldSemantics, Statement, SymphonyFoldSemantics};
-    use symphony::snark::cp_snark;
     use super::*;
     use p3_field::PrimeCharacteristicRing;
+    use symphony::folding_core::{FoldSemantics, Statement, SymphonyFoldSemantics};
     use symphony::proof_orchestrator::Prover;
+    use symphony::snark::cp_snark;
     use symphony::snark::whir::WhirSnark;
 
     fn params() -> SymphonyParams {
@@ -1060,7 +1280,7 @@ mod modular_whir_backend {
         let (prover, _verifier) = Prover::<WhirSnark, WhirSnark>::setup(params.clone());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -1109,6 +1329,7 @@ mod modular_whir_backend {
             challenge_digest: [0u8; 32],
             transcript_seed_digest: [0u8; 32],
             x_folded: folding_proof.folded_instance.clone(),
+            folded_output: symphony::folding::folded_output_instance_from_proof(&folding_proof),
         };
         let cp_instance = symphony::proof_orchestrator::encode_cp_backend_instance(
             &cp_public_instance,
@@ -1145,7 +1366,7 @@ mod modular_whir_backend {
         let (prover, _verifier) = Prover::<WhirSnark, WhirSnark>::setup(params.clone());
         let (r1cs, z) = multi_r1cs();
         let n_in = r1cs.num_public;
-        let statements = vec![
+        let statements = [
             make_statement(&prover, &z, n_in),
             make_statement(&prover, &z, n_in),
         ];
@@ -1187,6 +1408,7 @@ mod modular_whir_backend {
             challenge_digest: [0u8; 32],
             transcript_seed_digest: [0u8; 32],
             x_folded: folding_proof.folded_instance.clone(),
+            folded_output: symphony::folding::folded_output_instance_from_proof(&folding_proof),
         };
 
         let cp_instance = symphony::proof_orchestrator::encode_cp_backend_instance(
@@ -1242,9 +1464,9 @@ mod modular_whir_backend {
             }
             let p = 2013265921i128;
             let mut exp = vec![0i64; d];
-            for i in 0..d {
-                for j in 0..d {
-                    let prod = beta0[i] as i128 * c00[j] as i128;
+            for (i, &beta_i) in beta0.iter().enumerate().take(d) {
+                for (j, &c_j) in c00.iter().enumerate().take(d) {
+                    let prod = beta_i as i128 * c_j as i128;
                     let idx = i + j;
                     if idx < d {
                         exp[idx] = ((exp[idx] as i128 + prod).rem_euclid(p)) as i64;
@@ -1259,14 +1481,19 @@ mod modular_whir_backend {
                 .zip(bz.iter().zip(cz.iter()))
                 .enumerate()
                 .find(|(_, (&a, (&b, &c)))| {
-                    let lhs = symphony::ring::arith::centered_mod(a as i128 * b as i128, 2013265921);
+                    let lhs =
+                        symphony::ring::arith::centered_mod(a as i128 * b as i128, 2013265921);
                     lhs != c
                 })
             {
                 let lhs = symphony::ring::arith::centered_mod(a as i128 * b as i128, 2013265921);
                 let phase_a_rows = params.ell_np * (params.kappa + params.n_in) * params.d as usize
                     + (params.kappa + params.n_in) * params.d as usize;
-                let phase = if row < phase_a_rows { "phase-a" } else { "phase-b" };
+                let phase = if row < phase_a_rows {
+                    "phase-a"
+                } else {
+                    "phase-b"
+                };
                 panic!(
                     "Modular+WHIR CP witness does not satisfy generated CP-R1CS: first_row={row} ({phase}) az={a} bz={b} lhs={lhs} cz={c}; beta0[:4]={:?} c00[:4]={:?} prod00[:4]={:?} exp[:4]={:?}"
                     , &beta0[..4], &c00[..4], &prod00[..4], &exp[..4]

@@ -3,9 +3,9 @@
 //! Since d = 64, this is a small fixed-size NTT. The prime q must satisfy
 //! q ≡ 1 (mod 2d) for the existence of primitive 2d-th roots of unity.
 
+use super::arith::{mod_inv, mod_pow};
 use crate::params::D;
 use crate::ring::RingElement;
-use super::arith::{mod_pow, mod_inv};
 
 /// Precomputed NTT tables for a specific modulus q.
 #[derive(Debug, Clone)]

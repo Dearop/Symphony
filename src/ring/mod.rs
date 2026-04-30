@@ -137,7 +137,7 @@ impl RingElement {
 }
 
 /// A vector of ring elements (e.g., commitment output, witness vector).
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct RingVector {
     pub elements: Vec<RingElement>,
 }

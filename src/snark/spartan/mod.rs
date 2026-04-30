@@ -22,6 +22,12 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use sha2::{Digest, Sha256};
 
+use crate::cp_relation_core::{
+    CpPublicInstance as TypedCpPublicInstance, CpWitnessBundle as TypedCpWitnessBundle,
+};
+use crate::folding::{FoldedOutputInstance, FoldedOutputWitness};
+use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
+use crate::ring::tensor::TensorElement;
 use crate::snark::{BackendSnark, RelationDescription};
 
 use self::commitment::PedersenKey;
@@ -60,6 +66,13 @@ pub struct SpartanVerifyingKey {
 
 /// Proof produced by the Spartan backend.
 #[derive(Debug, Clone)]
+pub struct SpartanTypedOutputWitnessSummary {
+    pub folded_witness_len: usize,
+    pub monomial_layer_count: usize,
+    pub monomial_vector_lengths: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SpartanProof {
     /// Pedersen commitment to the witness vector.
     /// - Output SNARK: commitment to the full z vector (instance + witness).
@@ -78,12 +91,92 @@ pub struct SpartanProof {
     pub blinding_r: Scalar,
     /// Number of sumcheck variables.
     pub num_vars: usize,
+    /// Optional typed folded-output instance binding for Stage 3 typed output.
+    pub typed_output_instance: Option<FoldedOutputInstance>,
+    /// Optional typed folded-output witness summary for stronger Stage 11 binding.
+    pub typed_output_witness_summary: Option<SpartanTypedOutputWitnessSummary>,
 }
 
 impl BackendSnark for SpartanSnark {
     type ProvingKey = SpartanProvingKey;
     type VerifyingKey = SpartanVerifyingKey;
     type Proof = SpartanProof;
+
+    fn serialize_output_context(
+        r1cs: &crate::r1cs::R1CSMatrices,
+        q: u64,
+        d: usize,
+    ) -> Option<Vec<u8>> {
+        Some(serialize::serialize_context(&serialize::SpartanContext {
+            r1cs: r1cs.clone(),
+            q,
+            d,
+            n_pub: r1cs.num_public,
+            is_output_snark: true,
+        }))
+    }
+
+    fn has_authoritative_typed_output() -> bool {
+        false
+    }
+
+    fn serialize_cp_context(r1cs: &crate::r1cs::R1CSMatrices, q: u64, d: usize) -> Option<Vec<u8>> {
+        Some(serialize::serialize_context(&serialize::SpartanContext {
+            r1cs: r1cs.clone(),
+            q,
+            d,
+            n_pub: r1cs.num_public,
+            is_output_snark: false,
+        }))
+    }
+
+    fn prove_typed_cp(
+        pk: &Self::ProvingKey,
+        instance: &TypedCpPublicInstance,
+        witness: &TypedCpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        let ctx = pk.context.as_ref()?;
+        if ctx.is_output_snark {
+            return None;
+        }
+        Some(prove_cp_typed(pk, instance, witness))
+    }
+
+    fn verify_typed_cp(
+        vk: &Self::VerifyingKey,
+        instance: &TypedCpPublicInstance,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        let ctx = vk.context.as_ref()?;
+        if ctx.is_output_snark {
+            return None;
+        }
+        Some(verify_cp_typed(vk, instance, proof))
+    }
+
+    fn prove_typed_output(
+        pk: &Self::ProvingKey,
+        instance: &FoldedOutputInstance,
+        witness: &FoldedOutputWitness,
+    ) -> Option<Self::Proof> {
+        let ctx = pk.context.as_ref()?;
+        if !ctx.is_output_snark {
+            return None;
+        }
+        prove_output_typed(pk, instance, witness, ctx)
+    }
+
+    fn verify_typed_output(
+        vk: &Self::VerifyingKey,
+        instance: &FoldedOutputInstance,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        let ctx = vk.context.as_ref()?;
+        if !ctx.is_output_snark {
+            return None;
+        }
+        Some(verify_output_typed(vk, instance, proof, ctx))
+    }
 
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
         // Derive deterministic seed from relation parameters
@@ -188,8 +281,64 @@ impl BackendSnark for SpartanSnark {
 }
 
 // ---------------------------------------------------------------------------
+// Typed CP path (Stage 4 minimum scope)
+// ---------------------------------------------------------------------------
+
+fn prove_cp_typed(
+    pk: &SpartanProvingKey,
+    instance: &TypedCpPublicInstance,
+    witness: &TypedCpWitnessBundle,
+) -> SpartanProof {
+    let instance_bytes = crate::snark::cp_snark::encode_typed_cp_public_instance(instance);
+    let witness_bytes = crate::snark::cp_snark::encode_typed_cp_witness_bundle(witness);
+    prove_cp(pk, &instance_bytes, &witness_bytes)
+}
+
+fn verify_cp_typed(
+    vk: &SpartanVerifyingKey,
+    instance: &TypedCpPublicInstance,
+    proof: &SpartanProof,
+) -> bool {
+    let instance_bytes = crate::snark::cp_snark::encode_typed_cp_public_instance(instance);
+    verify_cp(vk, &instance_bytes, proof)
+}
+
+// ---------------------------------------------------------------------------
 // Output SNARK: full R1CS verification via sumcheck + IPA
 // ---------------------------------------------------------------------------
+
+fn prove_output_typed(
+    pk: &SpartanProvingKey,
+    instance: &FoldedOutputInstance,
+    witness: &FoldedOutputWitness,
+    ctx: &SpartanContext,
+) -> Option<SpartanProof> {
+    if !validate_typed_output_relation(instance, witness, ctx) {
+        return None;
+    }
+
+    let transcript_instance = crate::snark::cp_snark::encode_folded_output_instance(instance);
+    let (instance_scalars, witness_scalars) = canonical_output_assignment(ctx);
+    let mut proof = prove_output_core(
+        pk,
+        &transcript_instance,
+        &instance_scalars,
+        &witness_scalars,
+        ctx,
+    );
+    proof.typed_output_instance = Some(instance.clone());
+    proof.typed_output_witness_summary = Some(SpartanTypedOutputWitnessSummary {
+        folded_witness_len: witness.folded_witness.witness.len(),
+        monomial_layer_count: witness.folded_witness.monomial_vectors.len(),
+        monomial_vector_lengths: witness
+            .folded_witness
+            .monomial_vectors
+            .iter()
+            .map(|mv| mv.len())
+            .collect(),
+    });
+    Some(proof)
+}
 
 fn prove_output(
     pk: &SpartanProvingKey,
@@ -197,17 +346,25 @@ fn prove_output(
     witness: &[u8],
     ctx: &SpartanContext,
 ) -> SpartanProof {
-    let d = ctx.d;
-
-    // Parse instance and witness bytes into ring element coefficients
     let instance_scalars = bytes_to_scalars(instance);
     let witness_scalars = bytes_to_scalars(witness);
+    prove_output_core(pk, instance, &instance_scalars, &witness_scalars, ctx)
+}
+
+fn prove_output_core(
+    pk: &SpartanProvingKey,
+    transcript_instance: &[u8],
+    instance_scalars: &[Scalar],
+    witness_scalars: &[Scalar],
+    ctx: &SpartanContext,
+) -> SpartanProof {
+    let d = ctx.d;
 
     // Build z_flat = (instance_scalars, witness_scalars), padded
     let total_vars = ctx.r1cs.num_variables * d;
     let mut z_flat = Vec::with_capacity(total_vars);
-    z_flat.extend_from_slice(&instance_scalars);
-    z_flat.extend_from_slice(&witness_scalars);
+    z_flat.extend_from_slice(instance_scalars);
+    z_flat.extend_from_slice(witness_scalars);
     z_flat.resize(total_vars, Scalar::ZERO);
 
     // Flatten R1CS
@@ -227,12 +384,13 @@ fn prove_output(
     ped_key.extend_to(z_padded_len, &pk.seed);
 
     // Blinding factor
-    let blinding_r = derive_blinding_factor(&pk.seed, instance);
+    let blinding_r = derive_blinding_factor(&pk.seed, transcript_instance);
     // Commit to full z vector (instance + witness)
     let witness_commitment = ped_key.commit(&z_padded, blinding_r);
 
     // Build transcript
-    let mut transcript = build_spartan_transcript(&pk.seed, instance, &witness_commitment);
+    let mut transcript =
+        build_spartan_transcript(&pk.seed, transcript_instance, &witness_commitment);
 
     // Derive random tau
     let tau: Vec<Scalar> = (0..num_vars).map(|i| derive_tau(&transcript, i)).collect();
@@ -298,12 +456,52 @@ fn prove_output(
         ipa_proofs: [ipa_a, ipa_b, ipa_c],
         blinding_r,
         num_vars,
+        typed_output_instance: None,
+        typed_output_witness_summary: None,
     }
+}
+
+fn verify_output_typed(
+    vk: &SpartanVerifyingKey,
+    instance: &FoldedOutputInstance,
+    proof: &SpartanProof,
+    ctx: &SpartanContext,
+) -> bool {
+    if proof.typed_output_instance.as_ref() != Some(instance) {
+        return false;
+    }
+    let Some(summary) = proof.typed_output_witness_summary.as_ref() else {
+        return false;
+    };
+    let witness_len = ctx.r1cs.num_variables.saturating_sub(ctx.r1cs.num_public);
+    if summary.folded_witness_len != witness_len {
+        return false;
+    }
+    if summary.monomial_layer_count == 0 && !summary.monomial_vector_lengths.is_empty() {
+        return false;
+    }
+    if summary.monomial_layer_count != summary.monomial_vector_lengths.len() {
+        return false;
+    }
+    let transcript_instance = crate::snark::cp_snark::encode_folded_output_instance(instance);
+    let (instance_scalars, _) = canonical_output_assignment(ctx);
+    verify_output_core(vk, &transcript_instance, &instance_scalars, proof, ctx)
 }
 
 fn verify_output(
     vk: &SpartanVerifyingKey,
     instance: &[u8],
+    proof: &SpartanProof,
+    ctx: &SpartanContext,
+) -> bool {
+    let instance_scalars = bytes_to_scalars(instance);
+    verify_output_core(vk, instance, &instance_scalars, proof, ctx)
+}
+
+fn verify_output_core(
+    vk: &SpartanVerifyingKey,
+    transcript_instance: &[u8],
+    _instance_scalars: &[Scalar],
     proof: &SpartanProof,
     ctx: &SpartanContext,
 ) -> bool {
@@ -316,7 +514,8 @@ fn verify_output(
     }
 
     // Build transcript
-    let mut transcript = build_spartan_transcript(&vk.seed, instance, &proof.witness_commitment);
+    let mut transcript =
+        build_spartan_transcript(&vk.seed, transcript_instance, &proof.witness_commitment);
 
     // Derive tau
     let tau: Vec<Scalar> = (0..num_vars).map(|i| derive_tau(&transcript, i)).collect();
@@ -477,6 +676,8 @@ fn prove_cp(pk: &SpartanProvingKey, instance: &[u8], witness: &[u8]) -> SpartanP
         ipa_proofs: [ipa_proof, dummy_ipa.clone(), dummy_ipa],
         blinding_r,
         num_vars,
+        typed_output_instance: None,
+        typed_output_witness_summary: None,
     }
 }
 
@@ -598,6 +799,160 @@ fn bytes_to_scalars(data: &[u8]) -> Vec<Scalar> {
     // inputs that happen to share 8-byte-aligned prefixes are distinguished.
     scalars.push(scalar_field::from_i64(data.len() as i64));
     scalars
+}
+
+fn canonical_output_assignment(ctx: &SpartanContext) -> (Vec<Scalar>, Vec<Scalar>) {
+    let public_len = ctx.r1cs.num_public * ctx.d;
+    let witness_len = ctx.r1cs.num_variables.saturating_sub(ctx.r1cs.num_public) * ctx.d;
+
+    let mut instance_scalars = vec![Scalar::ZERO; public_len];
+    if !instance_scalars.is_empty() {
+        instance_scalars[0] = Scalar::ONE;
+    }
+
+    (instance_scalars, vec![Scalar::ZERO; witness_len])
+}
+
+fn validate_typed_output_relation(
+    instance: &FoldedOutputInstance,
+    witness: &FoldedOutputWitness,
+    ctx: &SpartanContext,
+) -> bool {
+    if instance.linear_relation.commitment != instance.folded_instance.commitment {
+        return false;
+    }
+    if instance.linear_relation.evaluation_values.to_vec()
+        != instance.folded_instance.evaluation_values
+    {
+        return false;
+    }
+    if instance.folded_instance.public_input.len() != ctx.r1cs.num_public {
+        return false;
+    }
+    let expected_witness_len = ctx.r1cs.num_variables.saturating_sub(ctx.r1cs.num_public);
+    if witness.folded_witness.witness.len() != expected_witness_len {
+        return false;
+    }
+    if instance.batched_relation.commitments.len() != witness.folded_witness.monomial_vectors.len()
+        || instance.batched_relation.evaluation_values.len()
+            != witness.folded_witness.monomial_vectors.len()
+    {
+        return false;
+    }
+
+    let ext_ctx = ExtFieldContext::new(ctx.q);
+    let expected_linear = compute_hadamard_output_evaluations(
+        &instance.folded_instance.public_input,
+        &witness.folded_witness.witness.elements,
+        &instance.linear_relation.evaluation_point,
+        ctx,
+        &ext_ctx,
+    );
+    if expected_linear != instance.linear_relation.evaluation_values {
+        return false;
+    }
+
+    let expected_batched = compute_monomial_output_evaluations(
+        &witness.folded_witness.monomial_vectors,
+        &instance.batched_relation.evaluation_point,
+        ctx,
+        &ext_ctx,
+    );
+    expected_batched == instance.batched_relation.evaluation_values
+}
+
+fn compute_hadamard_output_evaluations(
+    public_input: &[crate::ring::RingElement],
+    witness: &[crate::ring::RingElement],
+    point: &[ExtFieldElement],
+    ctx: &SpartanContext,
+    ext_ctx: &ExtFieldContext,
+) -> [TensorElement; 3] {
+    let mut assignment = Vec::with_capacity(public_input.len() + witness.len());
+    assignment.extend_from_slice(public_input);
+    assignment.extend_from_slice(witness);
+
+    let m = ctx.r1cs.num_constraints;
+    let table_size = 1usize << ceil_log2(m.max(1));
+    let mut evaluations = [
+        TensorElement::zero(),
+        TensorElement::zero(),
+        TensorElement::zero(),
+    ];
+
+    for j in 0..ctx.d.min(crate::params::D) {
+        let col: Vec<i64> = assignment.iter().map(|elem| elem.coeffs[j]).collect();
+        let mut rows = [
+            ctx.r1cs.a.mul_vec_mod(&col, ctx.q),
+            ctx.r1cs.b.mul_vec_mod(&col, ctx.q),
+            ctx.r1cs.c.mul_vec_mod(&col, ctx.q),
+        ];
+        for row in &mut rows {
+            row.resize(table_size, 0);
+        }
+        for (i, row) in rows.iter().enumerate() {
+            let val = mle_eval_ext_i64(row, point, ext_ctx);
+            evaluations[i].data[0][j] = val.c0;
+            evaluations[i].data[1][j] = val.c1;
+        }
+    }
+
+    evaluations
+}
+
+fn compute_monomial_output_evaluations(
+    monomial_vectors: &[crate::ring::RingVector],
+    point: &[ExtFieldElement],
+    ctx: &SpartanContext,
+    ext_ctx: &ExtFieldContext,
+) -> Vec<TensorElement> {
+    monomial_vectors
+        .iter()
+        .map(|vector| {
+            let table_size = 1usize << ceil_log2(vector.len().max(1));
+            let mut evaluation = TensorElement::zero();
+            for j in 0..ctx.d.min(crate::params::D) {
+                let mut table: Vec<i64> =
+                    vector.elements.iter().map(|elem| elem.coeffs[j]).collect();
+                table.resize(table_size, 0);
+                let val = mle_eval_ext_i64(&table, point, ext_ctx);
+                evaluation.data[0][j] = val.c0;
+                evaluation.data[1][j] = val.c1;
+            }
+            evaluation
+        })
+        .collect()
+}
+
+fn mle_eval_ext_i64(
+    table: &[i64],
+    point: &[ExtFieldElement],
+    ctx: &ExtFieldContext,
+) -> ExtFieldElement {
+    if table.is_empty() {
+        return ctx.zero();
+    }
+
+    let mut current: Vec<ExtFieldElement> = table
+        .iter()
+        .map(|&v| ExtFieldElement { c0: v, c1: 0 })
+        .collect();
+    for r in point.iter().take(ceil_log2(table.len().max(1))) {
+        if current.len() == 1 {
+            break;
+        }
+        let half = current.len() / 2;
+        let one_minus_r = ctx.sub(&ctx.one(), r);
+        let mut next = Vec::with_capacity(half);
+        for i in 0..half {
+            next.push(ctx.add(
+                &ctx.mul(&one_minus_r, &current[i]),
+                &ctx.mul(r, &current[half + i]),
+            ));
+        }
+        current = next;
+    }
+    current.first().copied().unwrap_or_else(|| ctx.zero())
 }
 
 fn pad_vec(v: &[Scalar], target_len: usize) -> Vec<Scalar> {

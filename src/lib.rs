@@ -48,7 +48,9 @@ pub use cp_relation_core::{CpPublicInstance as ModularCpPublicInstance, CpWitnes
 pub use cp_snark::{CPProof, CPSnark, CommittedRelation};
 pub use fiat_shamir::hash_commitment::HashCommitment;
 pub use params::SymphonyParams;
-pub use proof_orchestrator::{ProofBundle, Prover as ModularProver, Verifier as ModularVerifier};
+pub use proof_orchestrator::{
+    ProofBundle, ProofBundleV2, Prover as ModularProver, Verifier as ModularVerifier,
+};
 pub use r1cs::R1CSMatrices;
 pub use snark::spartan::{SpartanProof, SpartanProvingKey, SpartanSnark, SpartanVerifyingKey};
 pub use snark::sumcheck_snark::{
@@ -56,5 +58,5 @@ pub use snark::sumcheck_snark::{
 };
 #[cfg(feature = "whir")]
 pub use snark::whir::{WhirProof, WhirProvingKey, WhirSnark, WhirVerifyingKey};
-pub use snark::{BackendSnark, SymphonyProof, SymphonyProver, SymphonyVerifier};
+pub use snark::{BackendSnark, SymphonyProof, SymphonyProofV2, SymphonyProver, SymphonyVerifier};
 pub use snark::{DummySnark, DummySymphonyProof, DummySymphonyProver, DummySymphonyVerifier};

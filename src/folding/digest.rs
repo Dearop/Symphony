@@ -13,7 +13,7 @@ pub type Digest32 = [u8; 32];
 /// Instead of exposing all fold inputs publicly, the prover computes
 /// `fold_root = digest_fold_inputs(inputs)` and the CP witness proves
 /// consistency.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FoldInput {
     /// Serialized commitment (from `encode_commitment_to_bytes`).
     pub commitment_bytes: Vec<u8>,

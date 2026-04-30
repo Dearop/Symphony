@@ -672,8 +672,10 @@ MSIS parameters are set for 117-bit security using the lattice estimator. Both |
 3. **Concrete probability analysis for folded witness norms** is left to future work (Remark 4.2). The worst-case bound (Eq. 50) is conservative.
 4. **Two-layer folding** requires the structured MSIS matrix assumption (Eq. 56), which is slightly stronger than standard MSIS.
 5. **One-pass streaming** for the non-recursive setting remains an open problem. Current algorithm requires 2 + log log(n) passes.
-6. **Output SNARK inner-product reduction** (WHIR backend): The output SNARK path verifies that the sumcheck final evaluation is consistent with the WHIR-committed polynomial, but does not yet perform the full inner-product reduction to independently verify Az(r*), Bz(r*), Cz(r*) from z(r*) alone (see `verify_output` TODO comment). This is a follow-up enhancement.
-7. **WHIR security level** is currently set to 32 bits for testing. Production deployment should increase this.
+6. **WHIR output binding is implemented for the R1CS backend path.** The output verifier now checks that the claimed `Az(r*)`, `Bz(r*)`, and `Cz(r*)` values are derived from the same WHIR-committed assignment polynomial `z` using three sparse linear-binding sumchecks plus a constant number of WHIR openings. This keeps the verifier on the intended verifier-centric path from the WHIR/Symphony cost model, while pushing witness-sized work to the prover.
+7. **CP-R1CS q-wrap status.** Phase-A folded commitment/public-input q-wraps are range-constrained in the WHIR CP-R1CS encoding so they cannot be used as free BabyBear slack for forged folded outputs. Phase-B embedded Hadamard rows still use legacy per-row q-wraps and are not an authoritative typed CP proof by themselves.
+8. **Typed public-only CP authority remains open.** The v2 public-only verifier intentionally fails closed until a backend proves the full typed CP relation, including transcript reconstruction, commitment-opening consistency, fold replay, challenge digest binding, folded-output consistency, original witness validity, and folded witness recomputation. The current validated WHIR path is the R1CS/WHIR backend plus mandatory legacy explicit CP checks, not a fully authoritative typed CP verifier.
+9. **WHIR security level** defaults to 100 bits. Tests that need faster parameters should opt into explicit test-only settings rather than weakening the default backend configuration.
 
 ---
 

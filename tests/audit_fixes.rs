@@ -31,7 +31,10 @@ fn c1_setup_calls_validate() {
     let result = std::panic::catch_unwind(|| {
         symphony::snark::SymphonyProver::<DummySnark>::setup(bad_params);
     });
-    assert!(result.is_err(), "setup() should panic when d != D (C1: validate called in setup)");
+    assert!(
+        result.is_err(),
+        "setup() should panic when d != D (C1: validate called in setup)"
+    );
 }
 
 // =========================================================================
@@ -76,7 +79,10 @@ fn c2_validate_rejects_q_not_1_mod_2d() {
         ntt: SymphonyParams::try_ntt(127, D),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| params.validate()));
-    assert!(result.is_err(), "validate should reject q not congruent to 1 mod 2d");
+    assert!(
+        result.is_err(),
+        "validate should reject q not congruent to 1 mod 2d"
+    );
 }
 
 #[test]
@@ -362,12 +368,12 @@ fn h5_cp_snark_digest_verified() {
         .unwrap();
 
     // Valid proof should pass
-    assert!(cp.verify(&[c], b"", &proof));
+    assert!(cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof));
 
     // Tamper with transcript_digest
     proof.transcript_digest[0] ^= 0xFF;
     assert!(
-        !cp.verify(&[c], b"", &proof),
+        !cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof),
         "H5: tampered transcript_digest must be rejected"
     );
 }
@@ -434,13 +440,25 @@ fn m1_ext_field_mul_associativity_large_q() {
     let params = SymphonyParams::default_from_paper();
     let ctx = ExtFieldContext::new(params.q);
 
-    let a = ExtFieldElement { c0: 123456789, c1: -987654321 };
-    let b = ExtFieldElement { c0: -111222333, c1: 444555666 };
-    let c = ExtFieldElement { c0: 777888999, c1: -101010101 };
+    let a = ExtFieldElement {
+        c0: 123456789,
+        c1: -987654321,
+    };
+    let b = ExtFieldElement {
+        c0: -111222333,
+        c1: 444555666,
+    };
+    let c = ExtFieldElement {
+        c0: 777888999,
+        c1: -101010101,
+    };
 
     let ab_c = ctx.mul(&ctx.mul(&a, &b), &c);
     let a_bc = ctx.mul(&a, &ctx.mul(&b, &c));
-    assert_eq!(ab_c, a_bc, "M1: multiplication should be associative with large values");
+    assert_eq!(
+        ab_c, a_bc,
+        "M1: multiplication should be associative with large values"
+    );
 }
 
 // =========================================================================
@@ -582,7 +600,10 @@ fn m8_range_proof_d_power_i128() {
     let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
 
     let witness = RingVector {
-        elements: vec![RingElement::from_constant(3), RingElement::from_constant(-2)],
+        elements: vec![
+            RingElement::from_constant(3),
+            RingElement::from_constant(-2),
+        ],
     };
     let (commitment, _) = ajtai.commit(&witness);
 
@@ -691,10 +712,7 @@ fn l5_pedersen_extend_to_bounded() {
         let mut k = key.clone();
         k.extend_to((1 << 24) + 1, b"test-seed");
     }));
-    assert!(
-        result.is_err(),
-        "L5: extend_to should panic when n > 2^24"
-    );
+    assert!(result.is_err(), "L5: extend_to should panic when n > 2^24");
 
     // Normal extend should work
     let mut k = key;
@@ -740,10 +758,7 @@ fn l6_hadamard_alpha_power_indexing() {
     let ntt = NttContext::new(q);
     let ajtai = AjtaiParams::setup(kappa, n, q, &ntt);
     let ring_witness = RingVector {
-        elements: z
-            .iter()
-            .map(|&v| RingElement::from_constant(v))
-            .collect(),
+        elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
     };
     let (commitment, _) = ajtai.commit(&ring_witness);
 

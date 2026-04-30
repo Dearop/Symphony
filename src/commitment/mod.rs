@@ -24,7 +24,7 @@ pub struct AjtaiParams {
 }
 
 /// A commitment value: κ ring elements.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commitment {
     pub value: RingVector,
 }

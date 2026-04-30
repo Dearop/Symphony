@@ -122,9 +122,7 @@ impl R1CSMatrices {
         let az = self.a.mul_vec_mod(z, q);
         let bz = self.b.mul_vec_mod(z, q);
         let cz = self.c.mul_vec_mod(z, q);
-        (0..self.num_constraints).all(|i| {
-            centered_mod(az[i] as i128 * bz[i] as i128, q) == cz[i]
-        })
+        (0..self.num_constraints).all(|i| centered_mod(az[i] as i128 * bz[i] as i128, q) == cz[i])
     }
 }
 

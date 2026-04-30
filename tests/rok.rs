@@ -360,7 +360,7 @@ mod range_proof {
         let proj = ProjectionMatrix::sample(lambda_pj, ell_h, b"test-seed-1234567890123456");
         let n = 3;
         let total_coeffs = n * D;
-        let n_blocks = (total_coeffs + ell_h - 1) / ell_h;
+        let n_blocks = total_coeffs.div_ceil(ell_h);
         assert_eq!(n_blocks, 2, "ceiling division should yield 2 blocks");
         let flat_coeffs = vec![1i64; total_coeffs];
         let result = proj.apply_structured(&flat_coeffs, n_blocks);

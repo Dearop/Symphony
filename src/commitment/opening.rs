@@ -3,6 +3,16 @@
 use crate::commitment::{AjtaiParams, Commitment};
 use crate::ring::{RingElement, RingVector};
 
+/// Build the full opened witness `[X_in || W]` from scalar public inputs and the
+/// private witness part used throughout Symphony verification.
+#[must_use]
+pub fn assemble_full_witness(public_input: &[i64], witness_part: &RingVector) -> RingVector {
+    let mut full_witness = Vec::with_capacity(public_input.len() + witness_part.len());
+    full_witness.extend(public_input.iter().copied().map(RingElement::from_constant));
+    full_witness.extend(witness_part.elements.iter().cloned());
+    RingVector::from(full_witness)
+}
+
 /// Relaxed opening proof: A·f = s·c with s ∈ S − S and s·m = f.
 #[derive(Debug, Clone)]
 pub struct RelaxedOpening {
@@ -66,4 +76,19 @@ pub fn verify_fine_grained(
     }
 
     true
+}
+
+/// Verify the folded Ajtai opening against separately recomputed folded public
+/// input and folded witness data.
+#[must_use]
+pub fn verify_folded_opening(
+    params: &AjtaiParams,
+    c: &Commitment,
+    folded_public_input: &[RingElement],
+    folded_witness: &crate::folding::FoldedWitness,
+    bound_sq: u128,
+) -> bool {
+    let mut full_folded = folded_public_input.to_vec();
+    full_folded.extend(folded_witness.witness.elements.iter().cloned());
+    params.verify_open(c, &RingVector::from(full_folded), bound_sq)
 }

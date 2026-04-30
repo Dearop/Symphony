@@ -13,7 +13,7 @@
 use super::r1cs::CpR1csLayout;
 use crate::fiat_shamir::transcript::Transcript;
 use crate::folding::digest::{Digest32, FoldInput};
-use crate::folding::{FoldedInstance, FoldingProof};
+use crate::folding::{FoldedInstance, FoldedOutputInstance, FoldedOutputWitness, FoldingProof};
 use crate::params::D;
 use crate::r1cs::R1CSMatrices;
 use crate::ring::extension::ExtFieldElement;
@@ -186,6 +186,68 @@ pub fn encode_cp_backend_instance(
     instance
 }
 
+/// Encode the typed modular/legacy CP public instance binding for typed backend
+/// CP proving paths.
+#[must_use]
+pub fn encode_typed_cp_public_instance(
+    cp_public_instance: &crate::cp_relation_core::CpPublicInstance,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&cp_public_instance.fs_root);
+    buf.extend_from_slice(&cp_public_instance.fold_root);
+    buf.extend_from_slice(&cp_public_instance.challenge_digest);
+    buf.extend_from_slice(&cp_public_instance.transcript_seed_digest);
+
+    let folded_instance = encode_folded_instance(&cp_public_instance.x_folded);
+    buf.extend_from_slice(&(folded_instance.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&folded_instance);
+
+    let folded_output = encode_folded_output_instance(&cp_public_instance.folded_output);
+    buf.extend_from_slice(&(folded_output.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&folded_output);
+
+    buf
+}
+
+/// Encode the typed modular/legacy CP witness bundle for typed backend CP
+/// proving paths.
+#[must_use]
+pub fn encode_typed_cp_witness_bundle(
+    witness: &crate::cp_relation_core::CpWitnessBundle,
+) -> Vec<u8> {
+    let mut buf = encode_folding_transcript_witness(&witness.folding_proof, &witness.fs_messages);
+    buf.extend_from_slice(&(witness.transcript_bytes.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&witness.transcript_bytes);
+    buf.extend_from_slice(&(witness.fs_commitments.len() as u64).to_le_bytes());
+    for c in &witness.fs_commitments {
+        buf.extend_from_slice(&(c.len() as u64).to_le_bytes());
+        buf.extend_from_slice(c);
+    }
+    buf.extend_from_slice(&(witness.fs_openings.len() as u64).to_le_bytes());
+    for o in &witness.fs_openings {
+        buf.extend_from_slice(&(o.len() as u64).to_le_bytes());
+        buf.extend_from_slice(o);
+    }
+    buf.extend_from_slice(&(witness.fold_inputs.len() as u64).to_le_bytes());
+    for fi in &witness.fold_inputs {
+        buf.extend_from_slice(&(fi.commitment_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&fi.commitment_bytes);
+        buf.extend_from_slice(&(fi.public_input.len() as u64).to_le_bytes());
+        for &v in &fi.public_input {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf.extend_from_slice(&(fi.eval_values_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&fi.eval_values_bytes);
+    }
+    let folded_output = encode_folded_output_instance(&witness.folded_output_instance);
+    buf.extend_from_slice(&(folded_output.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&folded_output);
+    let folded_output_witness = encode_folded_output_witness(&witness.folded_output_witness);
+    buf.extend_from_slice(&(folded_output_witness.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&folded_output_witness);
+    buf
+}
+
 /// Encode the CP-SNARK witness with all transcript data (Phase 2+).
 ///
 /// The witness contains everything the verifier used to check in O(k):
@@ -260,11 +322,12 @@ pub fn encode_commitment_to_bytes(commitment: &crate::commitment::Commitment) ->
     buf
 }
 
-/// Encode a folded instance as bytes for the output SNARK.
+/// Encode a folded instance as bytes for compatibility with existing output
+/// backends.
 ///
-/// The output SNARK proves that the folded instance satisfies the
-/// folded R1CS relation. This encoding serializes the instance into
-/// the byte format expected by [`BackendSnark::prove`] / [`BackendSnark::verify`].
+/// New code should prefer [`encode_folded_output_instance`], which serializes
+/// the typed folded-output relation boundary rather than only the legacy folded
+/// instance projection.
 pub fn encode_folded_instance(instance: &FoldedInstance) -> Vec<u8> {
     let mut buf = Vec::new();
 
@@ -296,7 +359,11 @@ pub fn encode_folded_instance(instance: &FoldedInstance) -> Vec<u8> {
     buf
 }
 
-/// Encode a folded witness as bytes for the output SNARK.
+/// Encode a folded witness as bytes for compatibility with existing output
+/// backends.
+///
+/// New code should prefer [`encode_folded_output_witness`], which serializes
+/// the typed folded-output witness boundary.
 pub fn encode_folded_witness(witness: &crate::folding::FoldedWitness) -> Vec<u8> {
     let mut buf = Vec::new();
 
@@ -319,6 +386,21 @@ pub fn encode_folded_witness(witness: &crate::folding::FoldedWitness) -> Vec<u8>
     }
 
     buf
+}
+
+/// Encode the typed folded-output public instance.
+#[must_use]
+pub fn encode_folded_output_instance(instance: &FoldedOutputInstance) -> Vec<u8> {
+    let mut buf = encode_folded_instance(&instance.folded_instance);
+    encode_linear_relation(&mut buf, &instance.linear_relation);
+    encode_batched_relation(&mut buf, &instance.batched_relation);
+    buf
+}
+
+/// Encode the typed folded-output private witness.
+#[must_use]
+pub fn encode_folded_output_witness(witness: &FoldedOutputWitness) -> Vec<u8> {
+    encode_folded_witness(&witness.folded_witness)
 }
 
 fn encode_ext_field_element(buf: &mut Vec<u8>, elem: &ExtFieldElement) {
