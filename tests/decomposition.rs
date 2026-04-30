@@ -39,7 +39,7 @@ mod decomposition_core {
         let base = 62i64;
         let k = 2;
         for v in -100..=100 {
-            let digits = monomial::monomial_decompose(v, base, k);
+            let digits = decomposition::decompose(v, base, k);
             let reconstructed = digits[0] + digits[1] * base;
             assert_eq!(reconstructed, v, "failed for v={v}");
         }

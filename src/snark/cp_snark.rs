@@ -18,11 +18,13 @@ mod r1cs;
 pub use encoding::{
     encode_commitment_to_bytes, encode_cp_backend_instance, encode_cp_instance,
     encode_cp_instance_compressed, encode_cp_witness, encode_cp_witness_compressed,
-    encode_folded_instance, encode_folded_witness, encode_folding_transcript_witness,
-    encode_gr1cs_round_message, serialize_cp_context, serialize_output_context, CPRelation,
-    CpPublicInstance,
+    encode_folded_instance, encode_folded_output_instance, encode_folded_output_witness,
+    encode_folded_witness, encode_folding_transcript_witness, encode_gr1cs_round_message,
+    encode_typed_cp_public_instance, encode_typed_cp_witness_bundle, serialize_cp_context,
+    serialize_output_context, CPRelation, CpPublicInstance,
 };
 
 pub use r1cs::{
-    encode_cp_instance_r1cs, encode_cp_witness_r1cs, generate_cp_r1cs, mod_pow, CpR1csLayout,
+    encode_cp_instance_r1cs, encode_cp_witness_r1cs, fill_cp_wrap_range_bits, generate_cp_r1cs,
+    mod_pow, CpR1csLayout,
 };

@@ -73,6 +73,7 @@ type WhirMmcs = MerkleTreeMmcs<PackedF, PackedF, WhirHash, WhirCompress, 2, 8>;
 type WhirDft = Radix2DFTSmallBatch<F>;
 
 const DIGEST_ELEMS: usize = 8;
+const WHIR_SECURITY_LEVEL_BITS: usize = 100;
 
 // ---------------------------------------------------------------------------
 // WHIR infrastructure: deterministic construction from seed + num_variables
@@ -98,10 +99,10 @@ fn build_whir_infra(seed: u64, num_variables: usize) -> WhirInfra {
     let mmcs = WhirMmcs::new(merkle_hash, merkle_compress, 0);
 
     // Folding factor must be <= num_variables and >= 1
-    let folding = num_variables.min(4).max(1);
+    let folding = num_variables.clamp(1, 4);
 
     let protocol_params = ProtocolParameters {
-        security_level: 32,
+        security_level: WHIR_SECURITY_LEVEL_BITS,
         pow_bits: 0,
         rs_domain_initial_reduction_factor: 1,
         folding_factor: FoldingFactor::Constant(folding),
@@ -158,6 +159,15 @@ pub struct WhirVerifyingKey {
 
 /// Proof produced by the WHIR backend.
 #[derive(Debug, Clone)]
+pub struct WhirLinearCheckProof {
+    /// Degree-2 sumcheck proving <M(r, .), z(.)> = claimed Mz(r).
+    pub rounds: Vec<[BabyBear; 3]>,
+    /// Claimed z evaluation at the linear-check sumcheck point.
+    pub z_eval: BabyBear,
+}
+
+/// Proof produced by the WHIR backend.
+#[derive(Debug, Clone)]
 pub struct WhirProof {
     /// Sumcheck round polynomials (CP path: degree-2, evals at {0,1,2}).
     pub sumcheck_rounds_3: Vec<[BabyBear; 3]>,
@@ -170,6 +180,9 @@ pub struct WhirProof {
     pub whir_pcs_proof: WhirPcsProof<F, EF, WhirMmcs>,
     /// Claimed polynomial evaluation at the challenge point (verified by WHIR).
     pub z_eval: BabyBear,
+    /// Linear checks binding output/CP-R1CS Az, Bz, Cz claims to the same
+    /// committed z polynomial.
+    pub linear_checks: Vec<WhirLinearCheckProof>,
     /// Number of sumcheck variables.
     pub num_vars: usize,
     /// Whether this is an output SNARK proof (true) or CP proof (false).
@@ -180,6 +193,32 @@ impl BackendSnark for WhirSnark {
     type ProvingKey = WhirProvingKey;
     type VerifyingKey = WhirVerifyingKey;
     type Proof = WhirProof;
+
+    fn serialize_output_context(
+        r1cs: &crate::r1cs::R1CSMatrices,
+        q: u64,
+        d: usize,
+    ) -> Option<Vec<u8>> {
+        Some(serialize::serialize_context(&serialize::WhirContext {
+            r1cs: r1cs.clone(),
+            q,
+            d,
+            n_pub: r1cs.num_public,
+            is_output_snark: true,
+            is_cp_snark: false,
+        }))
+    }
+
+    fn serialize_cp_context(r1cs: &crate::r1cs::R1CSMatrices, q: u64, d: usize) -> Option<Vec<u8>> {
+        Some(serialize::serialize_context(&serialize::WhirContext {
+            r1cs: r1cs.clone(),
+            q,
+            d,
+            n_pub: r1cs.num_public,
+            is_output_snark: false,
+            is_cp_snark: true,
+        }))
+    }
 
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
         // Derive a deterministic seed from the relation description
@@ -319,6 +358,65 @@ fn compute_matrix_vector_products_bb(
     (sparse_mul(flat_a), sparse_mul(flat_b), sparse_mul(flat_c))
 }
 
+fn eval_eq_index_bb(point: &[BabyBear], index: usize) -> BabyBear {
+    point
+        .iter()
+        .enumerate()
+        .fold(BabyBear::ONE, |acc, (bit, &r)| {
+            let shift = point.len() - 1 - bit;
+            if ((index >> shift) & 1) == 1 {
+                acc * r
+            } else {
+                acc * (BabyBear::ONE - r)
+            }
+        })
+}
+
+fn compute_matrix_mle_row_bb(
+    mat: &FlatSparseMatrixBB,
+    row_point: &[BabyBear],
+    num_cols: usize,
+) -> Vec<BabyBear> {
+    let mut result = vec![BabyBear::ZERO; num_cols];
+    let num_rows = 1usize << row_point.len();
+    for &(row, col, val) in &mat.entries {
+        if row < num_rows && col < num_cols {
+            result[col] += eval_eq_index_bb(row_point, row) * val;
+        }
+    }
+    result
+}
+
+fn eval_matrix_mle_at_points_bb(
+    mat: &FlatSparseMatrixBB,
+    row_point: &[BabyBear],
+    col_point: &[BabyBear],
+    num_cols: usize,
+) -> BabyBear {
+    let num_rows = 1usize << row_point.len();
+    mat.entries
+        .iter()
+        .filter(|&&(row, col, _)| row < num_rows && col < num_cols)
+        .fold(BabyBear::ZERO, |acc, &(row, col, val)| {
+            acc + val * eval_eq_index_bb(row_point, row) * eval_eq_index_bb(col_point, col)
+        })
+}
+
+fn pad_point(point: &[BabyBear], len: usize) -> Vec<BabyBear> {
+    point
+        .iter()
+        .copied()
+        .chain(std::iter::repeat(BabyBear::ZERO))
+        .take(len)
+        .collect()
+}
+
+fn sumcheck_point_to_mle_point(point: &[BabyBear], len: usize) -> Vec<BabyBear> {
+    let mut padded = pad_point(point, len);
+    padded.reverse();
+    padded
+}
+
 fn prove_output(
     pk: &WhirProvingKey,
     instance: &[u8],
@@ -383,24 +481,26 @@ fn prove_output(
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
     // Sumcheck for F(x) = eq(tau,x) * [Az(x)*Bz(x) - Cz(x)]
-    let (rounds, challenges) =
+    let (rounds, challenges, az_eval, bz_eval, cz_eval, _eq_final) =
         prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
 
-    // Evaluations at challenge point
-    let az_eval = mle_eval_bb(&az, &challenges);
-    let bz_eval = mle_eval_bb(&bz, &challenges);
-    let cz_eval = mle_eval_bb(&cz, &challenges);
+    let mut opening_points = Vec::new();
+    let main_point = sumcheck_point_to_mle_point(&challenges, z_num_vars);
+    let z_eval = mle_eval_bb(&z_padded, &main_point);
+    opening_points.push(main_point);
 
-    // --- WHIR PCS: commit to z polynomial and prove evaluation ---
-    let z_eval = mle_eval_bb(&z_padded, &challenges[..z_num_vars.min(challenges.len())]);
-
-    let whir_pcs_proof = whir_commit_and_prove(
-        pk.seed,
-        z_num_vars,
+    let (linear_checks, linear_points) = prove_linear_bindings(
+        [&flat_a, &flat_b, &flat_c],
+        &challenges,
         &z_padded,
-        &challenges[..z_num_vars.min(challenges.len())],
-        z_eval,
+        z_num_vars,
+        &mut transcript,
     );
+    opening_points.extend(linear_points);
+
+    let (whir_pcs_proof, opening_evals) =
+        whir_commit_and_prove_multi(pk.seed, z_num_vars, &z_padded, &opening_points);
+    assert_eq!(opening_evals.first().copied(), Some(z_eval));
 
     WhirProof {
         sumcheck_rounds_3: Vec::new(),
@@ -408,6 +508,7 @@ fn prove_output(
         evaluations: [az_eval, bz_eval, cz_eval],
         whir_pcs_proof,
         z_eval,
+        linear_checks,
         num_vars,
         is_output: true,
     }
@@ -455,7 +556,18 @@ fn verify_output(
     };
 
     // Check final evaluation: eq(tau, r*) * (Az_eval * Bz_eval - Cz_eval)
-    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
+    // Recompute eq(tau, r*) by folding the same eq table convention used by prover.
+    let mut eq_fold = build_eq_table_bb(&tau, num_vars);
+    for &r in &challenges {
+        let half = eq_fold.len() / 2;
+        let one_minus_r = BabyBear::ONE - r;
+        let mut next = Vec::with_capacity(half);
+        for j in 0..half {
+            next.push(eq_fold[j] * one_minus_r + eq_fold[half + j] * r);
+        }
+        eq_fold = next;
+    }
+    let eq_at_r = eq_fold[0];
     let [az_eval, bz_eval, cz_eval] = proof.evaluations;
     let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
     if final_eval != expected_final {
@@ -467,27 +579,39 @@ fn verify_output(
     let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
     let z_num_vars = z_padded_len.trailing_zeros() as usize;
 
-    let challenge_slice = &challenges[..z_num_vars.min(challenges.len())];
+    let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
+        &ctx.r1cs.a,
+        &ctx.r1cs.b,
+        &ctx.r1cs.c,
+        ctx.r1cs.num_constraints,
+        ctx.r1cs.num_variables,
+        d,
+        ctx.q,
+    );
 
-    if !whir_verify_opening(
-        vk.seed,
+    let mut opening_points = vec![sumcheck_point_to_mle_point(&challenges, z_num_vars)];
+    let mut opening_evals = vec![proof.z_eval];
+    if !verify_linear_bindings(
+        [&flat_a, &flat_b, &flat_c],
+        &challenges,
+        &proof.evaluations,
+        total_vars,
         z_num_vars,
-        &proof.whir_pcs_proof,
-        challenge_slice,
-        proof.z_eval,
+        &proof.linear_checks,
+        &mut transcript,
+        &mut opening_points,
+        &mut opening_evals,
     ) {
         return false;
     }
 
-    // The WHIR proof validates the polynomial commitment, but we still need to check
-    // that Az, Bz, Cz evaluations are consistent with the committed z polynomial.
-    // For now, we trust the WHIR opening proof that z(r*) is correct.
-    // The sumcheck already verified that eq(tau,r*)*(Az*Bz-Cz) matches the claimed sum=0,
-    // and the Az,Bz,Cz evaluations are bound by the proof.
-    // Full Spartan requires an additional inner-product reduction to verify Az,Bz,Cz
-    // from z(r*) alone — that's a follow-up enhancement.
-
-    true
+    whir_verify_opening_multi(
+        vk.seed,
+        z_num_vars,
+        &proof.whir_pcs_proof,
+        &opening_points,
+        &opening_evals,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +619,23 @@ fn verify_output(
 // ---------------------------------------------------------------------------
 // Reuses the same R1CS-over-BabyBear sumcheck as the output path, but with
 // CP-specific R1CS matrices (folding linear combination constraints).
+
+fn parse_i64_chunks_to_babybear(bytes: &[u8]) -> Vec<BabyBear> {
+    let mut out = Vec::with_capacity(bytes.len().div_ceil(8));
+    let mut i = 0;
+    while i + 8 <= bytes.len() {
+        let v = i64::from_le_bytes(bytes[i..i + 8].try_into().expect("8-byte chunk"));
+        out.push(BabyBear::from_i64(v));
+        i += 8;
+    }
+    if i < bytes.len() {
+        let mut buf = [0u8; 8];
+        buf[..bytes.len() - i].copy_from_slice(&bytes[i..]);
+        let v = i64::from_le_bytes(buf);
+        out.push(BabyBear::from_i64(v));
+    }
+    out
+}
 
 fn prove_cp_r1cs(
     pk: &WhirProvingKey,
@@ -504,13 +645,18 @@ fn prove_cp_r1cs(
 ) -> WhirProof {
     // Identical to prove_output but with a different transcript domain separator
     // and is_output = false on the proof.
-    let d = ctx.d;
+    //
+    // IMPORTANT: CP-R1CS context is already scalarized over BabyBear.
+    // Do NOT multiply dimensions by ring degree `d` again.
     let q = ctx.q;
 
-    let instance_bb = bytes_to_babybear_direct(instance);
-    let witness_bb = bytes_to_babybear_direct(witness);
+    // Parse only CP-R1CS public prefix from `instance`; ignore trailer bytes.
+    let mut instance_bb = parse_i64_chunks_to_babybear(instance);
+    let expected_instance_len = ctx.r1cs.num_public;
+    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
+    let witness_bb = parse_i64_chunks_to_babybear(witness);
 
-    let total_vars = ctx.r1cs.num_variables * d;
+    let total_vars = ctx.r1cs.num_variables;
     let mut z_flat = Vec::with_capacity(total_vars);
     z_flat.extend_from_slice(&instance_bb);
     z_flat.extend_from_slice(&witness_bb);
@@ -522,10 +668,10 @@ fn prove_cp_r1cs(
         &ctx.r1cs.c,
         ctx.r1cs.num_constraints,
         ctx.r1cs.num_variables,
-        d,
+        1,
         q,
     );
-    let num_constraints = ctx.r1cs.num_constraints * d;
+    let num_constraints = ctx.r1cs.num_constraints;
     let num_vars = ceil_log2(num_constraints.max(1));
 
     let (az, bz, cz) =
@@ -548,35 +694,26 @@ fn prove_cp_r1cs(
 
     let eq_table = build_eq_table_bb(&tau, num_vars);
 
-    let (rounds, challenges) =
+    let (rounds, challenges, az_eval, bz_eval, cz_eval, _eq_final) =
         prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
 
-    let az_eval = mle_eval_bb(&az, &challenges);
-    let bz_eval = mle_eval_bb(&bz, &challenges);
-    let cz_eval = mle_eval_bb(&cz, &challenges);
+    let mut opening_points = Vec::new();
+    let main_point = sumcheck_point_to_mle_point(&challenges, z_num_vars);
+    let z_eval = mle_eval_bb(&z_padded, &main_point);
+    opening_points.push(main_point);
 
-    let z_eval = mle_eval_bb(
+    let (linear_checks, linear_points) = prove_linear_bindings(
+        [&flat_a, &flat_b, &flat_c],
+        &challenges,
         &z_padded,
-        &challenges
-            .iter()
-            .copied()
-            .chain(std::iter::repeat(BabyBear::ZERO))
-            .take(z_num_vars)
-            .collect::<Vec<_>>(),
-    );
-
-    let whir_pcs_proof = whir_commit_and_prove(
-        pk.seed,
         z_num_vars,
-        &z_padded,
-        &challenges
-            .iter()
-            .copied()
-            .chain(std::iter::repeat(BabyBear::ZERO))
-            .take(z_num_vars)
-            .collect::<Vec<_>>(),
-        z_eval,
+        &mut transcript,
     );
+    opening_points.extend(linear_points);
+
+    let (whir_pcs_proof, opening_evals) =
+        whir_commit_and_prove_multi(pk.seed, z_num_vars, &z_padded, &opening_points);
+    assert_eq!(opening_evals.first().copied(), Some(z_eval));
 
     WhirProof {
         sumcheck_rounds_3: Vec::new(),
@@ -584,6 +721,7 @@ fn prove_cp_r1cs(
         evaluations: [az_eval, bz_eval, cz_eval],
         whir_pcs_proof,
         z_eval,
+        linear_checks,
         num_vars,
         is_output: false,
     }
@@ -600,6 +738,12 @@ fn verify_cp_r1cs(
         return false;
     }
     if instance.is_empty() {
+        return false;
+    }
+
+    // CP-R1CS is already scalarized over BabyBear.
+    let expected_num_vars = ceil_log2(ctx.r1cs.num_constraints.max(1));
+    if proof.num_vars != expected_num_vars {
         return false;
     }
 
@@ -629,37 +773,63 @@ fn verify_cp_r1cs(
     };
 
     // Check final evaluation: eq(tau, r*) * (Az * Bz - Cz)
+    // Recompute eq(tau, r*) by folding the same eq table convention used by prover.
+    let mut eq_fold = build_eq_table_bb(&tau, num_vars);
+    for &r in &challenges {
+        let half = eq_fold.len() / 2;
+        let one_minus_r = BabyBear::ONE - r;
+        let mut next = Vec::with_capacity(half);
+        for j in 0..half {
+            next.push(eq_fold[j] * one_minus_r + eq_fold[half + j] * r);
+        }
+        eq_fold = next;
+    }
+    let eq_at_r = eq_fold[0];
     let [az_eval, bz_eval, cz_eval] = proof.evaluations;
-    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
     let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
     if final_eval != expected_final {
         return false;
     }
 
-    // Verify WHIR PCS opening
-    let d = ctx.d;
-    let total_vars = ctx.r1cs.num_variables * d;
+    // Verify WHIR PCS opening.
+    // CP witness polynomial length is based on scalar CP-R1CS variable count.
+    let total_vars = ctx.r1cs.num_variables;
     let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
     let z_num_vars = z_padded_len.trailing_zeros() as usize;
 
-    let eval_point: Vec<BabyBear> = challenges
-        .iter()
-        .copied()
-        .chain(std::iter::repeat(BabyBear::ZERO))
-        .take(z_num_vars)
-        .collect();
+    let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
+        &ctx.r1cs.a,
+        &ctx.r1cs.b,
+        &ctx.r1cs.c,
+        ctx.r1cs.num_constraints,
+        ctx.r1cs.num_variables,
+        1,
+        ctx.q,
+    );
 
-    if !whir_verify_opening(
-        vk.seed,
+    let mut opening_points = vec![sumcheck_point_to_mle_point(&challenges, z_num_vars)];
+    let mut opening_evals = vec![proof.z_eval];
+    if !verify_linear_bindings(
+        [&flat_a, &flat_b, &flat_c],
+        &challenges,
+        &proof.evaluations,
+        total_vars,
         z_num_vars,
-        &proof.whir_pcs_proof,
-        &eval_point,
-        proof.z_eval,
+        &proof.linear_checks,
+        &mut transcript,
+        &mut opening_points,
+        &mut opening_evals,
     ) {
         return false;
     }
 
-    true
+    whir_verify_opening_multi(
+        vk.seed,
+        z_num_vars,
+        &proof.whir_pcs_proof,
+        &opening_points,
+        &opening_evals,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +873,7 @@ fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
         evaluations: [w_eval, BabyBear::ZERO, BabyBear::ZERO],
         whir_pcs_proof,
         z_eval: w_eval,
+        linear_checks: Vec::new(),
         num_vars,
         is_output: false,
     }
@@ -710,6 +881,9 @@ fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
 
 fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool {
     if proof.is_output {
+        return false;
+    }
+    if !proof.linear_checks.is_empty() {
         return false;
     }
 
@@ -795,15 +969,80 @@ fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool 
 // WHIR PCS: commit and prove / verify
 // ---------------------------------------------------------------------------
 
-/// Commit to a multilinear polynomial and prove an evaluation claim using WHIR.
-fn whir_commit_and_prove(
+fn prove_linear_bindings(
+    matrices: [&FlatSparseMatrixBB; 3],
+    row_point: &[BabyBear],
+    z_table: &[BabyBear],
+    z_num_vars: usize,
+    transcript: &mut Vec<u8>,
+) -> (Vec<WhirLinearCheckProof>, Vec<Vec<BabyBear>>) {
+    let mut proofs = Vec::with_capacity(3);
+    let mut opening_points = Vec::with_capacity(3);
+    let num_cols = z_table.len();
+
+    for (i, mat) in matrices.iter().enumerate() {
+        transcript.extend_from_slice(b"whir-linear-binding-v1");
+        transcript.push(i as u8);
+        let row = compute_matrix_mle_row_bb(mat, row_point, num_cols);
+        let (rounds, point, z_eval) =
+            prove_sumcheck_inner_product(&row, z_table, z_num_vars, transcript);
+        proofs.push(WhirLinearCheckProof { rounds, z_eval });
+        opening_points.push(sumcheck_point_to_mle_point(&point, z_num_vars));
+    }
+
+    (proofs, opening_points)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_linear_bindings(
+    matrices: [&FlatSparseMatrixBB; 3],
+    row_point: &[BabyBear],
+    claimed_evals: &[BabyBear; 3],
+    num_cols: usize,
+    z_num_vars: usize,
+    proofs: &[WhirLinearCheckProof],
+    transcript: &mut Vec<u8>,
+    opening_points: &mut Vec<Vec<BabyBear>>,
+    opening_evals: &mut Vec<BabyBear>,
+) -> bool {
+    if proofs.len() != 3 {
+        return false;
+    }
+
+    for (i, (mat, proof)) in matrices.iter().zip(proofs.iter()).enumerate() {
+        transcript.extend_from_slice(b"whir-linear-binding-v1");
+        transcript.push(i as u8);
+        let (final_eval, point) = match verify_sumcheck_inner_product(
+            &proof.rounds,
+            claimed_evals[i],
+            z_num_vars,
+            transcript,
+        ) {
+            Some(v) => v,
+            None => return false,
+        };
+        let row_eval = eval_matrix_mle_at_points_bb(mat, row_point, &point, num_cols);
+        if final_eval != row_eval * proof.z_eval {
+            return false;
+        }
+        opening_points.push(sumcheck_point_to_mle_point(&point, z_num_vars));
+        opening_evals.push(proof.z_eval);
+    }
+
+    true
+}
+
+/// Commit to a multilinear polynomial and prove evaluation claims using WHIR.
+fn whir_commit_and_prove_multi(
     seed: u64,
     num_variables: usize,
     evaluations: &[BabyBear],
-    point: &[BabyBear],
-    _claimed_eval: BabyBear,
-) -> WhirPcsProof<F, EF, WhirMmcs> {
+    points: &[Vec<BabyBear>],
+) -> (WhirPcsProof<F, EF, WhirMmcs>, Vec<BabyBear>) {
     assert_eq!(evaluations.len(), 1 << num_variables);
+    for point in points {
+        assert_eq!(point.len(), num_variables);
+    }
 
     let infra = build_whir_infra(seed, num_variables);
     let dft = Radix2DFTSmallBatch::<F>::default();
@@ -816,13 +1055,18 @@ fn whir_commit_and_prove(
         .params
         .initial_statement(poly, SumcheckStrategy::Classic);
 
-    // Add evaluation constraint: polynomial(point) = claimed_eval
+    // Add evaluation constraints. WHIR computes the evaluations internally for
+    // the prover; verification receives the returned claimed values explicitly.
     // NOTE: Plonky3 multilinear convention has point[0] as the *slowest* variable
     // (controls the top-half split), while our mle_eval_bb has point[0] as the
     // *fastest* variable. Reverse the point to match conventions.
-    let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
-    let ml_point = MultilinearPoint::new(ef_point);
-    let _whir_eval = statement.evaluate(&ml_point);
+    let mut claimed_evals = Vec::with_capacity(points.len());
+    for point in points {
+        let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
+        let ml_point = MultilinearPoint::new(ef_point);
+        let _whir_eval = statement.evaluate(&ml_point);
+        claimed_evals.push(mle_eval_bb(evaluations, point));
+    }
 
     // Normalize for verifier
     let _verifier_statement = statement.normalize();
@@ -857,17 +1101,24 @@ fn whir_commit_and_prove(
         )
         .expect("WHIR prove failed");
 
-    proof
+    (proof, claimed_evals)
 }
 
-/// Verify a WHIR PCS opening proof.
-fn whir_verify_opening(
+/// Verify a WHIR PCS opening proof with one or more evaluation constraints.
+fn whir_verify_opening_multi(
     seed: u64,
     num_variables: usize,
     proof: &WhirPcsProof<F, EF, WhirMmcs>,
-    point: &[BabyBear],
-    claimed_eval: BabyBear,
+    points: &[Vec<BabyBear>],
+    claimed_evals: &[BabyBear],
 ) -> bool {
+    if points.len() != claimed_evals.len() {
+        return false;
+    }
+    if points.iter().any(|point| point.len() != num_variables) {
+        return false;
+    }
+
     let infra = build_whir_infra(seed, num_variables);
 
     // Create verifier challenger (must match prover's)
@@ -881,24 +1132,55 @@ fn whir_verify_opening(
     let parsed_commitment =
         commitment_reader.parse_commitment::<F, DIGEST_ELEMS>(proof, &mut verifier_challenger);
 
-    // Build verifier statement: the verifier must know the claimed (point, eval) pair
+    // Build verifier statement: the verifier must know each claimed (point,
+    // evaluation) pair.
     // Reverse point to match Plonky3 convention (point[0] = slowest variable).
     use whir_p3::constraints::statement::EqStatement;
-    let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
-    let ml_point = MultilinearPoint::new(ef_point);
     let mut verifier_statement = EqStatement::initialize(num_variables);
-    verifier_statement.add_evaluated_constraint(ml_point, EF::from(claimed_eval));
+    for (point, &claimed_eval) in points.iter().zip(claimed_evals.iter()) {
+        let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
+        let ml_point = MultilinearPoint::new(ef_point);
+        verifier_statement.add_evaluated_constraint(ml_point, EF::from(claimed_eval));
+    }
 
     let verifier = WhirVerifier::new(&infra.params);
-    match verifier.verify(
+    verifier
+        .verify(
+            proof,
+            &mut verifier_challenger,
+            &parsed_commitment,
+            verifier_statement,
+        )
+        .is_ok()
+}
+
+fn whir_commit_and_prove(
+    seed: u64,
+    num_variables: usize,
+    evaluations: &[BabyBear],
+    point: &[BabyBear],
+    claimed_eval: BabyBear,
+) -> WhirPcsProof<F, EF, WhirMmcs> {
+    let points = vec![point.to_vec()];
+    let (proof, evals) = whir_commit_and_prove_multi(seed, num_variables, evaluations, &points);
+    assert_eq!(evals, vec![claimed_eval]);
+    proof
+}
+
+fn whir_verify_opening(
+    seed: u64,
+    num_variables: usize,
+    proof: &WhirPcsProof<F, EF, WhirMmcs>,
+    point: &[BabyBear],
+    claimed_eval: BabyBear,
+) -> bool {
+    whir_verify_opening_multi(
+        seed,
+        num_variables,
         proof,
-        &mut verifier_challenger,
-        &parsed_commitment,
-        verifier_statement,
-    ) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+        &[point.to_vec()],
+        &[claimed_eval],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +1195,14 @@ fn prove_sumcheck_r1cs(
     cz_table: &[BabyBear],
     num_vars: usize,
     transcript: &mut Vec<u8>,
-) -> (Vec<[BabyBear; 4]>, Vec<BabyBear>) {
+) -> (
+    Vec<[BabyBear; 4]>,
+    Vec<BabyBear>,
+    BabyBear,
+    BabyBear,
+    BabyBear,
+    BabyBear,
+) {
     let n = 1 << num_vars;
     assert_eq!(eq_table.len(), n);
     assert_eq!(az_table.len(), n);
@@ -981,7 +1270,12 @@ fn prove_sumcheck_r1cs(
         cz = new_cz;
     }
 
-    (rounds, challenges)
+    let final_az = az[0];
+    let final_bz = bz[0];
+    let final_cz = cz[0];
+    let final_eq = eq[0];
+
+    (rounds, challenges, final_az, final_bz, final_cz, final_eq)
 }
 
 /// Verify R1CS sumcheck (degree-3 round polynomials).
@@ -1040,6 +1334,90 @@ fn lagrange_interpolate_4(evals: &[BabyBear; 4], t: BabyBear) -> BabyBear {
 // ---------------------------------------------------------------------------
 // CP sumcheck: degree-2, evaluations at {0, 1, 2}
 // ---------------------------------------------------------------------------
+
+fn prove_sumcheck_inner_product(
+    a_table: &[BabyBear],
+    b_table: &[BabyBear],
+    num_vars: usize,
+    transcript: &mut Vec<u8>,
+) -> (Vec<[BabyBear; 3]>, Vec<BabyBear>, BabyBear) {
+    let n = 1 << num_vars;
+    assert_eq!(a_table.len(), n);
+    assert_eq!(b_table.len(), n);
+
+    let mut a = a_table.to_vec();
+    let mut b = b_table.to_vec();
+    let mut rounds = Vec::with_capacity(num_vars);
+    let mut challenges = Vec::with_capacity(num_vars);
+
+    for round in 0..num_vars {
+        let half = a.len() / 2;
+        let mut evals = [BabyBear::ZERO; 3];
+
+        for j in 0..half {
+            let a0 = a[j];
+            let a1 = a[half + j];
+            let b0 = b[j];
+            let b1 = b[half + j];
+            for t in 0u32..3 {
+                let t_bb = BabyBear::from_u32(t);
+                let one_minus_t = BabyBear::ONE - t_bb;
+                let a_t = a0 * one_minus_t + a1 * t_bb;
+                let b_t = b0 * one_minus_t + b1 * t_bb;
+                evals[t as usize] += a_t * b_t;
+            }
+        }
+
+        rounds.push(evals);
+        for e in &evals {
+            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
+        }
+        let r = derive_challenge(transcript, round, b"sc-inner");
+        challenges.push(r);
+
+        let one_minus_r = BabyBear::ONE - r;
+        let mut new_a = Vec::with_capacity(half);
+        let mut new_b = Vec::with_capacity(half);
+        for j in 0..half {
+            new_a.push(a[j] * one_minus_r + a[half + j] * r);
+            new_b.push(b[j] * one_minus_r + b[half + j] * r);
+        }
+        a = new_a;
+        b = new_b;
+    }
+
+    (rounds, challenges, b[0])
+}
+
+fn verify_sumcheck_inner_product(
+    rounds: &[[BabyBear; 3]],
+    claimed_sum: BabyBear,
+    num_vars: usize,
+    transcript: &mut Vec<u8>,
+) -> Option<(BabyBear, Vec<BabyBear>)> {
+    if rounds.len() != num_vars {
+        return None;
+    }
+    if num_vars == 0 {
+        return Some((claimed_sum, Vec::new()));
+    }
+
+    let mut current_claim = claimed_sum;
+    let mut challenges = Vec::with_capacity(num_vars);
+    for (round, evals) in rounds.iter().enumerate() {
+        if evals[0] + evals[1] != current_claim {
+            return None;
+        }
+        for e in evals {
+            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
+        }
+        let r = derive_challenge(transcript, round, b"sc-inner");
+        challenges.push(r);
+        current_claim = eval_univariate_3(evals, r);
+    }
+
+    Some((current_claim, challenges))
+}
 
 /// Prove sumcheck for F(x) = eq(x) * w(x) (degree-2, CP path).
 fn prove_sumcheck_product(
@@ -1150,7 +1528,7 @@ fn build_eq_table_bb(tau: &[BabyBear], num_vars: usize) -> Vec<BabyBear> {
             if bit == 1 {
                 table[j] = table[j - half] * ti;
             } else {
-                table[j] = table[j] * (BabyBear::ONE - ti);
+                table[j] *= BabyBear::ONE - ti;
             }
         }
     }
@@ -1357,6 +1735,48 @@ mod tests {
 
         let wrong_instance = 42i64.to_le_bytes();
         assert!(!WhirSnark::verify(&vk, &wrong_instance, &proof));
+    }
+
+    #[test]
+    fn output_snark_rejects_forged_az_bz_cz_claims() {
+        let mut r1cs = R1CSMatrices::new(1, 2, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 1, 1);
+        r1cs.c.insert(0, 1, 1);
+
+        let ctx = WhirContext {
+            r1cs,
+            q: 2013265921,
+            d: 1,
+            n_pub: 1,
+            is_output_snark: true,
+            is_cp_snark: false,
+        };
+        let ctx_bytes = serialize::serialize_context(&ctx);
+        let relation = RelationDescription {
+            num_instance_vars: 1,
+            num_witness_vars: 1,
+            num_constraints: 1,
+            context: Some(ctx_bytes),
+        };
+
+        let (pk, vk) = WhirSnark::setup(&relation);
+        let instance = 1i64.to_le_bytes();
+        let witness = 1i64.to_le_bytes();
+        let mut proof = WhirSnark::prove(&pk, &instance, &witness);
+        assert!(WhirSnark::verify(&vk, &instance, &proof));
+        assert_eq!(proof.linear_checks.len(), 3);
+
+        // Preserve the R1CS sumcheck final product relation:
+        // (Az + d) * Bz - (Cz + d * Bz) == Az * Bz - Cz.
+        // The new WHIR linear-binding checks must still reject because these
+        // altered claims are no longer derived from the committed z.
+        let delta = BabyBear::ONE;
+        let bz = proof.evaluations[1];
+        proof.evaluations[0] += delta;
+        proof.evaluations[2] += delta * bz;
+
+        assert!(!WhirSnark::verify(&vk, &instance, &proof));
     }
 
     // --- Shared helper tests ---

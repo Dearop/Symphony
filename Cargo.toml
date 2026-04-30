@@ -54,3 +54,8 @@ harness = false
 [[bench]]
 name = "cp_succinct"
 harness = false
+
+[[bench]]
+name = "whir_scaling"
+harness = false
+required-features = ["whir"]

@@ -1,5 +1,6 @@
 //! End-to-end proving/verifying flow with split CP/output backends.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::commitment::Commitment;
@@ -33,11 +34,46 @@ pub struct ProofBundle<CPB: CpBackend, OB: OutputBackend> {
     pub witness_bundle: CpWitnessBundle,
 }
 
+/// Public-only v2 modular proof bundle.
+///
+/// This contains no CP witness bundle. Verification must rely on authoritative
+/// typed CP/output backend proofs and public digests only.
+#[derive(Debug, Clone)]
+pub struct ProofBundleV2<CPB: CpBackend, OB: OutputBackend> {
+    pub cp_proof: CPB::Proof,
+    pub output_proof: OB::Proof,
+    pub fs_commitments: Vec<Vec<u8>>,
+    pub folded_output: crate::folding::FoldedOutputInstance,
+    pub fs_root: crate::digest_core::Digest32,
+    pub fold_root: crate::digest_core::Digest32,
+    pub challenge_digest: crate::digest_core::Digest32,
+    pub transcript_seed_digest: crate::digest_core::Digest32,
+}
+
+impl<CPB: CpBackend, OB: OutputBackend> ProofBundle<CPB, OB> {
+    /// Drop witness-side/debug data and keep only the public v2 proof boundary.
+    #[must_use]
+    pub fn to_v2(&self) -> ProofBundleV2<CPB, OB> {
+        ProofBundleV2 {
+            cp_proof: self.cp_proof.clone(),
+            output_proof: self.output_proof.clone(),
+            fs_commitments: self.witness_bundle.fs_commitments.clone(),
+            folded_output: self.cp_public_instance.folded_output.clone(),
+            fs_root: self.cp_public_instance.fs_root,
+            fold_root: self.cp_public_instance.fold_root,
+            challenge_digest: self.cp_public_instance.challenge_digest,
+            transcript_seed_digest: self.cp_public_instance.transcript_seed_digest,
+        }
+    }
+}
+
 pub struct Prover<CPB: CpBackend, OB: OutputBackend> {
     pub params: SymphonyParams,
     pub ajtai: crate::commitment::AjtaiParams,
     pub cp_pk: CPB::ProvingKey,
     pub output_pk: OB::ProvingKey,
+    /// Cache of output proving keys keyed by serialized output context bytes.
+    pub output_pk_cache: std::sync::Mutex<HashMap<Vec<u8>, OB::ProvingKey>>,
     pub cp_layout: CpR1csLayout,
     _marker: PhantomData<(CPB, OB)>,
 }
@@ -47,6 +83,8 @@ pub struct Verifier<CPB: CpBackend, OB: OutputBackend> {
     pub ajtai: crate::commitment::AjtaiParams,
     pub cp_vk: CPB::VerifyingKey,
     pub output_vk: OB::VerifyingKey,
+    /// Cache of output verifying keys keyed by serialized output context bytes.
+    pub output_vk_cache: std::sync::Mutex<HashMap<Vec<u8>, OB::VerifyingKey>>,
     pub cp_layout: CpR1csLayout,
     _marker: PhantomData<(CPB, OB)>,
 }
@@ -127,6 +165,32 @@ fn build_transcript_bytes(
 }
 
 impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
+    fn output_pk_for_context(&self, output_context: Vec<u8>) -> OB::ProvingKey {
+        if let Some(pk) = self
+            .output_pk_cache
+            .lock()
+            .expect("output_pk_cache mutex poisoned")
+            .get(&output_context)
+            .cloned()
+        {
+            return pk;
+        }
+
+        let relation = RelationDescription {
+            num_instance_vars: self.params.n(),
+            num_witness_vars: self.params.n(),
+            num_constraints: self.params.m,
+            context: Some(output_context.clone()),
+        };
+        let (pk, _) = OB::setup(&relation);
+
+        self.output_pk_cache
+            .lock()
+            .expect("output_pk_cache mutex poisoned")
+            .insert(output_context, pk.clone());
+        pk
+    }
+
     pub fn setup(params: SymphonyParams) -> (Self, Verifier<CPB, OB>) {
         params.validate();
         let ajtai =
@@ -139,13 +203,13 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
             params.n_in,
             params.m,
             ext_ctx.alpha,
+            params.q,
         );
-        let cp_context = cp_snark::serialize_cp_context(&cp_r1cs, params.q, params.d as usize);
         let cp_relation = RelationDescription {
             num_instance_vars: cp_layout.num_instance,
             num_witness_vars: cp_layout.num_variables - cp_layout.num_instance,
             num_constraints: cp_r1cs.num_constraints,
-            context: Some(cp_context),
+            context: CPB::serialize_cp_context(&cp_r1cs, params.q, params.d),
         };
         let (cp_pk, cp_vk) = CPB::setup(&cp_relation);
 
@@ -163,6 +227,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
                 ajtai: ajtai.clone(),
                 cp_pk,
                 output_pk,
+                output_pk_cache: std::sync::Mutex::new(HashMap::new()),
                 cp_layout: cp_layout.clone(),
                 _marker: PhantomData,
             },
@@ -171,6 +236,7 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
                 ajtai,
                 cp_vk,
                 output_vk,
+                output_vk_cache: std::sync::Mutex::new(HashMap::new()),
                 cp_layout,
                 _marker: PhantomData,
             },
@@ -246,23 +312,30 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
             deriver.derive_fixed_32(b"symphony-v1", &transcript_bytes, fs_commitments.len());
         let challenge_digest = digest_challenge_digest(&challenges);
 
+        let folded_output_instance =
+            crate::folding::folded_output_instance_from_proof(&folding_proof);
+        let folded_output_witness =
+            crate::folding::folded_output_witness_from_folded(&folded_witness);
+
         let cp_public_instance = CpPublicInstance {
             fs_root,
             fold_root,
             challenge_digest,
             transcript_seed_digest,
             x_folded: folding_proof.folded_instance.clone(),
+            folded_output: folded_output_instance.clone(),
         };
 
         let cp_instance = encode_cp_backend_instance(&cp_public_instance, &self.cp_layout);
         let commitments_for_cp: Vec<_> = folding_proof.commitments.clone();
+        let cp_ntt = Some(crate::ring::ntt::NttContext::new(2013265921));
         let cp_witness = cp_snark::encode_cp_witness_r1cs(
             &commitments_for_cp,
             &public_inputs,
             &folding_proof.beta,
             &folding_proof.folded_instance,
             &self.cp_layout,
-            &self.params.ntt,
+            &cp_ntt,
             &folding_proof.gr1cs_proofs,
             &shared_challenges.sumcheck_seed_had,
             &shared_challenges.alpha,
@@ -270,62 +343,111 @@ impl<CPB: CpBackend, OB: OutputBackend> Prover<CPB, OB> {
             ext_ctx.alpha,
             self.params.q,
         );
-        let cp_proof = CPB::prove(&self.cp_pk, &cp_instance, &cp_witness);
+
+        let typed_cp_witness = CpWitnessBundle {
+            transcript_bytes: transcript_bytes.clone(),
+            fs_commitments: fs_commitments.clone(),
+            fs_openings: fs_openings.clone(),
+            fs_messages: fs_messages.clone(),
+            fold_inputs: fold_inputs.clone(),
+            original_witnesses: statements.iter().map(|(_, _, w)| w.clone()).collect(),
+            folded_output: cp_public_instance.x_folded.clone(),
+            folded_output_instance: folded_output_instance.clone(),
+            folded_output_witness: folded_output_witness.clone(),
+            folded_witness: folded_witness.clone(),
+            folding_proof: folding_proof.clone(),
+        };
+
+        let cp_proof = if let Some(proof) =
+            CPB::prove_typed_cp(&self.cp_pk, &cp_public_instance, &typed_cp_witness)
+        {
+            proof
+        } else {
+            CPB::prove(&self.cp_pk, &cp_instance, &cp_witness)
+        };
 
         let output_instance = cp_snark::encode_folded_instance(&folding_proof.folded_instance);
         let output_witness = cp_snark::encode_folded_witness(&folded_witness);
 
-        let d = self.params.d as usize;
+        let d = self.params.d;
         let instance_elems = output_instance.len() / 8;
         let witness_elems = output_witness.len() / 8;
         let total_elems = instance_elems + witness_elems;
         let total_flat = r1cs.num_variables * d;
 
-        let output_pk = if total_elems <= total_flat {
-            let output_context = cp_snark::serialize_output_context(r1cs, self.params.q, d);
-            let output_relation = RelationDescription {
-                num_instance_vars: self.params.n(),
-                num_witness_vars: self.params.n(),
-                num_constraints: self.params.m,
-                context: Some(output_context),
-            };
-            let (pk, _) = OB::setup(&output_relation);
-            pk
+        let output_proof = if let Some(output_context) =
+            OB::serialize_output_context(r1cs, self.params.q, d)
+        {
+            let output_pk = self.output_pk_for_context(output_context);
+            if OB::has_authoritative_typed_output() {
+                OB::prove_typed_output(&output_pk, &folded_output_instance, &folded_output_witness)
+                    .expect("authoritative typed output backend rejected folded output relation")
+            } else if let Some(proof) =
+                OB::prove_typed_output(&output_pk, &folded_output_instance, &folded_output_witness)
+            {
+                proof
+            } else if total_elems <= total_flat {
+                OB::prove(&output_pk, &output_instance, &output_witness)
+            } else {
+                OB::prove(&self.output_pk, &output_instance, &output_witness)
+            }
         } else {
-            self.output_pk.clone()
+            OB::prove(&self.output_pk, &output_instance, &output_witness)
         };
-
-        let output_proof = OB::prove(&output_pk, &output_instance, &output_witness);
 
         ProofBundle {
             cp_proof,
             output_proof,
             cp_public_instance: cp_public_instance.clone(),
-            witness_bundle: CpWitnessBundle {
-                transcript_bytes,
-                fs_commitments,
-                fs_openings,
-                fs_messages,
-                fold_inputs,
-                folded_output: cp_public_instance.x_folded,
-            },
+            witness_bundle: typed_cp_witness,
         }
+    }
+
+    /// Generate a public-only v2 modular proof bundle.
+    pub fn prove_v2(
+        &self,
+        statements: &[(Commitment, Vec<i64>, RingVector)],
+        r1cs: &R1CSMatrices,
+    ) -> ProofBundleV2<CPB, OB> {
+        self.prove(statements, r1cs).to_v2()
     }
 }
 
 impl<CPB: CpBackend, OB: OutputBackend> Verifier<CPB, OB> {
+    fn output_vk_for_context(&self, output_context: Vec<u8>) -> OB::VerifyingKey {
+        if let Some(vk) = self
+            .output_vk_cache
+            .lock()
+            .expect("output_vk_cache mutex poisoned")
+            .get(&output_context)
+            .cloned()
+        {
+            return vk;
+        }
+
+        let relation = RelationDescription {
+            num_instance_vars: self.params.n(),
+            num_witness_vars: self.params.n(),
+            num_constraints: self.params.m,
+            context: Some(output_context.clone()),
+        };
+        let (_, vk) = OB::setup(&relation);
+
+        self.output_vk_cache
+            .lock()
+            .expect("output_vk_cache mutex poisoned")
+            .insert(output_context, vk.clone());
+        vk
+    }
+
     /// Verify a modular proof bundle against public inputs.
     ///
-    /// **Design note:** This method does *not* call [`CpRelation::check`] explicitly.
-    /// Instead, the CP relation consistency is enforced implicitly by the backend proof:
-    /// [`encode_cp_backend_instance`] embeds all four digests (`fs_root`, `fold_root`,
-    /// `challenge_digest`, `transcript_seed_digest`) plus the folded instance into the
-    /// CP backend instance. The CP backend proof then binds these values — any
-    /// inconsistency between digests and the underlying witness data will cause the
-    /// backend verification to fail.
+    /// The verifier checks the transcript-seed digest, verifies the CP/output
+    /// backend proofs, and then runs explicit witness-side consistency checks
+    /// over the carried folding/transcript data.
     ///
-    /// [`CpRelation::check`] remains available as a standalone audit/debugging tool
-    /// for inspecting proof internals without running full backend verification.
+    /// [`CpRelation::check`] remains available as a standalone audit/debugging tool,
+    /// but this verifier does not rely on backend proof verification alone.
     #[must_use]
     pub fn verify(
         &self,
@@ -343,30 +465,137 @@ impl<CPB: CpBackend, OB: OutputBackend> Verifier<CPB, OB> {
             return false;
         }
 
+        if crate::cp_relation_core::CpRelation::check_with_algebra(
+            &proof.cp_public_instance,
+            &proof.witness_bundle,
+            &self.ajtai,
+            r1cs,
+            self.params.b_input(),
+        )
+        .is_err()
+        {
+            return false;
+        }
+
         let cp_instance = encode_cp_backend_instance(&proof.cp_public_instance, &self.cp_layout);
-        if !CPB::verify(&self.cp_vk, &cp_instance, &proof.cp_proof) {
+        let cp_backend_ok = if let Some(ok) =
+            CPB::verify_typed_cp(&self.cp_vk, &proof.cp_public_instance, &proof.cp_proof)
+        {
+            ok
+        } else {
+            CPB::verify(&self.cp_vk, &cp_instance, &proof.cp_proof)
+        };
+        if !cp_backend_ok {
             return false;
         }
 
         let output_instance = cp_snark::encode_folded_instance(&proof.cp_public_instance.x_folded);
-        let d = self.params.d as usize;
+        let d = self.params.d;
         let instance_elems = output_instance.len() / 8;
         let total_flat = r1cs.num_variables * d;
 
-        let output_vk = if instance_elems <= total_flat {
-            let output_context = cp_snark::serialize_output_context(r1cs, self.params.q, d);
-            let output_relation = RelationDescription {
-                num_instance_vars: self.params.n(),
-                num_witness_vars: self.params.n(),
-                num_constraints: self.params.m,
-                context: Some(output_context),
+        let output_backend_ok =
+            if let Some(output_context) = OB::serialize_output_context(r1cs, self.params.q, d) {
+                let output_vk = self.output_vk_for_context(output_context);
+                if OB::has_authoritative_typed_output() {
+                    OB::verify_typed_output(
+                        &output_vk,
+                        &proof.cp_public_instance.folded_output,
+                        &proof.output_proof,
+                    )
+                    .unwrap_or(false)
+                } else if let Some(ok) = OB::verify_typed_output(
+                    &output_vk,
+                    &proof.cp_public_instance.folded_output,
+                    &proof.output_proof,
+                ) {
+                    ok
+                } else if instance_elems <= total_flat {
+                    OB::verify(&output_vk, &output_instance, &proof.output_proof)
+                } else {
+                    OB::verify(&self.output_vk, &output_instance, &proof.output_proof)
+                }
+            } else {
+                OB::verify(&self.output_vk, &output_instance, &proof.output_proof)
             };
-            let (_, vk) = OB::setup(&output_relation);
-            vk
-        } else {
-            self.output_vk.clone()
-        };
 
-        OB::verify(&output_vk, &output_instance, &proof.output_proof)
+        if !output_backend_ok {
+            return false;
+        }
+
+        crate::snark::verify_explicit_soundness(
+            &self.params,
+            &self.ajtai,
+            public_inputs,
+            &proof.witness_bundle.original_witnesses,
+            &proof.witness_bundle.fs_commitments,
+            &proof.witness_bundle.fs_openings,
+            &proof.witness_bundle.fs_messages,
+            &proof.witness_bundle.fold_inputs,
+            &proof.witness_bundle.folding_proof,
+            &proof.cp_public_instance.x_folded,
+            &proof.witness_bundle.folded_witness,
+            &proof.cp_public_instance.fs_root,
+            &proof.cp_public_instance.fold_root,
+            &proof.cp_public_instance.challenge_digest,
+            &proof.cp_public_instance.transcript_seed_digest,
+            r1cs,
+            crate::snark::ExplicitSoundnessAssumptions {
+                transcript_seed_checked: true,
+                cp_relation_checked: true,
+            },
+        )
+    }
+
+    /// Verify a public-only v2 modular proof bundle.
+    ///
+    /// This path never accesses FS openings/messages, original witnesses,
+    /// folding proofs, folded witnesses, or fold inputs. It fails closed unless
+    /// both selected backends advertise authoritative typed verification.
+    #[must_use]
+    pub fn verify_v2(
+        &self,
+        public_inputs: &[Vec<i64>],
+        proof: &ProofBundleV2<CPB, OB>,
+        r1cs: &R1CSMatrices,
+    ) -> bool {
+        let expected_tsd = digest_transcript_seed(
+            public_inputs,
+            r1cs.num_constraints,
+            r1cs.num_variables,
+            r1cs.num_public,
+        );
+        if expected_tsd != proof.transcript_seed_digest {
+            return false;
+        }
+
+        if digest_fs_root(&proof.fs_commitments) != proof.fs_root {
+            return false;
+        }
+
+        if !CPB::has_authoritative_typed_cp() {
+            return false;
+        }
+        let cp_public_instance = CpPublicInstance {
+            fs_root: proof.fs_root,
+            fold_root: proof.fold_root,
+            challenge_digest: proof.challenge_digest,
+            transcript_seed_digest: proof.transcript_seed_digest,
+            x_folded: proof.folded_output.folded_instance.clone(),
+            folded_output: proof.folded_output.clone(),
+        };
+        if CPB::verify_typed_cp(&self.cp_vk, &cp_public_instance, &proof.cp_proof) != Some(true) {
+            return false;
+        }
+
+        if !OB::has_authoritative_typed_output() {
+            return false;
+        }
+        let d = self.params.d;
+        let Some(output_context) = OB::serialize_output_context(r1cs, self.params.q, d) else {
+            return false;
+        };
+        let output_vk = self.output_vk_for_context(output_context);
+        OB::verify_typed_output(&output_vk, &proof.folded_output, &proof.output_proof) == Some(true)
     }
 }

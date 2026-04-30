@@ -88,7 +88,7 @@ mod identity_relation {
                 &IdentityRelation,
             )
             .unwrap();
-        assert!(cp.verify(&[c], b"", &proof));
+        assert!(cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof));
     }
 
     #[test]
@@ -108,7 +108,13 @@ mod identity_relation {
                 &IdentityRelation,
             )
             .unwrap();
-        assert!(cp.verify(&[c1, c2, c3], b"pub-data", &proof));
+        assert!(cp.verify(
+            &scheme,
+            &[c1, c2, c3],
+            b"pub-data",
+            &IdentityRelation,
+            &proof
+        ));
     }
 
     #[test]
@@ -127,7 +133,7 @@ mod identity_relation {
                 &IdentityRelation,
             )
             .unwrap();
-        assert!(!cp.verify(&[c1], b"", &proof));
+        assert!(!cp.verify(&scheme, &[c1], b"", &IdentityRelation, &proof));
     }
 
     #[test]
@@ -196,7 +202,7 @@ mod preimage_relation {
                 &PreimageRelation,
             )
             .unwrap();
-        assert!(cp.verify(&[c1, c2], &digest, &proof));
+        assert!(cp.verify(&scheme, &[c1, c2], &digest, &PreimageRelation, &proof));
     }
 
     #[test]
@@ -234,7 +240,7 @@ mod preimage_relation {
                 &PreimageRelation,
             )
             .unwrap();
-        assert!(cp.verify(&[c], &digest, &proof));
+        assert!(cp.verify(&scheme, &[c], &digest, &PreimageRelation, &proof));
     }
 }
 
@@ -267,7 +273,7 @@ mod transcript_relation_tests {
                 &relation,
             )
             .unwrap();
-        assert!(cp.verify(&[c1, c2], &expected, &proof));
+        assert!(cp.verify(&scheme, &[c1, c2], &expected, &relation, &proof));
     }
 
     #[test]
@@ -306,7 +312,7 @@ mod transcript_relation_tests {
         let proof = cp
             .prove(&scheme, &[b"x".as_slice()], &[o], &[c], b"", &relation)
             .unwrap();
-        assert!(cp.verify(&[c], b"", &proof));
+        assert!(cp.verify(&scheme, &[c], b"", &relation, &proof));
     }
 }
 
@@ -336,7 +342,7 @@ mod fn_relation_tests {
         let proof = cp
             .prove(&scheme, &msg_refs, &os, &cs, b"", &sum_is_100)
             .unwrap();
-        assert!(cp.verify(&cs, b"", &proof));
+        assert!(cp.verify(&scheme, &cs, b"", &sum_is_100, &proof));
     }
 
     #[test]
@@ -364,7 +370,7 @@ mod fn_relation_tests {
                 &product_rel,
             )
             .unwrap();
-        assert!(cp.verify(&[ca, cb], &expected_product, &proof));
+        assert!(cp.verify(&scheme, &[ca, cb], &expected_product, &product_rel, &proof));
     }
 
     #[test]
@@ -401,7 +407,7 @@ mod fn_relation_tests {
         let proof = cp
             .prove(&scheme, &[msg.as_slice()], &[o], &[c], b"", &contains_fox)
             .unwrap();
-        assert!(cp.verify(&[c], b"", &proof));
+        assert!(cp.verify(&scheme, &[c], b"", &contains_fox, &proof));
     }
 }
 
@@ -420,7 +426,7 @@ mod builder_tests {
             .prove(&scheme, &IdentityRelation)
             .unwrap();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 5);
-        assert!(cp.verify(&commitments, b"pub", &proof));
+        assert!(cp.verify(&scheme, &commitments, b"pub", &IdentityRelation, &proof));
     }
 
     #[test]
@@ -432,7 +438,7 @@ mod builder_tests {
             .prove(&scheme, &IdentityRelation)
             .unwrap();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 6);
-        assert!(cp.verify(&commitments, b"", &proof));
+        assert!(cp.verify(&scheme, &commitments, b"", &IdentityRelation, &proof));
     }
 
     #[test]
@@ -454,7 +460,7 @@ mod builder_tests {
             .prove(&scheme, &PreimageRelation)
             .unwrap();
         let cp = CPSnark::<DummySnark, HashCommitment>::setup(2, 1);
-        assert!(cp.verify(&commitments, &digest, &proof));
+        assert!(cp.verify(&scheme, &commitments, &digest, &PreimageRelation, &proof));
     }
 }
 
@@ -532,7 +538,7 @@ mod soundness_tests {
         let proof = cp
             .prove(&scheme, &[], &[], &[], b"ok", &always_true)
             .unwrap();
-        assert!(cp.verify(&[], b"ok", &proof));
+        assert!(cp.verify(&scheme, &[], b"ok", &always_true, &proof));
     }
 
     #[test]
@@ -550,7 +556,7 @@ mod soundness_tests {
         let proof = cp
             .prove(&scheme, &msg_refs, &os, &cs, b"", &IdentityRelation)
             .unwrap();
-        assert!(cp.verify(&cs, b"", &proof));
+        assert!(cp.verify(&scheme, &cs, b"", &IdentityRelation, &proof));
     }
 
     #[test]
@@ -568,10 +574,10 @@ mod soundness_tests {
                 &IdentityRelation,
             )
             .unwrap();
-        assert!(cp.verify(&[c], b"", &proof));
+        assert!(cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof));
         proof.transcript_digest[0] ^= 0xFF;
         assert!(
-            !cp.verify(&[c], b"", &proof),
+            !cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof),
             "tampered transcript_digest must be rejected"
         );
     }
@@ -635,7 +641,7 @@ mod pipeline_integration {
         let proof = cp
             .prove(&scheme, &msg_refs, &os, &cs, &expected, &relation)
             .unwrap();
-        assert!(cp.verify(&cs, &expected, &proof));
+        assert!(cp.verify(&scheme, &cs, &expected, &relation, &proof));
     }
 
     #[test]

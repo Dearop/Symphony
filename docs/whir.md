@@ -62,6 +62,7 @@ pub struct WhirProof {
     pub evaluations: [BabyBear; 3],                        // [Az(r*), Bz(r*), Cz(r*)] or [w(r*), 0, 0]
     pub whir_pcs_proof: WhirPcsProof<F, EF, WhirMmcs>,    // Merkle commitment + opening proof
     pub z_eval: BabyBear,                                  // Polynomial evaluation verified by WHIR
+    pub linear_checks: Vec<WhirLinearCheckProof>,          // R1CS paths: bind Az/Bz/Cz claims to z
     pub num_vars: usize,
     pub is_output: bool,
 }
@@ -111,7 +112,7 @@ The `build_whir_infra(seed, num_variables)` function deterministically construct
 
 Configuration:
 - Folding factor: `min(num_variables, 4)`
-- Security level: 32 bits (testing configuration)
+- Security level: 100 bits by default
 - Soundness type: `UniqueDecoding`
 - Starting log inverse rate: 1
 
@@ -121,22 +122,22 @@ Both prover and verifier call `build_whir_infra` with the same seed to get ident
 
 ## WHIR PCS Integration
 
-### Commit and Prove (`whir_commit_and_prove`)
+### Commit and Prove (`whir_commit_and_prove_multi`)
 
 1. Build WHIR infrastructure from seed.
 2. Wrap the witness evaluations as an `EvaluationsList` (multilinear polynomial in evaluation form).
 3. Create an `InitialStatement` via `params.initial_statement(poly, SumcheckStrategy::Classic)`.
-4. Call `statement.evaluate(&point)` to record the evaluation constraint — WHIR computes and stores the actual evaluation internally.
+4. Call `statement.evaluate(&point)` for each requested evaluation constraint — WHIR computes and stores the actual evaluations internally.
 5. Initialize a `DuplexChallenger` from the Poseidon2 permutation, feed the `DomainSeparator`.
 6. `CommitmentWriter::commit()` — builds the Merkle tree and writes the commitment into the proof/challenger.
 7. `WhirProver::prove()` — executes WHIR's folding rounds, producing Merkle opening proofs.
 
-### Verify Opening (`whir_verify_opening`)
+### Verify Opening (`whir_verify_opening_multi`)
 
 1. Build identical WHIR infrastructure from same seed.
 2. Initialize identical challenger with same `DomainSeparator`.
 3. `CommitmentReader::parse_commitment()` — reads the Merkle root from the proof into the challenger.
-4. Build an `EqStatement` with the claimed `(point, evaluation)` pair.
+4. Build an `EqStatement` with the claimed `(point, evaluation)` pairs.
 5. `WhirVerifier::verify()` — checks the opening proof against the commitment and statement.
 
 ### Variable Ordering Convention
@@ -169,9 +170,11 @@ This reversal is applied consistently on both the prover and verifier sides.
 
 6. **Evaluation claims**: Extract `az_eval`, `bz_eval`, `cz_eval` at the sumcheck challenge point `r*`.
 
-7. **WHIR PCS proof**: Commit to `z_flat` as a multilinear polynomial. Add evaluation constraint `z(r*) = z_eval` and prove via WHIR's Merkle-based opening protocol.
+7. **Linear binding checks**: For each sparse R1CS matrix `M in {A,B,C}`, run a degree-2 inner-product sumcheck proving that the claimed `Mz(r*)` equals the multilinear matrix row `M(r*, .)` applied to the same committed assignment polynomial `z`. Each check produces one additional `z` evaluation point.
 
-8. **Return**: Proof containing `sumcheck_rounds_4`, evaluations, and the WHIR PCS proof.
+8. **WHIR PCS proof**: Commit to `z_flat` as a multilinear polynomial. Add the main evaluation constraint `z(r*) = z_eval` and the three linear-binding evaluation constraints, then prove all openings in one WHIR proof.
+
+9. **Return**: Proof containing `sumcheck_rounds_4`, the claimed `Az/Bz/Cz` evaluations, the linear-binding sumchecks, and the WHIR PCS proof.
 
 ---
 
@@ -197,7 +200,8 @@ Unlike Spartan's CP path (which includes the full witness table), the WHIR CP pa
 2. Verify sumcheck rounds: check `p(0) + p(1) == claimed_sum` at each round, derive challenges.
 3. At the final round, verify `eq(tau, r*) * [az_eval * bz_eval - cz_eval] == last_claim`.
 4. Recompute `z_padded_len` and `z_num_vars` from R1CS dimensions.
-5. Verify WHIR PCS opening: the committed polynomial evaluates to `z_eval` at `r*`.
+5. Verify the three linear-binding sumchecks for `A`, `B`, and `C` using sparse matrix MLE evaluation at verifier-known points.
+6. Verify one WHIR PCS proof containing the main `z(r*)` opening and the three linear-binding openings.
 
 ### CP path
 
@@ -205,6 +209,12 @@ Unlike Spartan's CP path (which includes the full witness table), the WHIR CP pa
 2. Verify sumcheck product rounds: `p(0) + p(1) == claimed_sum` at each round.
 3. Check final evaluation: `eq(tau, r*) * w_eval == last_round_eval`.
 4. Verify WHIR PCS opening for the witness polynomial at `r*`.
+
+The CP-R1CS encoding range-constrains the Phase-A q-wraps that bind folded
+commitments and public inputs. Phase-B q-wraps remain part of the legacy
+embedded Hadamard verifier and are not a standalone authoritative typed CP
+relation; the validated modular WHIR path keeps the explicit algebraic
+`CpRelation::check_with_algebra` check mandatory.
 
 ---
 

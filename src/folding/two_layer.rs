@@ -54,9 +54,7 @@ fn split_witness(witness: &RingVector, num_blocks: usize) -> Vec<RingVector> {
     for b in 0..num_blocks {
         let start = b * block_size;
         let end = (start + block_size).min(witness.len());
-        blocks.push(RingVector {
-            elements: witness.elements[start..end].to_vec(),
-        });
+        blocks.push(RingVector::from(witness.elements[start..end].to_vec()));
     }
     blocks
 }
@@ -80,9 +78,7 @@ fn decompose_blocks(blocks: &[RingVector], base: i64, k_b: usize, _q: u64) -> Ve
                 }
                 layer_elems.push(RingElement { coeffs: new_coeffs });
             }
-            decomposed.push(RingVector {
-                elements: layer_elems,
-            });
+            decomposed.push(RingVector::from(layer_elems));
         }
     }
     decomposed

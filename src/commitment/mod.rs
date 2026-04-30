@@ -1,7 +1,6 @@
 //! Module-Ajtai commitment scheme — the core replacement for Merkle trees.
 
 pub mod opening;
-pub mod params;
 
 use crate::params::D;
 use crate::ring::ntt::NttContext;
@@ -25,7 +24,7 @@ pub struct AjtaiParams {
 }
 
 /// A commitment value: κ ring elements.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commitment {
     pub value: RingVector,
 }
@@ -61,7 +60,6 @@ impl AjtaiParams {
             })
             .collect();
 
-        // Pre-compute A in NTT domain for fast commitment.
         let a_ntt: Vec<Vec<[u64; D]>> = a
             .iter()
             .map(|row| row.iter().map(|elem| ntt.forward(elem)).collect())
@@ -77,28 +75,28 @@ impl AjtaiParams {
         }
     }
 
-    /// Commit: c = A · m ∈ Rq^κ, using NTT-accelerated multiplication.
-    pub fn commit(&self, witness: &RingVector) -> (Commitment, Opening) {
-        assert_eq!(witness.len(), self.n);
-
-        // Pre-compute witness elements in NTT domain (shared across rows).
-        let witness_ntt: Vec<[u64; D]> = witness
-            .elements
-            .iter()
-            .map(|e| self.ntt.forward(e))
-            .collect();
-
-        let mut value = RingVector::zero(self.kappa);
-        for i in 0..self.kappa {
-            // Accumulate row i in NTT domain: sum_j a_ntt[i][j] * w_ntt[j]
+    /// NTT-accelerated matrix-vector product: A · v ∈ Rq^κ.
+    ///
+    /// Pre-transforms `v` into NTT domain once, then accumulates
+    /// each row via pointwise multiply-and-add.
+    pub fn mul_vec_ntt(&self, v: &RingVector) -> RingVector {
+        assert_eq!(v.len(), self.n);
+        let v_ntt: Vec<[u64; D]> = v.elements.iter().map(|e| self.ntt.forward(e)).collect();
+        let mut result = RingVector::zero(self.kappa);
+        for (i, out) in result.elements.iter_mut().enumerate() {
             let mut acc = [0u64; D];
-            for j in 0..self.n {
-                let prod = self.ntt.pointwise_mul(&self.a_ntt[i][j], &witness_ntt[j]);
+            for (a_ij, v_j) in self.a_ntt[i].iter().zip(v_ntt.iter()) {
+                let prod = self.ntt.pointwise_mul(a_ij, v_j);
                 acc = self.ntt.pointwise_add(&acc, &prod);
             }
-            value.elements[i] = self.ntt.inverse(&acc);
+            *out = self.ntt.inverse(&acc);
         }
+        result
+    }
 
+    /// Commit: c = A · m ∈ Rq^κ, using NTT-accelerated multiplication.
+    pub fn commit(&self, witness: &RingVector) -> (Commitment, Opening) {
+        let value = self.mul_vec_ntt(witness);
         (
             Commitment { value },
             Opening {
@@ -107,31 +105,15 @@ impl AjtaiParams {
         )
     }
 
-    /// Verify: check A·f = c and ‖f‖_2 < bound, using NTT-accelerated multiplication.
+    /// Verify: check A·f = c and ‖f‖_2 < bound.
     #[must_use]
     pub fn verify_open(&self, c: &Commitment, f: &RingVector, bound_sq: u128) -> bool {
         if f.len() != self.n {
             return false;
         }
-
-        // Check norm bound
         if f.norm_sq() >= bound_sq {
             return false;
         }
-
-        // Recompute A·f in NTT domain and compare
-        let f_ntt: Vec<[u64; D]> = f.elements.iter().map(|e| self.ntt.forward(e)).collect();
-
-        let mut recomputed = RingVector::zero(self.kappa);
-        for i in 0..self.kappa {
-            let mut acc = [0u64; D];
-            for j in 0..self.n {
-                let prod = self.ntt.pointwise_mul(&self.a_ntt[i][j], &f_ntt[j]);
-                acc = self.ntt.pointwise_add(&acc, &prod);
-            }
-            recomputed.elements[i] = self.ntt.inverse(&acc);
-        }
-
-        recomputed.elements == c.value.elements
+        self.mul_vec_ntt(f).elements == c.value.elements
     }
 }

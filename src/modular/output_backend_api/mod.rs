@@ -10,6 +10,24 @@ pub trait OutputBackend {
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey);
     fn prove(pk: &Self::ProvingKey, instance: &[u8], witness: &[u8]) -> Self::Proof;
     fn verify(vk: &Self::VerifyingKey, instance: &[u8], proof: &Self::Proof) -> bool;
+    fn serialize_output_context(
+        r1cs: &crate::r1cs::R1CSMatrices,
+        q: u64,
+        d: usize,
+    ) -> Option<Vec<u8>>;
+    fn has_authoritative_typed_output() -> bool {
+        false
+    }
+    fn prove_typed_output(
+        pk: &Self::ProvingKey,
+        instance: &crate::folding::FoldedOutputInstance,
+        witness: &crate::folding::FoldedOutputWitness,
+    ) -> Option<Self::Proof>;
+    fn verify_typed_output(
+        vk: &Self::VerifyingKey,
+        instance: &crate::folding::FoldedOutputInstance,
+        proof: &Self::Proof,
+    ) -> Option<bool>;
 }
 
 impl<T: BackendSnark> OutputBackend for T {
@@ -27,5 +45,33 @@ impl<T: BackendSnark> OutputBackend for T {
 
     fn verify(vk: &Self::VerifyingKey, instance: &[u8], proof: &Self::Proof) -> bool {
         T::verify(vk, instance, proof)
+    }
+
+    fn serialize_output_context(
+        r1cs: &crate::r1cs::R1CSMatrices,
+        q: u64,
+        d: usize,
+    ) -> Option<Vec<u8>> {
+        T::serialize_output_context(r1cs, q, d)
+    }
+
+    fn has_authoritative_typed_output() -> bool {
+        T::has_authoritative_typed_output()
+    }
+
+    fn prove_typed_output(
+        pk: &Self::ProvingKey,
+        instance: &crate::folding::FoldedOutputInstance,
+        witness: &crate::folding::FoldedOutputWitness,
+    ) -> Option<Self::Proof> {
+        T::prove_typed_output(pk, instance, witness)
+    }
+
+    fn verify_typed_output(
+        vk: &Self::VerifyingKey,
+        instance: &crate::folding::FoldedOutputInstance,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        T::verify_typed_output(vk, instance, proof)
     }
 }

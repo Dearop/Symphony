@@ -305,7 +305,7 @@ fn compute_g_final(
         let x_inv = x.invert();
         let stride = 1 << (num_rounds - 1 - j);
         for (i, si) in s.iter_mut().enumerate().take(n) {
-            if (i / stride) % 2 == 0 {
+            if (i / stride).is_multiple_of(2) {
                 *si *= x_inv;
             } else {
                 *si *= *x;

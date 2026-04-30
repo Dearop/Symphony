@@ -3,6 +3,8 @@
 //! Elements of K are pairs (a0, a1) ∈ Fq^2 with multiplication defined
 //! by an irreducible degree-2 polynomial over Fq.
 
+use super::arith::{centered_mod, mod_pow};
+
 /// An element of K = Fq^2 = Fq[Y] / <Y^2 - alpha> for a non-residue alpha.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtFieldElement {
@@ -36,6 +38,7 @@ impl ExtFieldContext {
     }
 
     /// Addition in K.
+    #[inline]
     pub fn add(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
         ExtFieldElement {
             c0: self.reduce(a.c0 as i128 + b.c0 as i128),
@@ -44,6 +47,7 @@ impl ExtFieldContext {
     }
 
     /// Subtraction in K.
+    #[inline]
     pub fn sub(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
         ExtFieldElement {
             c0: self.reduce(a.c0 as i128 - b.c0 as i128),
@@ -55,6 +59,7 @@ impl ExtFieldContext {
     ///
     /// All intermediate products are reduced before summation to prevent
     /// i128 overflow when q is large (up to ~2^60).
+    #[inline]
     pub fn mul(&self, a: &ExtFieldElement, b: &ExtFieldElement) -> ExtFieldElement {
         let a1b1_alpha =
             self.reduce(self.reduce(a.c1 as i128 * b.c1 as i128) as i128 * self.alpha as i128);
@@ -68,6 +73,7 @@ impl ExtFieldContext {
     }
 
     /// Scalar multiplication by an Fq element.
+    #[inline]
     pub fn scalar_mul(&self, a: &ExtFieldElement, s: i64) -> ExtFieldElement {
         ExtFieldElement {
             c0: self.reduce(a.c0 as i128 * s as i128),
@@ -76,6 +82,7 @@ impl ExtFieldContext {
     }
 
     /// Multiplicative inverse in K using the norm: a^{-1} = conj(a) / N(a).
+    #[inline]
     pub fn inv(&self, a: &ExtFieldElement) -> Option<ExtFieldElement> {
         let norm = self
             .reduce(a.c0 as i128 * a.c0 as i128 - self.alpha as i128 * a.c1 as i128 * a.c1 as i128);
@@ -89,16 +96,9 @@ impl ExtFieldContext {
         })
     }
 
+    #[inline]
     fn reduce(&self, x: i128) -> i64 {
-        let q = self.q as i128;
-        let q_half = (self.q / 2) as i64;
-        let mut r = (x % q) as i64;
-        if r > q_half {
-            r -= self.q as i64;
-        } else if r < -q_half {
-            r += self.q as i64;
-        }
-        r
+        centered_mod(x, self.q)
     }
 
     fn field_inv(&self, a: i64) -> Option<i64> {
@@ -106,14 +106,13 @@ impl ExtFieldContext {
             return None;
         }
         let a_pos = if a < 0 { a + self.q as i64 } else { a } as u64;
-        let (mut old_r, mut r) = (a_pos as i128, self.q as i128);
-        let (mut old_s, mut s) = (1i128, 0i128);
-        while r != 0 {
-            let quotient = old_r / r;
-            (old_r, r) = (r, old_r - quotient * r);
-            (old_s, s) = (s, old_s - quotient * s);
-        }
-        Some(self.reduce(old_s))
+        let inv = super::arith::mod_inv(a_pos, self.q);
+        let q_half = self.q / 2;
+        Some(if inv > q_half {
+            inv as i64 - self.q as i64
+        } else {
+            inv as i64
+        })
     }
 }
 
@@ -121,28 +120,11 @@ impl ExtFieldContext {
 fn find_non_residue(q: u64) -> i64 {
     let exp = (q - 1) / 2;
     for a in 2..q {
-        let r = mod_pow(a, exp, q);
-        if r == q - 1 {
-            // a is a QNR
+        if mod_pow(a, exp, q) == q - 1 {
             return a as i64;
         }
     }
     panic!("no quadratic non-residue found mod {q}");
-}
-
-fn mod_pow(mut base: u64, mut exp: u64, modulus: u64) -> u64 {
-    let mut result = 1u128;
-    let m = modulus as u128;
-    base %= modulus;
-    let mut b = base as u128;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = (result * b) % m;
-        }
-        exp >>= 1;
-        b = (b * b) % m;
-    }
-    result as u64
 }
 
 #[cfg(test)]

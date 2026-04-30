@@ -61,7 +61,7 @@ mod hash_commitment_core {
 
     #[test]
     fn default_impl() {
-        let hc = HashCommitment::default();
+        let hc = HashCommitment;
         let msg = b"default test";
         let (commitment, opening) = hc.commit(msg);
         assert!(hc.verify(&commitment, msg, &opening));

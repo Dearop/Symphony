@@ -14,7 +14,7 @@ pub type EvaluationTriple = [TensorElement; 3];
 
 /// A linear relation instance: commitment c with evaluation point r
 /// and evaluation values v ∈ E^3.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearRelation {
     /// Main commitment bound by the relation.
     pub commitment: Commitment,
@@ -25,7 +25,7 @@ pub struct LinearRelation {
 }
 
 /// A batched linear relation (output of range proof / folding).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchedLinearRelation {
     /// Batched commitments opened at a shared point.
     pub commitments: Vec<Commitment>,

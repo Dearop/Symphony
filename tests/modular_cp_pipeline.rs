@@ -125,13 +125,15 @@ fn cp_relation_check_detects_tampering() {
 // Security / soundness tests ported from security_soundness.rs
 // =========================================================================
 
-fn build_modular_proof() -> (
+type ModularFixture = (
     Prover<SumcheckSnark, SumcheckSnark>,
     Verifier<SumcheckSnark, SumcheckSnark>,
     Vec<(Commitment, Vec<i64>, RingVector)>,
     Vec<Vec<i64>>,
     symphony::r1cs::R1CSMatrices,
-) {
+);
+
+fn build_modular_proof() -> ModularFixture {
     let params = modular_params();
     let (prover, verifier): (
         Prover<SumcheckSnark, SumcheckSnark>,
@@ -149,13 +151,12 @@ fn build_modular_proof() -> (
 }
 
 #[test]
-fn modular_witness_tampering_does_not_affect_verification() {
+fn modular_witness_tampering_is_rejected() {
     let (prover, verifier, statements, public_inputs, r1cs) = build_modular_proof();
     let mut proof = prover.prove(&statements, &r1cs);
 
-    // Tamper with witness_bundle — verifier only checks digests, not raw witness data
     proof.witness_bundle.fs_commitments[0][0] ^= 0x01;
-    assert!(verifier.verify(&public_inputs, &proof, &r1cs));
+    assert!(!verifier.verify(&public_inputs, &proof, &r1cs));
 }
 
 #[test]
@@ -271,7 +272,18 @@ fn cp_relation_challenge_digest_mismatch() {
     let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
     let mut proof = prover.prove(&statements, &r1cs);
 
-    // Corrupt transcript bytes so challenge derivation changes
+    proof.cp_public_instance.challenge_digest[0] ^= 0xFF;
+    assert_eq!(
+        CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
+        Err(CpRelationError::ChallengeDigestMismatch)
+    );
+}
+
+#[test]
+fn cp_relation_transcript_parse_mismatch() {
+    let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
+    let mut proof = prover.prove(&statements, &r1cs);
+
     proof.witness_bundle.transcript_bytes.push(0xFF);
     assert_eq!(
         CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
@@ -292,11 +304,82 @@ fn cp_relation_length_mismatch() {
 }
 
 #[test]
+fn cp_relation_transcript_seed_mismatch() {
+    let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
+    let mut proof = prover.prove(&statements, &r1cs);
+
+    proof.cp_public_instance.transcript_seed_digest[0] ^= 0xFF;
+    assert_eq!(
+        CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
+        Err(CpRelationError::TranscriptSeedMismatch)
+    );
+}
+
+#[test]
+fn cp_relation_fs_opening_mismatch() {
+    let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
+    let mut proof = prover.prove(&statements, &r1cs);
+
+    proof.witness_bundle.fs_openings[0][0] ^= 0xFF;
+    assert_eq!(
+        CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
+        Err(CpRelationError::FsOpeningMismatch)
+    );
+}
+
+#[test]
+fn cp_relation_fs_message_mismatch() {
+    let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
+    let mut proof = prover.prove(&statements, &r1cs);
+
+    proof.witness_bundle.fs_messages[0].push(0xFF);
+    assert_eq!(
+        CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
+        Err(CpRelationError::FsOpeningMismatch)
+    );
+}
+
+#[test]
 fn cp_relation_folded_output_mismatch() {
     let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
     let mut proof = prover.prove(&statements, &r1cs);
 
     proof.witness_bundle.folded_output.public_input[0].coeffs[0] += 1;
+    assert_eq!(
+        CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
+        Err(CpRelationError::FoldedOutputMismatch)
+    );
+}
+
+#[test]
+fn cp_relation_typed_folded_output_instance_mismatch() {
+    let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
+    let mut proof = prover.prove(&statements, &r1cs);
+
+    proof
+        .witness_bundle
+        .folded_output_instance
+        .linear_relation
+        .evaluation_point[0]
+        .c0 += 1;
+    assert_eq!(
+        CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
+        Err(CpRelationError::FoldedOutputMismatch)
+    );
+}
+
+#[test]
+fn cp_relation_typed_folded_output_witness_mismatch() {
+    let (prover, _verifier, statements, _pi, r1cs) = build_modular_proof();
+    let mut proof = prover.prove(&statements, &r1cs);
+
+    proof
+        .witness_bundle
+        .folded_output_witness
+        .folded_witness
+        .witness
+        .elements[0]
+        .coeffs[0] += 1;
     assert_eq!(
         CpRelation::check(&proof.cp_public_instance, &proof.witness_bundle),
         Err(CpRelationError::FoldedOutputMismatch)
