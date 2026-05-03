@@ -629,6 +629,142 @@ pub fn recompute_folded_commitment(
     })
 }
 
+/// Recompute the folded batched range relation from per-instance GR1CS proofs
+/// and the current β values in `proof`.
+pub fn recompute_folded_batched_relation(
+    proof: &FoldingProof,
+    evaluation_point: &[ExtFieldElement],
+    q: u64,
+    ntt: &crate::ring::ntt::NttContext,
+) -> Result<BatchedLinearRelation, FoldingError> {
+    if proof.beta.len() != proof.gr1cs_proofs.len() {
+        return Err(FoldingError::FoldingInconsistent);
+    }
+    let Some(first) = proof.gr1cs_proofs.first() else {
+        return Ok(BatchedLinearRelation {
+            commitments: Vec::new(),
+            evaluation_point: evaluation_point.to_vec(),
+            evaluation_values: Vec::new(),
+        });
+    };
+
+    let mut commitments = first.range_proof.monomial_commitments.clone();
+    for commitment in &mut commitments {
+        for elem in &mut commitment.value.elements {
+            *elem = RingElement::zero();
+        }
+    }
+    let mut evaluation_values = vec![
+        crate::ring::tensor::TensorElement::zero();
+        first.range_proof.monomial_proof.evaluations.len()
+    ];
+
+    let beta_ntt: Vec<[u64; D]> = proof.beta.iter().map(|b| ntt.forward(b)).collect();
+    let mul_by_beta = |x: &RingElement, beta_ntt: &[u64; D]| {
+        let x_ntt = ntt.forward(x);
+        let prod_ntt = ntt.pointwise_mul(&x_ntt, beta_ntt);
+        ntt.inverse(&prod_ntt)
+    };
+
+    for (ell, gr1cs) in proof.gr1cs_proofs.iter().enumerate() {
+        if gr1cs.range_proof.monomial_commitments.len() != commitments.len()
+            || gr1cs.range_proof.monomial_proof.evaluations.len() != evaluation_values.len()
+        {
+            return Err(FoldingError::FoldingInconsistent);
+        }
+
+        for (folded_commitment, commitment) in commitments
+            .iter_mut()
+            .zip(&gr1cs.range_proof.monomial_commitments)
+        {
+            if folded_commitment.value.len() != commitment.value.len() {
+                return Err(FoldingError::FoldingInconsistent);
+            }
+            for (out, elem) in folded_commitment
+                .value
+                .elements
+                .iter_mut()
+                .zip(&commitment.value.elements)
+            {
+                let scaled = mul_by_beta(elem, &beta_ntt[ell]);
+                out.add_assign(&scaled, q);
+            }
+        }
+        for (out, value) in evaluation_values
+            .iter_mut()
+            .zip(&gr1cs.range_proof.monomial_proof.evaluations)
+        {
+            for t in 0..crate::params::T {
+                let row = RingElement {
+                    coeffs: value.data[t],
+                };
+                let scaled = mul_by_beta(&row, &beta_ntt[ell]);
+                let current = RingElement {
+                    coeffs: out.data[t],
+                };
+                out.data[t] = current.add(&scaled, q).coeffs;
+            }
+        }
+    }
+
+    Ok(BatchedLinearRelation {
+        commitments,
+        evaluation_point: evaluation_point.to_vec(),
+        evaluation_values,
+    })
+}
+
+/// Recompute every folded public/witness object from the current β values.
+///
+/// This is used by public typed-CP provers that derive β from the public CP
+/// digest transcript rather than the legacy private folding transcript.
+pub fn retarget_folding_proof_to_current_beta(
+    proof: &mut FoldingProof,
+    public_inputs: &[Vec<i64>],
+    original_witnesses: &[RingVector],
+    q: u64,
+    ntt: &crate::ring::ntt::NttContext,
+) -> Result<FoldedWitness, FoldingError> {
+    let (public_input, folded_witness) =
+        recompute_folded_witness_state(proof, public_inputs, original_witnesses, q, ntt)?;
+    let commitment = recompute_folded_commitment(proof, q, ntt)?;
+    let evaluation_values = recompute_folded_evaluation_values(proof, q, ntt)?;
+    let hadamard_evaluation_point = proof.linear_relation.evaluation_point.clone();
+    let monomial_evaluation_point = proof.batched_relation.evaluation_point.clone();
+    let folded_instance = FoldedInstance {
+        commitment,
+        public_input,
+        evaluation_values,
+    };
+
+    proof.linear_relation = LinearRelation {
+        commitment: folded_instance.commitment.clone(),
+        evaluation_point: hadamard_evaluation_point,
+        evaluation_values: [
+            folded_instance
+                .evaluation_values
+                .first()
+                .cloned()
+                .unwrap_or_else(crate::ring::tensor::TensorElement::zero),
+            folded_instance
+                .evaluation_values
+                .get(1)
+                .cloned()
+                .unwrap_or_else(crate::ring::tensor::TensorElement::zero),
+            folded_instance
+                .evaluation_values
+                .get(2)
+                .cloned()
+                .unwrap_or_else(crate::ring::tensor::TensorElement::zero),
+        ],
+    };
+    proof.folded_instance = folded_instance;
+    proof.batched_relation =
+        recompute_folded_batched_relation(proof, &monomial_evaluation_point, q, ntt)?;
+
+    Ok(folded_witness)
+}
+
 /// Run the Πfold verifier.
 pub fn verify(
     proof: &FoldingProof,

@@ -1234,10 +1234,17 @@ mod modular_spartan_backend {
 mod modular_whir_backend {
     use super::*;
     use p3_field::PrimeCharacteristicRing;
+    use symphony::digest_core::PublicDigestScheme;
     use symphony::folding_core::{FoldSemantics, Statement, SymphonyFoldSemantics};
-    use symphony::proof_orchestrator::Prover;
+    use symphony::proof_orchestrator::{ProofBundleV2, Prover, PublicProofBundle, Verifier};
+    use symphony::public_proof::PublicProofEnvelope;
     use symphony::snark::cp_snark;
-    use symphony::snark::whir::WhirSnark;
+    use symphony::snark::whir::{
+        canonical_whir_proof_bytes, whir_proof_from_canonical_bytes, WhirSnark,
+    };
+
+    type WhirPublicProof = PublicProofBundle<WhirSnark, WhirSnark>;
+    type WhirVerifier = Verifier<WhirSnark, WhirSnark>;
 
     fn params() -> SymphonyParams {
         SymphonyParams {
@@ -1256,6 +1263,31 @@ mod modular_whir_backend {
         }
     }
 
+    fn public_params() -> SymphonyParams {
+        SymphonyParams {
+            q: Q,
+            d: D,
+            kappa: 2,
+            ell_np: 1,
+            ell_h: D,
+            lambda_pj: 1,
+            n_bar: 3,
+            m: 1,
+            b: 16,
+            k_cs: 1,
+            n_in: 1,
+            ntt: SymphonyParams::try_ntt(Q, D),
+        }
+    }
+
+    fn public_r1cs() -> (R1CSMatrices, Vec<i64>) {
+        let mut r1cs = R1CSMatrices::new(1, 3, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 2, 1);
+        r1cs.c.insert(0, 0, 15);
+        (r1cs, vec![1, 3, 5])
+    }
+
     fn make_statement(
         prover: &Prover<WhirSnark, WhirSnark>,
         z: &[i64],
@@ -1272,6 +1304,498 @@ mod modular_whir_backend {
                 .collect(),
         };
         (c, z[..n_in].to_vec(), witness_part)
+    }
+
+    fn assert_public_accepts(
+        label: &str,
+        verifier: &WhirVerifier,
+        public_inputs: &[Vec<i64>],
+        proof: &WhirPublicProof,
+        r1cs: &R1CSMatrices,
+    ) {
+        assert!(
+            verifier.verify_public(public_inputs, proof, r1cs),
+            "{label} should verify"
+        );
+    }
+
+    fn assert_public_rejects(
+        label: &str,
+        verifier: &WhirVerifier,
+        public_inputs: &[Vec<i64>],
+        proof: &WhirPublicProof,
+        r1cs: &R1CSMatrices,
+    ) {
+        assert!(
+            !verifier.verify_public(public_inputs, proof, r1cs),
+            "{label} should reject"
+        );
+    }
+
+    fn mutate_digest_byte(digest: &mut [u8; 32]) {
+        digest[0] ^= 1;
+    }
+
+    fn mutate_commitment_byte(fs_commitments: &mut [Vec<u8>]) {
+        fs_commitments[0][0] ^= 1;
+    }
+
+    fn mutate_folded_output_public_input(proof: &mut WhirPublicProof) {
+        proof.folded_output.folded_instance.public_input[0].coeffs[0] += 1;
+    }
+
+    fn mutate_folded_output_commitment(proof: &mut WhirPublicProof) {
+        proof
+            .folded_output
+            .folded_instance
+            .commitment
+            .value
+            .elements[0]
+            .coeffs[0] += 1;
+    }
+
+    fn mutate_folded_output_evaluation(proof: &mut WhirPublicProof) {
+        proof.folded_output.folded_instance.evaluation_values[0].data[0][0] += 1;
+    }
+
+    fn mutate_whir_proof(proof: &mut symphony::WhirProof) {
+        proof.z_eval += p3_baby_bear::BabyBear::ONE;
+    }
+
+    fn assert_public_envelope_decodes(
+        proof: &WhirPublicProof,
+        public_inputs: &[Vec<i64>],
+        r1cs: &R1CSMatrices,
+    ) {
+        let cp_proof_bytes = canonical_whir_proof_bytes(&proof.cp_proof);
+        let output_proof_bytes = canonical_whir_proof_bytes(&proof.output_proof);
+        let envelope_bytes = proof.canonical_public_envelope_bytes(
+            PublicDigestScheme::Poseidon2BabyBear,
+            public_inputs,
+            r1cs,
+            &cp_proof_bytes,
+            &output_proof_bytes,
+        );
+        let envelope =
+            PublicProofEnvelope::from_bytes(&envelope_bytes).expect("public envelope decodes");
+        assert_eq!(
+            envelope.digest_scheme,
+            PublicDigestScheme::Poseidon2BabyBear
+        );
+        assert_eq!(envelope.public_inputs, public_inputs);
+        assert_eq!(envelope.r1cs_num_constraints, r1cs.num_constraints);
+        assert_eq!(envelope.r1cs_num_variables, r1cs.num_variables);
+        assert_eq!(envelope.r1cs_num_public, r1cs.num_public);
+        assert_eq!(envelope.fs_commitments, proof.fs_commitments);
+        assert_eq!(envelope.fs_root, proof.fs_root);
+        assert_eq!(envelope.fold_root, proof.fold_root);
+        assert_eq!(envelope.challenge_digest, proof.challenge_digest);
+        assert_eq!(
+            envelope.transcript_seed_digest,
+            proof.transcript_seed_digest
+        );
+        assert_eq!(envelope.cp_proof_bytes, cp_proof_bytes);
+        assert_eq!(envelope.output_proof_bytes, output_proof_bytes);
+        assert!(whir_proof_from_canonical_bytes(&envelope.cp_proof_bytes).is_ok());
+        assert!(whir_proof_from_canonical_bytes(&envelope.output_proof_bytes).is_ok());
+    }
+
+    #[test]
+    fn public_verify_whir_whir_succeeds_and_rejects_tampering() {
+        let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(public_params());
+        let (r1cs, z_a) = public_r1cs();
+        let z_b = vec![2, 6, 5];
+        let n_in = r1cs.num_public;
+        let statements_a = vec![make_statement(&prover, &z_a, n_in)];
+        let public_inputs_a: Vec<Vec<i64>> = statements_a.iter().map(|s| s.1.clone()).collect();
+        let statements_b = vec![make_statement(&prover, &z_b, n_in)];
+        let public_inputs_b: Vec<Vec<i64>> = statements_b.iter().map(|s| s.1.clone()).collect();
+
+        let proof_a = prover.prove_public(&statements_a, &r1cs);
+        let proof_b = prover.prove_public(&statements_b, &r1cs);
+        assert_public_accepts(
+            "honest proof A",
+            &verifier,
+            &public_inputs_a,
+            &proof_a,
+            &r1cs,
+        );
+        assert_public_accepts(
+            "honest proof B",
+            &verifier,
+            &public_inputs_b,
+            &proof_b,
+            &r1cs,
+        );
+        assert_public_envelope_decodes(&proof_a, &public_inputs_a, &r1cs);
+
+        let ProofBundleV2 {
+            cp_proof: _,
+            output_proof: _,
+            fs_commitments: _,
+            folded_output: _,
+            fs_root: _,
+            fold_root: _,
+            challenge_digest: _,
+            transcript_seed_digest: _,
+        } = proof_a.clone();
+
+        let mut tampered = proof_a.clone();
+        mutate_commitment_byte(&mut tampered.fs_commitments);
+        assert_public_rejects(
+            "flipped FS commitment byte",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.fs_commitments.pop();
+        assert_public_rejects(
+            "removed FS commitment",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.fs_commitments.push(vec![0u8; 32]);
+        assert_public_rejects(
+            "appended FS commitment",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_digest_byte(&mut tampered.fs_root);
+        assert_public_rejects(
+            "flipped fs_root",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_digest_byte(&mut tampered.fold_root);
+        assert_public_rejects(
+            "flipped fold_root",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_digest_byte(&mut tampered.challenge_digest);
+        assert_public_rejects(
+            "flipped challenge_digest",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_digest_byte(&mut tampered.transcript_seed_digest);
+        assert_public_rejects(
+            "flipped transcript_seed_digest",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_folded_output_public_input(&mut tampered);
+        assert_public_rejects(
+            "mutated folded public input",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_folded_output_commitment(&mut tampered);
+        assert_public_rejects(
+            "mutated folded commitment coefficient",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_folded_output_evaluation(&mut tampered);
+        assert_public_rejects(
+            "mutated folded evaluation coordinate",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_whir_proof(&mut tampered.cp_proof);
+        assert_public_rejects(
+            "mutated CP proof z_eval",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        mutate_whir_proof(&mut tampered.output_proof);
+        assert_public_rejects(
+            "mutated output proof z_eval",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        assert_public_rejects(
+            "proof A with public inputs B",
+            &verifier,
+            &public_inputs_b,
+            &proof_a,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.fs_commitments = proof_b.fs_commitments.clone();
+        assert_public_rejects(
+            "spliced FS commitments",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.fs_root = proof_b.fs_root;
+        tampered.fold_root = proof_b.fold_root;
+        tampered.challenge_digest = proof_b.challenge_digest;
+        tampered.transcript_seed_digest = proof_b.transcript_seed_digest;
+        assert_public_rejects(
+            "spliced public digest tuple",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.folded_output = proof_b.folded_output.clone();
+        assert_public_rejects(
+            "spliced folded output",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.cp_proof = proof_b.cp_proof.clone();
+        assert_public_rejects(
+            "spliced CP proof",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        let mut tampered = proof_a.clone();
+        tampered.output_proof = proof_b.output_proof.clone();
+        assert_public_rejects(
+            "spliced output proof",
+            &verifier,
+            &public_inputs_a,
+            &tampered,
+            &r1cs,
+        );
+
+        assert_public_rejects("empty public inputs", &verifier, &[], &proof_a, &r1cs);
+
+        let mut too_many_public_inputs = public_inputs_a.clone();
+        too_many_public_inputs.push(public_inputs_b[0].clone());
+        assert_public_rejects(
+            "too many public input vectors",
+            &verifier,
+            &too_many_public_inputs,
+            &proof_a,
+            &r1cs,
+        );
+
+        let empty_arity_public_inputs = vec![vec![]];
+        assert_public_rejects(
+            "empty public input vector",
+            &verifier,
+            &empty_arity_public_inputs,
+            &proof_a,
+            &r1cs,
+        );
+
+        let extra_arity_public_inputs = vec![vec![public_inputs_a[0][0], 99]];
+        assert_public_rejects(
+            "extra public input value",
+            &verifier,
+            &extra_arity_public_inputs,
+            &proof_a,
+            &r1cs,
+        );
+
+        let mut wrong_public_arity_r1cs = r1cs.clone();
+        wrong_public_arity_r1cs.num_public += 1;
+        assert_public_rejects(
+            "wrong R1CS public arity",
+            &verifier,
+            &public_inputs_a,
+            &proof_a,
+            &wrong_public_arity_r1cs,
+        );
+
+        let mut wrong_dimensions_r1cs = r1cs.clone();
+        wrong_dimensions_r1cs.num_variables += 1;
+        assert_public_rejects(
+            "wrong R1CS dimensions",
+            &verifier,
+            &public_inputs_a,
+            &proof_a,
+            &wrong_dimensions_r1cs,
+        );
+
+        let mut changed_coefficients_r1cs = r1cs.clone();
+        changed_coefficients_r1cs.c.entries.clear();
+        changed_coefficients_r1cs.c.insert(0, 0, 14);
+        assert_public_rejects(
+            "same dimensions with changed constraint coefficient",
+            &verifier,
+            &public_inputs_a,
+            &proof_a,
+            &changed_coefficients_r1cs,
+        );
+
+        let mut wrong_ell_params = public_params();
+        wrong_ell_params.ell_np = 2;
+        let (_, wrong_ell_verifier) = Prover::<WhirSnark, WhirSnark>::setup(wrong_ell_params);
+        assert_public_rejects(
+            "verifier configured for wrong ell_np",
+            &wrong_ell_verifier,
+            &public_inputs_a,
+            &proof_a,
+            &r1cs,
+        );
+    }
+
+    #[test]
+    fn public_verify_multi_statement() {
+        let mut params = public_params();
+        params.ell_np = 2;
+        let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params.clone());
+        let (r1cs, z_a) = public_r1cs();
+        let z_b = vec![2, 6, 5];
+        let n_in = r1cs.num_public;
+        let statements = vec![
+            make_statement(&prover, &z_a, n_in),
+            make_statement(&prover, &z_b, n_in),
+        ];
+        let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+        let full_proof = prover.prove(&statements, &r1cs);
+        let proof = full_proof.to_v2();
+
+        if let Err(stage) = verifier.verify_public_attribution(&public_inputs, &proof, &r1cs) {
+            let ext_ctx = symphony::ring::extension::ExtFieldContext::new(params.q);
+            let (cp_r1cs, cp_layout) = cp_snark::generate_cp_r1cs(
+                params.ell_np,
+                params.kappa,
+                params.n_in,
+                params.m,
+                ext_ctx.alpha,
+                params.q,
+            );
+            let lengths = cp_snark::typed_cp_digest_input_lengths_from_setup(
+                params.ell_np,
+                params.kappa,
+                params.n_in,
+                params.lambda_pj,
+                params.ell_h,
+                params.k_g(),
+                &r1cs,
+            )
+            .expect("typed CP lengths");
+            let (typed_r1cs, layout, audit) = cp_snark::generate_typed_cp_digest_r1cs_with_audit(
+                &cp_r1cs,
+                &cp_layout,
+                &prover.ajtai,
+                &r1cs,
+                &lengths,
+            );
+            let statement = proof.cp_public_statement(
+                &public_inputs,
+                &r1cs,
+                symphony::digest_core::PublicDigestScheme::Poseidon2BabyBear,
+            );
+            let instance = cp_snark::encode_typed_cp_digest_instance(
+                &statement,
+                &proof.fs_commitments,
+                &layout,
+            )
+            .expect("typed CP instance");
+            let cp_ntt = Some(symphony::ring::ntt::NttContext::new(params.q));
+            let witness_bytes = cp_snark::encode_typed_cp_digest_witness(
+                &statement,
+                &full_proof.witness_bundle,
+                &layout,
+                &cp_ntt,
+                ext_ctx.alpha,
+                params.q,
+                &prover.ajtai,
+                &r1cs,
+            )
+            .expect("typed CP witness");
+            let z = instance
+                .chunks_exact(8)
+                .chain(witness_bytes.chunks_exact(8))
+                .map(|chunk| i64::from_le_bytes(chunk.try_into().expect("8-byte chunk")))
+                .collect::<Vec<_>>();
+            let blocks = audit.unsatisfied_blocks(&typed_r1cs, &z, 2_013_265_921);
+            let first_row = if typed_r1cs.is_satisfied_mod(&z, 2_013_265_921) {
+                None
+            } else {
+                let az = typed_r1cs.a.mul_vec_mod(&z, 2_013_265_921);
+                let bz = typed_r1cs.b.mul_vec_mod(&z, 2_013_265_921);
+                let cz = typed_r1cs.c.mul_vec_mod(&z, 2_013_265_921);
+                (0..typed_r1cs.num_constraints).find_map(|row| {
+                    let lhs = symphony::ring::arith::centered_mod(
+                        az[row] as i128 * bz[row] as i128,
+                        2_013_265_921,
+                    );
+                    (lhs != cz[row]).then_some((
+                        row,
+                        lhs,
+                        cz[row],
+                        audit.block_for_row(row).cloned(),
+                    ))
+                })
+            };
+            panic!(
+                "multi-statement WHIR public proof rejected at {stage:?}; unsatisfied_blocks={blocks:?}; first_row={first_row:?}"
+            );
+        }
+        assert_public_accepts(
+            "multi-statement public proof",
+            &verifier,
+            &public_inputs,
+            &proof,
+            &r1cs,
+        );
     }
 
     #[test]

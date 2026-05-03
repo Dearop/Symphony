@@ -31,13 +31,33 @@ use std::marker::PhantomData;
 
 use crate::commitment::Commitment;
 use crate::cp_relation_core::{
-    CpPublicInstance as TypedCpPublicInstance, CpWitnessBundle as TypedCpWitnessBundle,
+    CpPublicInstance as TypedCpPublicInstance, CpPublicStatement,
+    CpWitnessBundle as TypedCpWitnessBundle,
+};
+use crate::digest_core::{
+    digest_fs_root_with_scheme, digest_transcript_seed_with_scheme, PublicDigestScheme,
 };
 use crate::folding::digest::Digest32;
 use crate::folding::{FoldedInstance, FoldedOutputInstance, FoldedOutputWitness};
 use crate::params::SymphonyParams;
+use crate::public_proof::PublicProofEnvelope;
 use crate::r1cs::R1CSMatrices;
 use crate::ring::RingVector;
+
+/// Backend setup material for an authoritative typed CP relation.
+///
+/// Unlike the legacy CP-R1CS, the field-native typed CP relation depends on
+/// the original R1CS matrices and Ajtai commitment parameters, not only on
+/// global dimensions. Backends that can build a verifier-enforced typed CP
+/// relation may serialize this descriptor into their relation context.
+#[derive(Debug, Clone)]
+pub struct TypedCpSetupDescriptor {
+    pub params: SymphonyParams,
+    pub ajtai: crate::commitment::AjtaiParams,
+    pub original_r1cs: R1CSMatrices,
+    pub cp_r1cs: R1CSMatrices,
+    pub cp_layout: cp_snark::CpR1csLayout,
+}
 
 /// Backend SNARK trait — Symphony is generic over the final proof system.
 ///
@@ -61,22 +81,34 @@ pub trait BackendSnark {
     fn prove(pk: &Self::ProvingKey, instance: &[u8], witness: &[u8]) -> Self::Proof;
     fn verify(vk: &Self::VerifyingKey, instance: &[u8], proof: &Self::Proof) -> bool;
 
+    /// Public-boundary digest scheme used by product-facing public verification.
+    ///
+    /// Backends should keep the default SHA-256 scheme until their typed CP
+    /// verifier proves the field-native public relation. WHIR switches to the
+    /// Poseidon2/BabyBear scheme only at that security milestone.
+    fn public_digest_scheme() -> PublicDigestScheme {
+        PublicDigestScheme::Sha256
+    }
+
     /// Optional backend-specific serializer for an output-statement context.
     fn serialize_output_context(_r1cs: &R1CSMatrices, _q: u64, _d: usize) -> Option<Vec<u8>> {
         None
     }
 
     /// Whether this backend treats [`FoldedOutputInstance`] / [`FoldedOutputWitness`]
-    /// as the authoritative output relation when an output context is present.
+    /// as the authoritative final folded R1CS relation when an output context is
+    /// present.
     ///
-    /// Backends returning `true` must fail closed if typed output proving or
-    /// verification returns `None`; falling back to legacy byte encodings would
-    /// reintroduce the composition issue documented in `docs/issues`.
+    /// This flag is intentionally narrower than CP authority: it proves the
+    /// final folded statement and binds the typed folded output object. The CP
+    /// backend remains responsible for proving that the folded output was
+    /// derived correctly from the original statements. Backends returning `true`
+    /// must fail closed if typed output proving or verification returns `None`.
     fn has_authoritative_typed_output() -> bool {
         false
     }
 
-    /// Whether this backend treats [`TypedCpPublicInstance`] / [`TypedCpWitnessBundle`]
+    /// Whether this backend treats [`CpPublicStatement`] / [`TypedCpWitnessBundle`]
     /// as the authoritative CP relation.
     ///
     /// Backends returning `true` must prove the full CP relation checked by
@@ -93,10 +125,34 @@ pub trait BackendSnark {
         None
     }
 
+    /// Optional backend-specific serializer for a typed CP relation context.
+    ///
+    /// This raw byte hook is retained for compatibility and development
+    /// tooling. Product public routing should prefer
+    /// [`Self::typed_cp_relation_description`] so setup receives explicit
+    /// dimensions as well as backend context bytes. Returning `Some` here does
+    /// not imply public authority; `has_authoritative_typed_cp()` is the
+    /// security gate.
+    fn serialize_typed_cp_context(_descriptor: &TypedCpSetupDescriptor) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Optional backend-specific typed CP relation description.
+    ///
+    /// This is the product-routing hook for authoritative typed CP because
+    /// setup needs public/witness/constraint dimensions as well as backend
+    /// context bytes. It is still ignored unless
+    /// [`Self::has_authoritative_typed_cp`] returns true.
+    fn typed_cp_relation_description(
+        _descriptor: &TypedCpSetupDescriptor,
+    ) -> Option<RelationDescription> {
+        None
+    }
+
     /// Optional typed CP proving path.
     fn prove_typed_cp(
         _pk: &Self::ProvingKey,
-        _instance: &TypedCpPublicInstance,
+        _statement: &CpPublicStatement,
         _witness: &TypedCpWitnessBundle,
     ) -> Option<Self::Proof> {
         None
@@ -105,7 +161,7 @@ pub trait BackendSnark {
     /// Optional typed CP verification path.
     fn verify_typed_cp(
         _vk: &Self::VerifyingKey,
-        _instance: &TypedCpPublicInstance,
+        _statement: &CpPublicStatement,
         _proof: &Self::Proof,
     ) -> Option<bool> {
         None
@@ -196,22 +252,134 @@ impl<S: BackendSnark> SymphonyProof<S> {
     }
 }
 
-/// Privacy-preserving v2 Symphony proof.
+/// Canonical public-only Symphony proof.
 ///
-/// This is the public verifier boundary: it carries backend proofs, public
-/// Fiat-Shamir commitments/digests, and the folded output instance. It does not
+/// This is the verifier-facing Symphony proof boundary. It carries exactly
+/// backend proofs, public Fiat-Shamir commitments, public roots/digests binding
+/// hidden CP witness data, and the typed folded output instance. It does not
 /// contain FS openings/messages, original witnesses, folding proofs, folded
 /// witnesses, fold inputs, or any verifier-visible witness bundle.
 #[derive(Debug, Clone)]
 pub struct SymphonyProofV2<S: BackendSnark> {
+    /// CP backend proof proving the typed CP public instance.
     pub cp_proof: S::Proof,
+    /// Output backend proof proving the folded output relation.
     pub output_proof: S::Proof,
+    /// Public Fiat-Shamir commitments `{c_fs,i}`.
     pub fs_commitments: Vec<Vec<u8>>,
+    /// Public typed folded output instance.
     pub folded_output: FoldedOutputInstance,
+    /// Digest of `fs_commitments`.
     pub fs_root: Digest32,
+    /// Digest binding the hidden per-instance fold inputs.
     pub fold_root: Digest32,
+    /// Digest of the derived Fiat-Shamir challenge sequence.
     pub challenge_digest: Digest32,
+    /// Digest of public inputs and relation metadata.
     pub transcript_seed_digest: Digest32,
+}
+
+/// Product-facing name for the public-only proof boundary.
+pub type PublicSymphonyProof<S> = SymphonyProofV2<S>;
+
+impl<S: BackendSnark> SymphonyProofV2<S> {
+    /// Reconstruct the typed CP public instance bound by this public proof.
+    #[must_use]
+    pub fn typed_cp_public_instance(&self) -> TypedCpPublicInstance {
+        TypedCpPublicInstance {
+            fs_root: self.fs_root,
+            fold_root: self.fold_root,
+            challenge_digest: self.challenge_digest,
+            transcript_seed_digest: self.transcript_seed_digest,
+            x_folded: self.folded_output.folded_instance.clone(),
+            folded_output: self.folded_output.clone(),
+        }
+    }
+
+    /// Reconstruct the expanded typed CP public statement for field-native CP
+    /// backends that use public inputs directly.
+    #[must_use]
+    pub fn typed_cp_public_statement(
+        &self,
+        public_inputs: &[Vec<i64>],
+        r1cs: &R1CSMatrices,
+        digest_scheme: PublicDigestScheme,
+    ) -> CpPublicStatement {
+        CpPublicStatement::new(
+            self.typed_cp_public_instance(),
+            public_inputs.to_vec(),
+            r1cs,
+            digest_scheme,
+        )
+        .with_fs_commitments(self.fs_commitments.clone())
+    }
+
+    /// Check backend-independent public-boundary digests.
+    ///
+    /// This does not verify backend proofs. It only checks the transcript seed
+    /// and FS commitment root that every public verifier can recompute.
+    #[must_use]
+    pub fn public_boundary_is_well_formed(
+        &self,
+        public_inputs: &[Vec<i64>],
+        r1cs: &R1CSMatrices,
+    ) -> bool {
+        self.public_boundary_is_well_formed_with_scheme(
+            PublicDigestScheme::Sha256,
+            public_inputs,
+            r1cs,
+        )
+    }
+
+    /// Check public-boundary digests under a backend-selected digest scheme.
+    #[must_use]
+    pub fn public_boundary_is_well_formed_with_scheme(
+        &self,
+        scheme: PublicDigestScheme,
+        public_inputs: &[Vec<i64>],
+        r1cs: &R1CSMatrices,
+    ) -> bool {
+        let expected_tsd = digest_transcript_seed_with_scheme(
+            scheme,
+            public_inputs,
+            r1cs.num_constraints,
+            r1cs.num_variables,
+            r1cs.num_public,
+        );
+        expected_tsd == self.transcript_seed_digest
+            && digest_fs_root_with_scheme(scheme, &self.fs_commitments) == self.fs_root
+    }
+
+    /// Build the canonical versioned public proof envelope bytes.
+    ///
+    /// Backend proof payloads are supplied as already-canonical backend bytes
+    /// and are length-delimited by the envelope.
+    #[must_use]
+    pub fn canonical_public_envelope_bytes(
+        &self,
+        scheme: PublicDigestScheme,
+        public_inputs: &[Vec<i64>],
+        r1cs: &R1CSMatrices,
+        cp_proof_bytes: &[u8],
+        output_proof_bytes: &[u8],
+    ) -> Vec<u8> {
+        PublicProofEnvelope {
+            digest_scheme: scheme,
+            public_inputs: public_inputs.to_vec(),
+            r1cs_num_constraints: r1cs.num_constraints,
+            r1cs_num_variables: r1cs.num_variables,
+            r1cs_num_public: r1cs.num_public,
+            fs_commitments: self.fs_commitments.clone(),
+            fs_root: self.fs_root,
+            fold_root: self.fold_root,
+            challenge_digest: self.challenge_digest,
+            transcript_seed_digest: self.transcript_seed_digest,
+            folded_output_bytes: cp_snark::encode_folded_output_instance(&self.folded_output),
+            cp_proof_bytes: cp_proof_bytes.to_vec(),
+            output_proof_bytes: output_proof_bytes.to_vec(),
+        }
+        .to_bytes()
+    }
 }
 
 /// O(k) witness data bundled with the proof for serialization and explicit
@@ -236,6 +404,8 @@ pub struct ProofWitnessData {
     pub original_witnesses: Vec<RingVector>,
     /// Full folding proof.
     pub folding_proof: crate::folding::FoldingProof,
+    /// Shared GR1CS challenge material needed to reconstruct CP-R1CS witnesses.
+    pub shared_challenges: crate::cp_relation_core::CpSharedChallengeData,
     /// Typed folded-output private witness boundary.
     pub folded_output_witness: crate::folding::FoldedOutputWitness,
     /// Folded witness used by the output-statement check.
@@ -551,6 +721,8 @@ pub struct SymphonyProver<S: BackendSnark> {
     pub cp_pk: S::ProvingKey,
     /// Proving key for the output (folded statement) relation.
     pub snark_pk: S::ProvingKey,
+    /// Cache of typed CP proving keys keyed by serialized typed CP context bytes.
+    pub cp_pk_cache: std::sync::Mutex<HashMap<Vec<u8>, S::ProvingKey>>,
     /// Cache of output proving keys keyed by serialized output context bytes.
     pub snark_pk_cache: std::sync::Mutex<HashMap<Vec<u8>, S::ProvingKey>>,
     /// CP R1CS layout (used for R1CS-aware backends like WHIR).
@@ -566,6 +738,8 @@ pub struct SymphonyVerifier<S: BackendSnark> {
     pub cp_vk: S::VerifyingKey,
     /// Verifying key for the output (folded statement) relation.
     pub snark_vk: S::VerifyingKey,
+    /// Cache of typed CP verifying keys keyed by serialized typed CP context bytes.
+    pub cp_vk_cache: std::sync::Mutex<HashMap<Vec<u8>, S::VerifyingKey>>,
     /// Cache of output verifying keys keyed by serialized output context bytes.
     pub snark_vk_cache: std::sync::Mutex<HashMap<Vec<u8>, S::VerifyingKey>>,
     /// CP R1CS layout (used for R1CS-aware backends like WHIR).
@@ -574,6 +748,26 @@ pub struct SymphonyVerifier<S: BackendSnark> {
 }
 
 impl<S: BackendSnark> SymphonyProver<S> {
+    pub(crate) fn cp_pk_for_relation(&self, relation: RelationDescription) -> S::ProvingKey {
+        let key = relation.context.clone().unwrap_or_default();
+        if let Some(pk) = self
+            .cp_pk_cache
+            .lock()
+            .expect("cp_pk_cache mutex poisoned")
+            .get(&key)
+            .cloned()
+        {
+            return pk;
+        }
+
+        let (pk, _) = S::setup(&relation);
+        self.cp_pk_cache
+            .lock()
+            .expect("cp_pk_cache mutex poisoned")
+            .insert(key, pk.clone());
+        pk
+    }
+
     pub(crate) fn snark_pk_for_context(&self, output_context: Vec<u8>) -> S::ProvingKey {
         if let Some(pk) = self
             .snark_pk_cache
@@ -641,6 +835,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             ajtai: ajtai.clone(),
             cp_vk,
             snark_vk,
+            cp_vk_cache: std::sync::Mutex::new(HashMap::new()),
             snark_vk_cache: std::sync::Mutex::new(HashMap::new()),
             cp_layout: cp_layout.clone(),
             _marker: PhantomData,
@@ -650,6 +845,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             ajtai,
             cp_pk,
             snark_pk,
+            cp_pk_cache: std::sync::Mutex::new(HashMap::new()),
             snark_pk_cache: std::sync::Mutex::new(HashMap::new()),
             cp_layout,
             _marker: PhantomData,
@@ -672,6 +868,7 @@ impl<S: BackendSnark> SymphonyProver<S> {
             &self.params,
             &self.ajtai,
             &self.cp_pk,
+            &|relation| self.cp_pk_for_relation(relation),
             &self.snark_pk,
             &|ctx| self.snark_pk_for_context(ctx),
             &self.cp_layout,
@@ -685,6 +882,10 @@ impl<S: BackendSnark> SymphonyProver<S> {
     /// Proving still constructs witness-side data internally to feed the CP
     /// backend, but the returned proof drops that data before it crosses the
     /// public API boundary.
+    ///
+    /// Compatibility alias: product-facing callers should prefer
+    /// [`Self::prove_public`].
+    #[must_use]
     pub fn prove_v2(
         &self,
         statements: &[(Commitment, Vec<i64>, RingVector)],
@@ -692,9 +893,63 @@ impl<S: BackendSnark> SymphonyProver<S> {
     ) -> SymphonyProofV2<S> {
         self.prove(statements, r1cs).to_v2()
     }
+
+    /// Generate the canonical public-only proof.
+    ///
+    /// This is the product-facing API. The returned proof contains only public
+    /// verifier data and backend proofs; it does not expose witness-side CP
+    /// data, FS openings/messages, fold inputs, original witnesses, folding
+    /// proof internals, or folded witnesses.
+    #[must_use]
+    pub fn prove_public(
+        &self,
+        statements: &[(Commitment, Vec<i64>, RingVector)],
+        r1cs: &R1CSMatrices,
+    ) -> PublicSymphonyProof<S> {
+        self.prove_v2(statements, r1cs)
+    }
 }
 
 impl<S: BackendSnark> SymphonyVerifier<S> {
+    pub(crate) fn cp_vk_for_relation(&self, relation: RelationDescription) -> S::VerifyingKey {
+        let key = relation.context.clone().unwrap_or_default();
+        if let Some(vk) = self
+            .cp_vk_cache
+            .lock()
+            .expect("cp_vk_cache mutex poisoned")
+            .get(&key)
+            .cloned()
+        {
+            return vk;
+        }
+
+        let (_, vk) = S::setup(&relation);
+        self.cp_vk_cache
+            .lock()
+            .expect("cp_vk_cache mutex poisoned")
+            .insert(key, vk.clone());
+        vk
+    }
+
+    fn typed_cp_descriptor(&self, r1cs: &R1CSMatrices) -> TypedCpSetupDescriptor {
+        let ext_ctx = crate::ring::extension::ExtFieldContext::new(self.params.q);
+        let (cp_r1cs, cp_layout) = cp_snark::generate_cp_r1cs(
+            self.params.ell_np,
+            self.params.kappa,
+            self.params.n_in,
+            self.params.m,
+            ext_ctx.alpha,
+            self.params.q,
+        );
+        TypedCpSetupDescriptor {
+            params: self.params.clone(),
+            ajtai: self.ajtai.clone(),
+            original_r1cs: r1cs.clone(),
+            cp_r1cs,
+            cp_layout,
+        }
+    }
+
     pub(crate) fn snark_vk_for_context(&self, output_context: Vec<u8>) -> S::VerifyingKey {
         if let Some(vk) = self
             .snark_vk_cache
@@ -752,7 +1007,8 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         // verifier performs; everything else is O(1) + backend verification.
         // ---------------------------------------------------------------
         {
-            let expected_tsd = crate::folding::digest::digest_transcript_seed(
+            let expected_tsd = digest_transcript_seed_with_scheme(
+                S::public_digest_scheme(),
                 public_inputs,
                 r1cs.num_constraints,
                 r1cs.num_variables,
@@ -798,16 +1054,33 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
             folded_output_witness: proof.witness_data.folded_output_witness.clone(),
             folded_witness: proof.witness_data.folded_witness.clone(),
             folding_proof: proof.witness_data.folding_proof.clone(),
+            shared_challenges: proof.witness_data.shared_challenges.clone(),
         };
-        if crate::cp_relation_core::CpRelation::check_with_algebra(
-            &typed_cp_public_instance,
-            &typed_cp_witness,
-            &self.ajtai,
+        let typed_cp_public_statement = CpPublicStatement::new(
+            typed_cp_public_instance.clone(),
+            public_inputs.to_vec(),
             r1cs,
-            self.params.b_input(),
+            S::public_digest_scheme(),
         )
-        .is_err()
-        {
+        .with_fs_commitments(proof.witness_data.fs_commitments.clone());
+        let cp_relation_ok = if S::public_digest_scheme() == PublicDigestScheme::Sha256 {
+            crate::cp_relation_core::CpRelation::check_with_algebra(
+                &typed_cp_public_instance,
+                &typed_cp_witness,
+                &self.ajtai,
+                r1cs,
+                self.params.b_input(),
+            )
+        } else {
+            crate::cp_relation_core::CpFieldRelation::check(
+                &typed_cp_public_statement,
+                &typed_cp_witness,
+                &self.ajtai,
+                r1cs,
+                self.params.b_input(),
+            )
+        };
+        if cp_relation_ok.is_err() {
             return false;
         }
 
@@ -820,10 +1093,14 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         };
         let cp_instance =
             cp_snark::encode_cp_backend_instance(&cp_public_instance, &self.cp_layout);
-        let cp_backend_ok = if let Some(ok) =
-            S::verify_typed_cp(&self.cp_vk, &typed_cp_public_instance, &proof.cp_proof)
-        {
-            ok
+        let cp_backend_ok = if S::has_authoritative_typed_cp() {
+            let Some(cp_relation) =
+                S::typed_cp_relation_description(&self.typed_cp_descriptor(r1cs))
+            else {
+                return false;
+            };
+            let cp_vk = self.cp_vk_for_relation(cp_relation);
+            S::verify_typed_cp(&cp_vk, &typed_cp_public_statement, &proof.cp_proof) == Some(true)
         } else {
             S::verify(&self.cp_vk, &cp_instance, &proof.cp_proof)
         };
@@ -850,10 +1127,6 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
                 if S::has_authoritative_typed_output() {
                     S::verify_typed_output(&output_vk, &proof.folded_output, &proof.snark_proof)
                         .unwrap_or(false)
-                } else if let Some(ok) =
-                    S::verify_typed_output(&output_vk, &proof.folded_output, &proof.snark_proof)
-                {
-                    ok
                 } else if instance_elems <= total_flat {
                     S::verify(&output_vk, &snark_instance, &proof.snark_proof)
                 } else {
@@ -864,6 +1137,21 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
             };
         if !output_backend_ok {
             return false;
+        }
+
+        if S::public_digest_scheme() != PublicDigestScheme::Sha256 {
+            let t_output = t_output_start.elapsed();
+            if timing {
+                let t_total = t0.elapsed();
+                eprintln!(
+                    "[symphony-verify] transcript={:.3}ms cp_verify={:.3}ms output_verify={:.3}ms total={:.3}ms",
+                    t_transcript.as_secs_f64() * 1000.0,
+                    t_cp.as_secs_f64() * 1000.0,
+                    t_output.as_secs_f64() * 1000.0,
+                    t_total.as_secs_f64() * 1000.0,
+                );
+            }
+            return true;
         }
 
         let explicit_ok = verify_explicit_soundness(
@@ -913,6 +1201,11 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
     /// folded output instance, and backend proofs. It deliberately does not run
     /// [`verify_explicit_soundness`] or inspect witness-side CP data. Backends
     /// must explicitly advertise authoritative typed CP and output support.
+    ///
+    /// Compatibility alias: product-facing callers should prefer
+    /// [`Self::verify_public`]. For WHIR, this path uses the backend-selected
+    /// Poseidon2/BabyBear digest scheme and never falls back to SHA-256 or
+    /// legacy witness-side verification.
     #[must_use]
     pub fn verify_v2(
         &self,
@@ -920,33 +1213,25 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         proof: &SymphonyProofV2<S>,
         r1cs: &R1CSMatrices,
     ) -> bool {
-        let expected_tsd = crate::folding::digest::digest_transcript_seed(
+        if !proof.public_boundary_is_well_formed_with_scheme(
+            S::public_digest_scheme(),
             public_inputs,
-            r1cs.num_constraints,
-            r1cs.num_variables,
-            r1cs.num_public,
-        );
-        if expected_tsd != proof.transcript_seed_digest {
-            return false;
-        }
-
-        if crate::folding::digest::digest_fs_commitments(&proof.fs_commitments) != proof.fs_root {
+            r1cs,
+        ) {
             return false;
         }
 
         if !S::has_authoritative_typed_cp() {
             return false;
         }
-        let typed_cp_public_instance = TypedCpPublicInstance {
-            fs_root: proof.fs_root,
-            fold_root: proof.fold_root,
-            challenge_digest: proof.challenge_digest,
-            transcript_seed_digest: proof.transcript_seed_digest,
-            x_folded: proof.folded_output.folded_instance.clone(),
-            folded_output: proof.folded_output.clone(),
+        let typed_cp_public_statement =
+            proof.typed_cp_public_statement(public_inputs, r1cs, S::public_digest_scheme());
+        let Some(cp_relation) = S::typed_cp_relation_description(&self.typed_cp_descriptor(r1cs))
+        else {
+            return false;
         };
-        if S::verify_typed_cp(&self.cp_vk, &typed_cp_public_instance, &proof.cp_proof) != Some(true)
-        {
+        let cp_vk = self.cp_vk_for_relation(cp_relation);
+        if S::verify_typed_cp(&cp_vk, &typed_cp_public_statement, &proof.cp_proof) != Some(true) {
             return false;
         }
 
@@ -959,6 +1244,23 @@ impl<S: BackendSnark> SymphonyVerifier<S> {
         };
         let output_vk = self.snark_vk_for_context(output_context);
         S::verify_typed_output(&output_vk, &proof.folded_output, &proof.output_proof) == Some(true)
+    }
+
+    /// Verify the canonical public-only proof.
+    ///
+    /// This is the product-facing API. It must remain public-only: no witness
+    /// bundle, no FS openings/messages, no fold inputs, no explicit soundness
+    /// fallback, and no legacy SHA fallback for WHIR. Verification fails closed
+    /// unless the backend advertises authoritative typed CP and typed output
+    /// verification.
+    #[must_use]
+    pub fn verify_public(
+        &self,
+        public_inputs: &[Vec<i64>],
+        proof: &PublicSymphonyProof<S>,
+        r1cs: &R1CSMatrices,
+    ) -> bool {
+        self.verify_v2(public_inputs, proof, r1cs)
     }
 }
 

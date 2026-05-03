@@ -5,14 +5,157 @@ mod common;
 use common::Q;
 use symphony::commitment::Commitment;
 use symphony::cp_snark::{CPProof, CPSnark, IdentityRelation};
+use symphony::digest_core::{
+    digest_fs_root_with_scheme, digest_transcript_seed_with_scheme, PublicDigestScheme,
+};
 use symphony::fiat_shamir::hash_commitment::HashCommitment;
 use symphony::fiat_shamir::transcript::Transcript;
 use symphony::fiat_shamir::FSCommitment;
+use symphony::folding::{FoldedInstance, FoldedOutputInstance};
 use symphony::params::{SymphonyParams, D};
 use symphony::proof_orchestrator::Prover as ModularProver;
+use symphony::ring::tensor::TensorElement;
 use symphony::ring::{RingElement, RingVector};
-use symphony::snark::{BackendSnark, SymphonyProver};
+use symphony::rok::{BatchedLinearRelation, LinearRelation};
+use symphony::snark::{BackendSnark, RelationDescription, SymphonyProver};
 use symphony::SumcheckSnark;
+
+#[derive(Clone)]
+struct NonAuthoritativeTypedCpSnark;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NonAuthoritativeTypedCpProof {
+    Legacy,
+    Typed,
+}
+
+#[derive(Debug, Clone)]
+struct NonAuthoritativeTypedCpKey;
+
+impl BackendSnark for NonAuthoritativeTypedCpSnark {
+    type ProvingKey = NonAuthoritativeTypedCpKey;
+    type VerifyingKey = NonAuthoritativeTypedCpKey;
+    type Proof = NonAuthoritativeTypedCpProof;
+
+    fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
+        let _ = relation;
+        (NonAuthoritativeTypedCpKey, NonAuthoritativeTypedCpKey)
+    }
+
+    fn prove(_pk: &Self::ProvingKey, _instance: &[u8], _witness: &[u8]) -> Self::Proof {
+        NonAuthoritativeTypedCpProof::Legacy
+    }
+
+    fn verify(_vk: &Self::VerifyingKey, _instance: &[u8], proof: &Self::Proof) -> bool {
+        *proof == NonAuthoritativeTypedCpProof::Legacy
+    }
+
+    fn prove_typed_cp(
+        _pk: &Self::ProvingKey,
+        _statement: &symphony::cp_relation_core::CpPublicStatement,
+        _witness: &symphony::cp_relation_core::CpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        // This hook intentionally exists while `has_authoritative_typed_cp`
+        // remains false. Public routing must ignore helper presence unless the
+        // authority flag advertises the security claim.
+        Some(NonAuthoritativeTypedCpProof::Typed)
+    }
+
+    fn verify_typed_cp(
+        _vk: &Self::VerifyingKey,
+        _statement: &symphony::cp_relation_core::CpPublicStatement,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        Some(false)
+    }
+}
+
+#[derive(Clone)]
+struct PublicRouteSentinelSnark;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicRouteSentinelProof;
+
+#[derive(Debug, Clone)]
+struct PublicRouteSentinelKey;
+
+impl BackendSnark for PublicRouteSentinelSnark {
+    type ProvingKey = PublicRouteSentinelKey;
+    type VerifyingKey = PublicRouteSentinelKey;
+    type Proof = PublicRouteSentinelProof;
+
+    fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
+        let _ = relation;
+        (PublicRouteSentinelKey, PublicRouteSentinelKey)
+    }
+
+    fn prove(_pk: &Self::ProvingKey, _instance: &[u8], _witness: &[u8]) -> Self::Proof {
+        panic!("public proof test must not use legacy prove")
+    }
+
+    fn verify(_vk: &Self::VerifyingKey, _instance: &[u8], _proof: &Self::Proof) -> bool {
+        panic!("verify_public must not call legacy backend verify")
+    }
+
+    fn serialize_output_context(
+        _r1cs: &symphony::R1CSMatrices,
+        _q: u64,
+        _d: usize,
+    ) -> Option<Vec<u8>> {
+        Some(b"public-route-output-context".to_vec())
+    }
+
+    fn has_authoritative_typed_output() -> bool {
+        true
+    }
+
+    fn has_authoritative_typed_cp() -> bool {
+        true
+    }
+
+    fn typed_cp_relation_description(
+        _descriptor: &symphony::snark::TypedCpSetupDescriptor,
+    ) -> Option<RelationDescription> {
+        Some(RelationDescription {
+            num_instance_vars: 0,
+            num_witness_vars: 0,
+            num_constraints: 0,
+            context: Some(b"public-route-typed-cp-context".to_vec()),
+        })
+    }
+
+    fn prove_typed_cp(
+        _pk: &Self::ProvingKey,
+        _statement: &symphony::cp_relation_core::CpPublicStatement,
+        _witness: &symphony::cp_relation_core::CpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        Some(PublicRouteSentinelProof)
+    }
+
+    fn verify_typed_cp(
+        _vk: &Self::VerifyingKey,
+        _statement: &symphony::cp_relation_core::CpPublicStatement,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        Some(true)
+    }
+
+    fn prove_typed_output(
+        _pk: &Self::ProvingKey,
+        _instance: &symphony::folding::FoldedOutputInstance,
+        _witness: &symphony::folding::FoldedOutputWitness,
+    ) -> Option<Self::Proof> {
+        Some(PublicRouteSentinelProof)
+    }
+
+    fn verify_typed_output(
+        _vk: &Self::VerifyingKey,
+        _instance: &symphony::folding::FoldedOutputInstance,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        Some(true)
+    }
+}
 
 fn params() -> SymphonyParams {
     SymphonyParams {
@@ -31,8 +174,8 @@ fn params() -> SymphonyParams {
     }
 }
 
-fn make_statement(
-    prover: &SymphonyProver<SumcheckSnark>,
+fn make_statement<S: BackendSnark>(
+    prover: &SymphonyProver<S>,
     z: &[i64],
     n_in: usize,
 ) -> (Commitment, Vec<i64>, RingVector) {
@@ -65,6 +208,33 @@ fn make_modular_statement(
             .collect(),
     };
     (c, z[..n_in].to_vec(), witness_part)
+}
+
+fn sentinel_folded_output() -> FoldedOutputInstance {
+    let commitment = Commitment {
+        value: RingVector {
+            elements: vec![RingElement::from_constant(0); 2],
+        },
+    };
+    let zero_tensor = TensorElement::zero();
+    let folded_instance = FoldedInstance {
+        commitment: commitment.clone(),
+        public_input: vec![RingElement::from_constant(0)],
+        evaluation_values: vec![zero_tensor.clone()],
+    };
+    FoldedOutputInstance {
+        folded_instance,
+        linear_relation: LinearRelation {
+            commitment,
+            evaluation_point: Vec::new(),
+            evaluation_values: [zero_tensor.clone(), zero_tensor.clone(), zero_tensor],
+        },
+        batched_relation: BatchedLinearRelation {
+            commitments: Vec::new(),
+            evaluation_point: Vec::new(),
+            evaluation_values: Vec::new(),
+        },
+    }
 }
 
 fn encode_standalone_cp_instance(
@@ -169,17 +339,72 @@ fn v2_legacy_orchestrator_drops_witness_data_and_fails_closed() {
     ];
     let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
 
-    let proof = prover.prove_v2(&statements, &r1cs);
+    let proof = prover.prove_public(&statements, &r1cs);
 
     assert!(!proof.fs_commitments.is_empty());
+    assert!(proof.public_boundary_is_well_formed(&public_inputs, &r1cs));
     assert_eq!(
         proof.fs_root,
         symphony::folding::digest::digest_fs_commitments(&proof.fs_commitments)
     );
     assert!(
-        !verifier.verify_v2(&public_inputs, &proof, &r1cs),
+        !verifier.verify_public(&public_inputs, &proof, &r1cs),
         "v2 must fail closed until the backend advertises authoritative typed CP/output"
     );
+}
+
+#[test]
+fn verify_public_uses_typed_authority_not_legacy_backend_verify() {
+    let (_, verifier): (
+        SymphonyProver<PublicRouteSentinelSnark>,
+        symphony::SymphonyVerifier<PublicRouteSentinelSnark>,
+    ) = SymphonyProver::<PublicRouteSentinelSnark>::setup(params());
+    let (r1cs, _) = common::multi_r1cs();
+    let public_inputs = vec![vec![1], vec![1]];
+    let scheme = PublicDigestScheme::Sha256;
+    let fs_commitments = vec![b"public-route-sentinel-commitment".to_vec()];
+
+    let proof = symphony::PublicSymphonyProof::<PublicRouteSentinelSnark> {
+        cp_proof: PublicRouteSentinelProof,
+        output_proof: PublicRouteSentinelProof,
+        fs_commitments: fs_commitments.clone(),
+        folded_output: sentinel_folded_output(),
+        fs_root: digest_fs_root_with_scheme(scheme, &fs_commitments),
+        fold_root: [0x11; 32],
+        challenge_digest: [0x22; 32],
+        transcript_seed_digest: digest_transcript_seed_with_scheme(
+            scheme,
+            &public_inputs,
+            r1cs.num_constraints,
+            r1cs.num_variables,
+            r1cs.num_public,
+        ),
+    };
+
+    assert!(
+        verifier.verify_public(&public_inputs, &proof, &r1cs),
+        "public verification must use typed CP/output hooks and not legacy backend verify"
+    );
+}
+
+#[test]
+fn legacy_orchestrator_does_not_select_non_authoritative_typed_cp_hook() {
+    let (prover, verifier): (
+        SymphonyProver<NonAuthoritativeTypedCpSnark>,
+        symphony::SymphonyVerifier<NonAuthoritativeTypedCpSnark>,
+    ) = SymphonyProver::<NonAuthoritativeTypedCpSnark>::setup(params());
+    let (r1cs, z) = common::multi_r1cs();
+    let n_in = r1cs.num_public;
+    let statements = vec![
+        make_statement(&prover, &z, n_in),
+        make_statement(&prover, &z, n_in),
+    ];
+    let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
+
+    let proof = prover.prove(&statements, &r1cs);
+
+    assert_eq!(proof.cp_proof, NonAuthoritativeTypedCpProof::Legacy);
+    assert!(verifier.verify(&public_inputs, &proof, &r1cs));
 }
 
 #[test]
@@ -216,15 +441,17 @@ fn v2_modular_orchestrator_drops_witness_bundle_and_fails_closed() {
     ];
     let public_inputs: Vec<Vec<i64>> = statements.iter().map(|s| s.1.clone()).collect();
 
-    let proof = prover.prove_v2(&statements, &r1cs);
+    let proof = prover.prove_public(&statements, &r1cs);
 
     assert!(!proof.fs_commitments.is_empty());
+    assert!(proof.public_boundary_is_well_formed(&public_inputs, &r1cs));
+    assert_eq!(proof.cp_public_instance().fs_root, proof.fs_root);
     assert_eq!(
         proof.fs_root,
         symphony::digest_core::digest_fs_root(&proof.fs_commitments)
     );
     assert!(
-        !verifier.verify_v2(&public_inputs, &proof, &r1cs),
+        !verifier.verify_public(&public_inputs, &proof, &r1cs),
         "v2 must fail closed without authoritative typed CP/output backends"
     );
 }

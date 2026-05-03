@@ -1253,6 +1253,7 @@ dependencies = [
  "p3-util",
  "proptest",
  "rand 0.10.0",
+ "serde_json",
  "sha2",
  "whir-p3",
  "zeroize",

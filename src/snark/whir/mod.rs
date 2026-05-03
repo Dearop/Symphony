@@ -23,20 +23,29 @@
 pub mod field;
 pub mod serialize;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use sha2::{Digest, Sha256};
 
-use crate::params::SymphonyParams;
-use crate::r1cs::SparseMatrix;
+use crate::folding::{FoldedOutputInstance, FoldedOutputWitness};
+use crate::params::{SymphonyParams, D};
+use crate::r1cs::{R1CSMatrices, SparseMatrix};
+use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
+use crate::ring::tensor::TensorElement;
+use crate::ring::RingElement;
 use crate::snark::{BackendSnark, RelationDescription};
 
 use self::field::{bytes_to_babybear, bytes_to_babybear_direct, pad_to_power_of_two};
-use self::serialize::{deserialize_context, WhirContext};
+use self::serialize::{deserialize_context, WhirContext, WhirTypedCpContext};
 
 // Plonky3 / WHIR imports
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_dft::Radix2DFTSmallBatch;
-use p3_field::{extension::BinomialExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{
+    extension::BinomialExtensionField, Field, PrimeCharacteristicRing, PrimeField32, PrimeField64,
+};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::{evals::EvaluationsList, multilinear::MultilinearPoint};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -74,6 +83,136 @@ type WhirDft = Radix2DFTSmallBatch<F>;
 
 const DIGEST_ELEMS: usize = 8;
 const WHIR_SECURITY_LEVEL_BITS: usize = 100;
+pub const WHIR_PROOF_PAYLOAD_VERSION: u16 = 1;
+const WHIR_PROOF_PAYLOAD_MAGIC: &[u8; 8] = b"SYMWHPF\0";
+
+#[derive(Clone)]
+struct CachedTypedCpRelation {
+    r1cs: crate::r1cs::R1CSMatrices,
+    layout: crate::snark::cp_snark::TypedCpDigestR1csLayout,
+    audit: crate::snark::cp_snark::TypedCpAuditReport,
+}
+
+static TYPED_CP_RELATION_CACHE: OnceLock<Mutex<HashMap<[u8; 32], Arc<CachedTypedCpRelation>>>> =
+    OnceLock::new();
+static TYPED_CP_RELATION_DESCRIPTION_CACHE: OnceLock<
+    Mutex<HashMap<[u8; 32], RelationDescription>>,
+> = OnceLock::new();
+
+fn typed_cp_cache_key(ctx: &WhirContext) -> [u8; 32] {
+    let bytes = serialize::serialize_context(ctx);
+    Sha256::digest(&bytes).into()
+}
+
+fn hash_sparse_matrix_for_cache(hasher: &mut Sha256, matrix: &SparseMatrix) {
+    hasher.update((matrix.num_rows as u64).to_le_bytes());
+    hasher.update((matrix.num_cols as u64).to_le_bytes());
+    hasher.update((matrix.entries.len() as u64).to_le_bytes());
+    for &(row, col, value) in &matrix.entries {
+        hasher.update((row as u64).to_le_bytes());
+        hasher.update((col as u64).to_le_bytes());
+        hasher.update(value.to_le_bytes());
+    }
+}
+
+fn typed_cp_descriptor_cache_key(descriptor: &crate::snark::TypedCpSetupDescriptor) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"whir-typed-cp-relation-description-cache-v1");
+    hasher.update(descriptor.params.q.to_le_bytes());
+    hasher.update((descriptor.params.d as u64).to_le_bytes());
+    hasher.update((descriptor.params.lambda_pj as u64).to_le_bytes());
+    hasher.update((descriptor.params.ell_h as u64).to_le_bytes());
+    hasher.update((descriptor.params.k_g() as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.ell_np as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.kappa as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.n_in as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.had_num_vars as u64).to_le_bytes());
+    hasher.update((descriptor.ajtai.kappa as u64).to_le_bytes());
+    hasher.update((descriptor.ajtai.n as u64).to_le_bytes());
+    hasher.update(descriptor.ajtai.q.to_le_bytes());
+    for row in &descriptor.ajtai.a {
+        hasher.update((row.len() as u64).to_le_bytes());
+        for elem in row {
+            for &coeff in &elem.coeffs {
+                hasher.update(coeff.to_le_bytes());
+            }
+        }
+    }
+    hasher.update((descriptor.original_r1cs.num_constraints as u64).to_le_bytes());
+    hasher.update((descriptor.original_r1cs.num_variables as u64).to_le_bytes());
+    hasher.update((descriptor.original_r1cs.num_public as u64).to_le_bytes());
+    hash_sparse_matrix_for_cache(&mut hasher, &descriptor.original_r1cs.a);
+    hash_sparse_matrix_for_cache(&mut hasher, &descriptor.original_r1cs.b);
+    hash_sparse_matrix_for_cache(&mut hasher, &descriptor.original_r1cs.c);
+    hasher.finalize().into()
+}
+
+#[allow(dead_code)]
+fn typed_cp_digest_r1cs_from_context(
+    ctx: &WhirContext,
+    typed: &WhirTypedCpContext,
+) -> Option<(
+    crate::r1cs::R1CSMatrices,
+    crate::snark::cp_snark::TypedCpDigestR1csLayout,
+)> {
+    let cached = typed_cp_relation_from_context(ctx, typed)?;
+    Some((cached.r1cs.clone(), cached.layout.clone()))
+}
+
+fn typed_cp_relation_from_context(
+    ctx: &WhirContext,
+    typed: &WhirTypedCpContext,
+) -> Option<Arc<CachedTypedCpRelation>> {
+    let key = typed_cp_cache_key(ctx);
+    let cache = TYPED_CP_RELATION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .expect("typed CP cache mutex poisoned")
+        .get(&key)
+    {
+        return Some(Arc::clone(cached));
+    }
+
+    let ext_ctx = ExtFieldContext::new(ctx.q);
+    let (cp_r1cs, cp_layout) = crate::snark::cp_snark::generate_cp_r1cs(
+        typed.cp_layout.ell_np,
+        typed.cp_layout.kappa,
+        typed.cp_layout.n_in,
+        typed.original_r1cs.num_constraints,
+        ext_ctx.alpha,
+        ctx.q,
+    );
+    if cp_layout.num_instance != typed.cp_layout.num_instance
+        || cp_layout.num_variables != typed.cp_layout.num_variables
+    {
+        return None;
+    }
+    let lengths = crate::snark::cp_snark::typed_cp_digest_input_lengths_from_setup(
+        typed.cp_layout.ell_np,
+        typed.cp_layout.kappa,
+        typed.cp_layout.n_in,
+        typed.lambda_pj,
+        typed.ell_h,
+        typed.k_g,
+        &typed.original_r1cs,
+    )?;
+    let (r1cs, layout, audit) = crate::snark::cp_snark::generate_typed_cp_digest_r1cs_with_audit(
+        &cp_r1cs,
+        &cp_layout,
+        &typed.ajtai,
+        &typed.original_r1cs,
+        &lengths,
+    );
+    debug_assert!(audit.validate_against(&r1cs).is_ok());
+    let cached = Arc::new(CachedTypedCpRelation {
+        r1cs,
+        layout,
+        audit,
+    });
+    let mut guard = cache.lock().expect("typed CP cache mutex poisoned");
+    let entry = guard.entry(key).or_insert_with(|| Arc::clone(&cached));
+    Some(Arc::clone(entry))
+}
 
 // ---------------------------------------------------------------------------
 // WHIR infrastructure: deterministic construction from seed + num_variables
@@ -189,10 +328,231 @@ pub struct WhirProof {
     pub is_output: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhirProofPayloadError {
+    BadMagic,
+    UnsupportedVersion(u16),
+    Truncated,
+    TrailingBytes,
+    InvalidProofKind(u8),
+    LengthOverflow,
+    NonCanonicalBabyBear(u32),
+    MalformedPcsProof,
+}
+
+/// Canonical WHIR backend proof payload bytes for the public proof envelope.
+///
+/// This is a backend-owned codec for the opaque `cp_proof_bytes` and
+/// `output_proof_bytes` fields in the versioned public proof envelope. The
+/// Symphony envelope owns proof ordering and length delimiting; WHIR owns the
+/// bytes for an individual WHIR proof payload.
+#[must_use]
+pub fn canonical_whir_proof_bytes(proof: &WhirProof) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(WHIR_PROOF_PAYLOAD_MAGIC);
+    out.extend_from_slice(&WHIR_PROOF_PAYLOAD_VERSION.to_le_bytes());
+    out.push(u8::from(proof.is_output));
+    out.extend_from_slice(&(proof.num_vars as u64).to_le_bytes());
+
+    write_bb_array3_vec(&mut out, &proof.sumcheck_rounds_3);
+    write_bb_array4_vec(&mut out, &proof.sumcheck_rounds_4);
+    for value in &proof.evaluations {
+        write_bb(&mut out, *value);
+    }
+    write_bb(&mut out, proof.z_eval);
+
+    out.extend_from_slice(&(proof.linear_checks.len() as u64).to_le_bytes());
+    for check in &proof.linear_checks {
+        write_bb_array3_vec(&mut out, &check.rounds);
+        write_bb(&mut out, check.z_eval);
+    }
+
+    let pcs_bytes =
+        serde_json::to_vec(&proof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
+    out.extend_from_slice(&(pcs_bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(&pcs_bytes);
+    out
+}
+
+pub fn whir_proof_from_canonical_bytes(bytes: &[u8]) -> Result<WhirProof, WhirProofPayloadError> {
+    let mut reader = WhirProofPayloadReader::new(bytes);
+    if reader.read_exact(WHIR_PROOF_PAYLOAD_MAGIC.len())? != WHIR_PROOF_PAYLOAD_MAGIC {
+        return Err(WhirProofPayloadError::BadMagic);
+    }
+
+    let version = reader.read_u16()?;
+    if version != WHIR_PROOF_PAYLOAD_VERSION {
+        return Err(WhirProofPayloadError::UnsupportedVersion(version));
+    }
+
+    let is_output = match reader.read_u8()? {
+        0 => false,
+        1 => true,
+        other => return Err(WhirProofPayloadError::InvalidProofKind(other)),
+    };
+    let num_vars = reader.read_len()?;
+    let sumcheck_rounds_3 = reader.read_bb_array3_vec()?;
+    let sumcheck_rounds_4 = reader.read_bb_array4_vec()?;
+    let evaluations = [reader.read_bb()?, reader.read_bb()?, reader.read_bb()?];
+    let z_eval = reader.read_bb()?;
+
+    let linear_check_count = reader.read_len()?;
+    let mut linear_checks = Vec::with_capacity(linear_check_count);
+    for _ in 0..linear_check_count {
+        linear_checks.push(WhirLinearCheckProof {
+            rounds: reader.read_bb_array3_vec()?,
+            z_eval: reader.read_bb()?,
+        });
+    }
+
+    let pcs_bytes = reader.read_bytes()?;
+    let whir_pcs_proof =
+        serde_json::from_slice(pcs_bytes).map_err(|_| WhirProofPayloadError::MalformedPcsProof)?;
+    if !reader.is_finished() {
+        return Err(WhirProofPayloadError::TrailingBytes);
+    }
+
+    Ok(WhirProof {
+        sumcheck_rounds_3,
+        sumcheck_rounds_4,
+        evaluations,
+        whir_pcs_proof,
+        z_eval,
+        linear_checks,
+        num_vars,
+        is_output,
+    })
+}
+
+fn write_bb(out: &mut Vec<u8>, value: BabyBear) {
+    out.extend_from_slice(&value.as_canonical_u32().to_le_bytes());
+}
+
+fn write_bb_array3_vec(out: &mut Vec<u8>, values: &[[BabyBear; 3]]) {
+    out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for round in values {
+        for value in round {
+            write_bb(out, *value);
+        }
+    }
+}
+
+fn write_bb_array4_vec(out: &mut Vec<u8>, values: &[[BabyBear; 4]]) {
+    out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for round in values {
+        for value in round {
+            write_bb(out, *value);
+        }
+    }
+}
+
+struct WhirProofPayloadReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> WhirProofPayloadReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.pos == self.bytes.len()
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], WhirProofPayloadError> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or(WhirProofPayloadError::LengthOverflow)?;
+        if end > self.bytes.len() {
+            return Err(WhirProofPayloadError::Truncated);
+        }
+        let slice = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, WhirProofPayloadError> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    fn read_u16(&mut self) -> Result<u16, WhirProofPayloadError> {
+        let mut raw = [0u8; 2];
+        raw.copy_from_slice(self.read_exact(2)?);
+        Ok(u16::from_le_bytes(raw))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, WhirProofPayloadError> {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(self.read_exact(4)?);
+        Ok(u32::from_le_bytes(raw))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, WhirProofPayloadError> {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(self.read_exact(8)?);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn read_len(&mut self) -> Result<usize, WhirProofPayloadError> {
+        usize::try_from(self.read_u64()?).map_err(|_| WhirProofPayloadError::LengthOverflow)
+    }
+
+    fn read_bb(&mut self) -> Result<BabyBear, WhirProofPayloadError> {
+        const BABYBEAR_MODULUS: u32 = 2_013_265_921;
+        let value = self.read_u32()?;
+        if value >= BABYBEAR_MODULUS {
+            return Err(WhirProofPayloadError::NonCanonicalBabyBear(value));
+        }
+        Ok(BabyBear::from_u32(value))
+    }
+
+    fn read_bb_array3_vec(&mut self) -> Result<Vec<[BabyBear; 3]>, WhirProofPayloadError> {
+        let len = self.read_len()?;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push([self.read_bb()?, self.read_bb()?, self.read_bb()?]);
+        }
+        Ok(values)
+    }
+
+    fn read_bb_array4_vec(&mut self) -> Result<Vec<[BabyBear; 4]>, WhirProofPayloadError> {
+        let len = self.read_len()?;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push([
+                self.read_bb()?,
+                self.read_bb()?,
+                self.read_bb()?,
+                self.read_bb()?,
+            ]);
+        }
+        Ok(values)
+    }
+
+    fn read_bytes(&mut self) -> Result<&'a [u8], WhirProofPayloadError> {
+        let len = self.read_len()?;
+        self.read_exact(len)
+    }
+}
+
 impl BackendSnark for WhirSnark {
     type ProvingKey = WhirProvingKey;
     type VerifyingKey = WhirVerifyingKey;
     type Proof = WhirProof;
+
+    fn public_digest_scheme() -> crate::digest_core::PublicDigestScheme {
+        crate::digest_core::PublicDigestScheme::Poseidon2BabyBear
+    }
+
+    fn has_authoritative_typed_output() -> bool {
+        true
+    }
+
+    fn has_authoritative_typed_cp() -> bool {
+        true
+    }
 
     fn serialize_output_context(
         r1cs: &crate::r1cs::R1CSMatrices,
@@ -206,6 +566,7 @@ impl BackendSnark for WhirSnark {
             n_pub: r1cs.num_public,
             is_output_snark: true,
             is_cp_snark: false,
+            typed_cp: None,
         }))
     }
 
@@ -217,7 +578,338 @@ impl BackendSnark for WhirSnark {
             n_pub: r1cs.num_public,
             is_output_snark: false,
             is_cp_snark: true,
+            typed_cp: None,
         }))
+    }
+
+    fn serialize_typed_cp_context(
+        descriptor: &crate::snark::TypedCpSetupDescriptor,
+    ) -> Option<Vec<u8>> {
+        let lengths = crate::snark::cp_snark::typed_cp_digest_input_lengths_from_setup(
+            descriptor.cp_layout.ell_np,
+            descriptor.cp_layout.kappa,
+            descriptor.cp_layout.n_in,
+            descriptor.params.lambda_pj,
+            descriptor.params.ell_h,
+            descriptor.params.k_g(),
+            &descriptor.original_r1cs,
+        )?;
+        let (r1cs, _layout) = crate::snark::cp_snark::generate_typed_cp_digest_r1cs(
+            &descriptor.cp_r1cs,
+            &descriptor.cp_layout,
+            &descriptor.ajtai,
+            &descriptor.original_r1cs,
+            &lengths,
+        );
+        Some(serialize::serialize_context(&serialize::WhirContext {
+            n_pub: r1cs.num_public,
+            r1cs,
+            q: descriptor.params.q,
+            d: descriptor.params.d,
+            is_output_snark: false,
+            is_cp_snark: true,
+            typed_cp: Some(serialize::typed_cp_context_from_descriptor(descriptor)),
+        }))
+    }
+
+    fn typed_cp_relation_description(
+        descriptor: &crate::snark::TypedCpSetupDescriptor,
+    ) -> Option<crate::snark::RelationDescription> {
+        let key = typed_cp_descriptor_cache_key(descriptor);
+        let relation_cache =
+            TYPED_CP_RELATION_DESCRIPTION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(relation) = relation_cache
+            .lock()
+            .expect("typed CP relation description cache mutex poisoned")
+            .get(&key)
+            .cloned()
+        {
+            return Some(relation);
+        }
+
+        let lengths = crate::snark::cp_snark::typed_cp_digest_input_lengths_from_setup(
+            descriptor.cp_layout.ell_np,
+            descriptor.cp_layout.kappa,
+            descriptor.cp_layout.n_in,
+            descriptor.params.lambda_pj,
+            descriptor.params.ell_h,
+            descriptor.params.k_g(),
+            &descriptor.original_r1cs,
+        )?;
+        let (r1cs, layout, audit) =
+            crate::snark::cp_snark::generate_typed_cp_digest_r1cs_with_audit(
+                &descriptor.cp_r1cs,
+                &descriptor.cp_layout,
+                &descriptor.ajtai,
+                &descriptor.original_r1cs,
+                &lengths,
+            );
+        debug_assert!(audit.validate_against(&r1cs).is_ok());
+        let ctx = serialize::WhirContext {
+            q: descriptor.params.q,
+            d: descriptor.params.d,
+            n_pub: r1cs.num_public,
+            is_output_snark: false,
+            is_cp_snark: true,
+            typed_cp: Some(serialize::typed_cp_context_from_descriptor(descriptor)),
+            r1cs: r1cs.clone(),
+        };
+        let context_bytes = serialize::serialize_context(&ctx);
+        let typed_cache_key = typed_cp_cache_key(&ctx);
+        TYPED_CP_RELATION_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("typed CP cache mutex poisoned")
+            .entry(typed_cache_key)
+            .or_insert_with(|| {
+                Arc::new(CachedTypedCpRelation {
+                    r1cs: r1cs.clone(),
+                    layout,
+                    audit,
+                })
+            });
+        let relation = crate::snark::RelationDescription {
+            num_instance_vars: r1cs.num_public,
+            num_witness_vars: r1cs.num_variables - r1cs.num_public,
+            num_constraints: r1cs.num_constraints,
+            context: Some(context_bytes),
+        };
+        relation_cache
+            .lock()
+            .expect("typed CP relation description cache mutex poisoned")
+            .entry(key)
+            .or_insert_with(|| relation.clone());
+        Some(relation)
+    }
+
+    fn prove_typed_cp(
+        pk: &Self::ProvingKey,
+        statement: &crate::cp_relation_core::CpPublicStatement,
+        witness: &crate::cp_relation_core::CpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        let ctx = pk
+            .relation
+            .context
+            .as_ref()
+            .and_then(|bytes| deserialize_context(bytes))?;
+        if !ctx.is_cp_snark || ctx.is_output_snark {
+            return None;
+        }
+
+        if let Some(typed) = &ctx.typed_cp {
+            if statement.digest_scheme != crate::digest_core::PublicDigestScheme::Poseidon2BabyBear
+            {
+                return None;
+            }
+            let typed_relation = typed_cp_relation_from_context(&ctx, typed)?;
+            debug_assert!(typed_relation
+                .audit
+                .validate_against(&typed_relation.r1cs)
+                .is_ok());
+            if typed_relation.r1cs.num_public != ctx.r1cs.num_public
+                || typed_relation.r1cs.num_variables != ctx.r1cs.num_variables
+                || typed_relation.r1cs.num_constraints != ctx.r1cs.num_constraints
+            {
+                return None;
+            }
+            let cp_instance = crate::snark::cp_snark::encode_typed_cp_digest_instance(
+                statement,
+                &witness.fs_commitments,
+                &typed_relation.layout,
+            )?;
+            let cp_ntt = Some(crate::ring::ntt::NttContext::new(ctx.q));
+            let ext_ctx = crate::ring::extension::ExtFieldContext::new(ctx.q);
+            let cp_witness = crate::snark::cp_snark::encode_typed_cp_digest_witness(
+                statement,
+                witness,
+                &typed_relation.layout,
+                &cp_ntt,
+                ext_ctx.alpha,
+                ctx.q,
+                &typed.ajtai,
+                &typed.original_r1cs,
+            )?;
+            return Some(prove_cp_r1cs(pk, &cp_instance, &cp_witness, &ctx));
+        }
+
+        if statement.digest_scheme != crate::digest_core::PublicDigestScheme::Sha256 {
+            return None;
+        }
+
+        let legacy_layout = crate::snark::cp_snark::CpR1csLayout::new(
+            statement.public_inputs.len(),
+            statement.instance.x_folded.commitment.value.elements.len(),
+            statement.r1cs_num_public,
+            statement.r1cs_num_constraints,
+        );
+        let layout = legacy_layout.clone();
+        if layout.num_instance != ctx.r1cs.num_public {
+            return None;
+        }
+
+        let cp_public_instance = crate::snark::cp_snark::CpPublicInstance {
+            fold_root: statement.instance.fold_root,
+            fs_root: statement.instance.fs_root,
+            transcript_seed_digest: statement.instance.transcript_seed_digest,
+            challenge_digest: statement.instance.challenge_digest,
+            folded_instance: statement.instance.x_folded.clone(),
+        };
+        let cp_instance =
+            crate::snark::cp_snark::encode_cp_backend_instance(&cp_public_instance, &layout);
+        let cp_ntt = Some(crate::ring::ntt::NttContext::new(ctx.q));
+        let ext_ctx = crate::ring::extension::ExtFieldContext::new(ctx.q);
+        if legacy_layout.num_variables != ctx.r1cs.num_variables {
+            return None;
+        }
+        let cp_witness = crate::snark::cp_snark::encode_cp_witness_r1cs(
+            &witness.folding_proof.commitments,
+            &statement.public_inputs,
+            &witness.folding_proof.beta,
+            &statement.instance.x_folded,
+            &layout,
+            &cp_ntt,
+            &witness.folding_proof.gr1cs_proofs,
+            &witness.shared_challenges.sumcheck_seed_had,
+            &witness.shared_challenges.alpha,
+            &witness.shared_challenges.hadamard_sumcheck_challenges,
+            ext_ctx.alpha,
+            ctx.q,
+        );
+
+        Some(prove_cp_r1cs(pk, &cp_instance, &cp_witness, &ctx))
+    }
+
+    fn verify_typed_cp(
+        vk: &Self::VerifyingKey,
+        statement: &crate::cp_relation_core::CpPublicStatement,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        let Some(ctx) = vk
+            .relation
+            .context
+            .as_ref()
+            .and_then(|bytes| deserialize_context(bytes))
+        else {
+            return Some(false);
+        };
+        if !ctx.is_cp_snark || ctx.is_output_snark {
+            return Some(false);
+        }
+
+        if let Some(typed) = &ctx.typed_cp {
+            if statement.digest_scheme != crate::digest_core::PublicDigestScheme::Poseidon2BabyBear
+            {
+                return Some(false);
+            }
+            let Some(typed_relation) = typed_cp_relation_from_context(&ctx, typed) else {
+                return Some(false);
+            };
+            debug_assert!(typed_relation
+                .audit
+                .validate_against(&typed_relation.r1cs)
+                .is_ok());
+            if typed_relation.r1cs.num_public != ctx.r1cs.num_public
+                || typed_relation.r1cs.num_variables != ctx.r1cs.num_variables
+                || typed_relation.r1cs.num_constraints != ctx.r1cs.num_constraints
+            {
+                return Some(false);
+            }
+            let Some(cp_instance) = crate::snark::cp_snark::encode_typed_cp_digest_instance(
+                statement,
+                &statement.fs_commitments,
+                &typed_relation.layout,
+            ) else {
+                return Some(false);
+            };
+            return Some(verify_cp_r1cs(vk, &cp_instance, proof, &ctx));
+        }
+
+        if statement.digest_scheme != crate::digest_core::PublicDigestScheme::Sha256 {
+            return Some(false);
+        }
+
+        let legacy_layout = crate::snark::cp_snark::CpR1csLayout::new(
+            statement.public_inputs.len(),
+            statement.instance.x_folded.commitment.value.elements.len(),
+            statement.r1cs_num_public,
+            statement.r1cs_num_constraints,
+        );
+        let layout = legacy_layout.clone();
+        if layout.num_instance != ctx.r1cs.num_public {
+            return Some(false);
+        }
+        if legacy_layout.num_variables != ctx.r1cs.num_variables {
+            return Some(false);
+        }
+
+        let cp_public_instance = crate::snark::cp_snark::CpPublicInstance {
+            fold_root: statement.instance.fold_root,
+            fs_root: statement.instance.fs_root,
+            transcript_seed_digest: statement.instance.transcript_seed_digest,
+            challenge_digest: statement.instance.challenge_digest,
+            folded_instance: statement.instance.x_folded.clone(),
+        };
+        let cp_instance =
+            crate::snark::cp_snark::encode_cp_backend_instance(&cp_public_instance, &layout);
+        Some(verify_cp_r1cs(vk, &cp_instance, proof, &ctx))
+    }
+
+    fn prove_typed_output(
+        pk: &Self::ProvingKey,
+        instance: &FoldedOutputInstance,
+        witness: &FoldedOutputWitness,
+    ) -> Option<Self::Proof> {
+        let ctx = pk
+            .relation
+            .context
+            .as_ref()
+            .and_then(|bytes| deserialize_context(bytes))?;
+        if !ctx.is_output_snark || ctx.is_cp_snark {
+            return None;
+        }
+        if !validate_typed_output_relation(instance, witness, &ctx) {
+            return None;
+        }
+
+        let transcript_instance = crate::snark::cp_snark::encode_folded_output_instance(instance);
+        let binding_ctx = typed_output_binding_context(&ctx);
+        let binding_instance = typed_output_binding_instance();
+        Some(prove_output_with_transcript_instance(
+            pk,
+            &binding_instance,
+            &transcript_instance,
+            &[],
+            &binding_ctx,
+        ))
+    }
+
+    fn verify_typed_output(
+        vk: &Self::VerifyingKey,
+        instance: &FoldedOutputInstance,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        let ctx = vk
+            .relation
+            .context
+            .as_ref()
+            .and_then(|bytes| deserialize_context(bytes))?;
+        if !ctx.is_output_snark || ctx.is_cp_snark {
+            return None;
+        }
+        if !validate_typed_output_public_instance(instance, &ctx) {
+            return Some(false);
+        }
+
+        let transcript_instance = crate::snark::cp_snark::encode_folded_output_instance(instance);
+        let binding_ctx = typed_output_binding_context(&ctx);
+        let binding_instance = typed_output_binding_instance();
+        Some(verify_output_with_transcript_instance(
+            vk,
+            &binding_instance,
+            &transcript_instance,
+            proof,
+            &binding_ctx,
+        ))
     }
 
     fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
@@ -416,9 +1108,31 @@ fn sumcheck_point_to_mle_point(point: &[BabyBear], len: usize) -> Vec<BabyBear> 
     padded
 }
 
+fn boolean_point_for_index(index: usize, len: usize) -> Vec<BabyBear> {
+    (0..len)
+        .map(|bit| {
+            if ((index >> bit) & 1) == 1 {
+                BabyBear::ONE
+            } else {
+                BabyBear::ZERO
+            }
+        })
+        .collect()
+}
+
 fn prove_output(
     pk: &WhirProvingKey,
     instance: &[u8],
+    witness: &[u8],
+    ctx: &WhirContext,
+) -> WhirProof {
+    prove_output_with_transcript_instance(pk, instance, instance, witness, ctx)
+}
+
+fn prove_output_with_transcript_instance(
+    pk: &WhirProvingKey,
+    r1cs_instance: &[u8],
+    transcript_instance: &[u8],
     witness: &[u8],
     ctx: &WhirContext,
 ) -> WhirProof {
@@ -429,7 +1143,7 @@ fn prove_output(
     // Parse only the CP-R1CS public prefix from `instance`.
     // Any trailer bytes are transcript-binding metadata and must not shift the
     // R1CS witness layout.
-    let mut instance_bb = bytes_to_babybear_direct(instance);
+    let mut instance_bb = bytes_to_babybear_direct(r1cs_instance);
     let expected_instance_len = ctx.r1cs.num_public * d;
     instance_bb.resize(expected_instance_len, BabyBear::ZERO);
     let witness_bb = bytes_to_babybear_direct(witness);
@@ -468,8 +1182,8 @@ fn prove_output(
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-output-v2");
     transcript.extend_from_slice(&pk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
+    transcript.extend_from_slice(&(transcript_instance.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(transcript_instance);
 
     // Derive tau for the sumcheck
     let tau: Vec<BabyBear> = (0..num_vars)
@@ -496,10 +1210,20 @@ fn prove_output(
         &mut transcript,
     );
     opening_points.extend(linear_points);
+    for idx in 0..expected_instance_len {
+        opening_points.push(boolean_point_for_index(idx, z_num_vars));
+    }
 
     let (whir_pcs_proof, opening_evals) =
         whir_commit_and_prove_multi(&pk.seed, z_num_vars, &z_padded, &opening_points);
     assert_eq!(opening_evals.first().copied(), Some(z_eval));
+    let public_eval_offset = 1 + linear_checks.len();
+    for (idx, expected) in instance_bb.iter().copied().enumerate() {
+        assert_eq!(
+            opening_evals.get(public_eval_offset + idx).copied(),
+            Some(expected)
+        );
+    }
 
     WhirProof {
         sumcheck_rounds_3: Vec::new(),
@@ -519,11 +1243,43 @@ fn verify_output(
     proof: &WhirProof,
     ctx: &WhirContext,
 ) -> bool {
+    verify_output_with_transcript_instance(vk, instance, instance, proof, ctx)
+}
+
+fn typed_output_binding_context(ctx: &WhirContext) -> WhirContext {
+    let mut r1cs = R1CSMatrices::new(1, 1, 1);
+    r1cs.a.insert(0, 0, 0);
+    WhirContext {
+        r1cs,
+        q: ctx.q,
+        d: 1,
+        n_pub: 1,
+        is_output_snark: true,
+        is_cp_snark: false,
+        typed_cp: None,
+    }
+}
+
+fn typed_output_binding_instance() -> [u8; 8] {
+    1i64.to_le_bytes()
+}
+
+fn verify_output_with_transcript_instance(
+    vk: &WhirVerifyingKey,
+    r1cs_instance: &[u8],
+    transcript_instance: &[u8],
+    proof: &WhirProof,
+    ctx: &WhirContext,
+) -> bool {
     if !proof.is_output {
         return false;
     }
 
     let d = ctx.d;
+    let mut instance_bb = bytes_to_babybear_direct(r1cs_instance);
+    let expected_instance_len = ctx.r1cs.num_public * d;
+    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
+
     let num_constraints = ctx.r1cs.num_constraints * d;
     let num_vars = ceil_log2(num_constraints.max(1));
 
@@ -535,8 +1291,8 @@ fn verify_output(
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"whir-output-v2");
     transcript.extend_from_slice(&vk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
+    transcript.extend_from_slice(&(transcript_instance.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(transcript_instance);
 
     // Derive tau
     let tau: Vec<BabyBear> = (0..num_vars)
@@ -602,6 +1358,10 @@ fn verify_output(
         &mut opening_evals,
     ) {
         return false;
+    }
+    for (idx, expected) in instance_bb.iter().copied().enumerate() {
+        opening_points.push(boolean_point_for_index(idx, z_num_vars));
+        opening_evals.push(expected);
     }
 
     whir_verify_opening_multi(
@@ -675,7 +1435,6 @@ fn prove_cp_r1cs(
 
     let (az, bz, cz) =
         compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
-
     let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
     let mut z_padded = z_flat;
     z_padded.resize(z_padded_len, BabyBear::ZERO);
@@ -821,7 +1580,6 @@ fn verify_cp_r1cs(
     ) {
         return false;
     }
-
     whir_verify_opening_multi(
         &vk.seed,
         z_num_vars,
@@ -1579,6 +2337,163 @@ fn eval_univariate_3(evals: &[BabyBear; 3], t: BabyBear) -> BabyBear {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn validate_typed_output_public_instance(
+    instance: &FoldedOutputInstance,
+    ctx: &WhirContext,
+) -> bool {
+    if instance.linear_relation.commitment != instance.folded_instance.commitment {
+        return false;
+    }
+    if instance.linear_relation.evaluation_values.to_vec()
+        != instance.folded_instance.evaluation_values
+    {
+        return false;
+    }
+    if instance.folded_instance.public_input.len() != ctx.r1cs.num_public {
+        return false;
+    }
+    if instance.batched_relation.commitments.len()
+        != instance.batched_relation.evaluation_values.len()
+    {
+        return false;
+    }
+
+    true
+}
+
+fn validate_typed_output_relation(
+    instance: &FoldedOutputInstance,
+    witness: &FoldedOutputWitness,
+    ctx: &WhirContext,
+) -> bool {
+    if !validate_typed_output_public_instance(instance, ctx) {
+        return false;
+    }
+    let expected_witness_len = ctx.r1cs.num_variables.saturating_sub(ctx.r1cs.num_public);
+    if witness.folded_witness.witness.len() != expected_witness_len {
+        return false;
+    }
+    if instance.batched_relation.commitments.len() != witness.folded_witness.monomial_vectors.len()
+        || instance.batched_relation.evaluation_values.len()
+            != witness.folded_witness.monomial_vectors.len()
+    {
+        return false;
+    }
+
+    let ext_ctx = ExtFieldContext::new(ctx.q);
+    let expected_linear = compute_hadamard_output_evaluations(
+        &instance.folded_instance.public_input,
+        &witness.folded_witness.witness.elements,
+        &instance.linear_relation.evaluation_point,
+        ctx,
+        &ext_ctx,
+    );
+    if expected_linear != instance.linear_relation.evaluation_values {
+        return false;
+    }
+
+    let expected_batched = compute_monomial_output_evaluations(
+        &witness.folded_witness.monomial_vectors,
+        &instance.batched_relation.evaluation_point,
+        ctx,
+        &ext_ctx,
+    );
+    expected_batched == instance.batched_relation.evaluation_values
+}
+
+fn compute_hadamard_output_evaluations(
+    public_input: &[RingElement],
+    witness: &[RingElement],
+    point: &[ExtFieldElement],
+    ctx: &WhirContext,
+    ext_ctx: &ExtFieldContext,
+) -> [TensorElement; 3] {
+    let mut assignment = Vec::with_capacity(public_input.len() + witness.len());
+    assignment.extend_from_slice(public_input);
+    assignment.extend_from_slice(witness);
+
+    let table_size = 1usize << ceil_log2(ctx.r1cs.num_constraints.max(1));
+    let mut evaluations = [
+        TensorElement::zero(),
+        TensorElement::zero(),
+        TensorElement::zero(),
+    ];
+
+    for j in 0..ctx.d.min(D) {
+        let col: Vec<i64> = assignment.iter().map(|elem| elem.coeffs[j]).collect();
+        let mut rows = [
+            ctx.r1cs.a.mul_vec_mod(&col, ctx.q),
+            ctx.r1cs.b.mul_vec_mod(&col, ctx.q),
+            ctx.r1cs.c.mul_vec_mod(&col, ctx.q),
+        ];
+        for row in &mut rows {
+            row.resize(table_size, 0);
+        }
+        for (i, row) in rows.iter().enumerate() {
+            let val = mle_eval_ext_i64(row, point, ext_ctx);
+            evaluations[i].data[0][j] = val.c0;
+            evaluations[i].data[1][j] = val.c1;
+        }
+    }
+
+    evaluations
+}
+
+fn compute_monomial_output_evaluations(
+    monomial_vectors: &[crate::ring::RingVector],
+    point: &[ExtFieldElement],
+    ctx: &WhirContext,
+    ext_ctx: &ExtFieldContext,
+) -> Vec<TensorElement> {
+    monomial_vectors
+        .iter()
+        .map(|vector| {
+            let table_size = 1usize << ceil_log2(vector.len().max(1));
+            let mut evaluation = TensorElement::zero();
+            for j in 0..ctx.d.min(D) {
+                let mut table: Vec<i64> =
+                    vector.elements.iter().map(|elem| elem.coeffs[j]).collect();
+                table.resize(table_size, 0);
+                let val = mle_eval_ext_i64(&table, point, ext_ctx);
+                evaluation.data[0][j] = val.c0;
+                evaluation.data[1][j] = val.c1;
+            }
+            evaluation
+        })
+        .collect()
+}
+
+fn mle_eval_ext_i64(
+    table: &[i64],
+    point: &[ExtFieldElement],
+    ctx: &ExtFieldContext,
+) -> ExtFieldElement {
+    if table.is_empty() {
+        return ctx.zero();
+    }
+
+    let mut current: Vec<ExtFieldElement> = table
+        .iter()
+        .map(|&v| ExtFieldElement { c0: v, c1: 0 })
+        .collect();
+    for r in point.iter().take(ceil_log2(table.len().max(1))) {
+        if current.len() == 1 {
+            break;
+        }
+        let half = current.len() / 2;
+        let one_minus_r = ctx.sub(&ctx.one(), r);
+        let mut next = Vec::with_capacity(half);
+        for i in 0..half {
+            next.push(ctx.add(
+                &ctx.mul(&one_minus_r, &current[i]),
+                &ctx.mul(r, &current[half + i]),
+            ));
+        }
+        current = next;
+    }
+    current.first().copied().unwrap_or_else(|| ctx.zero())
+}
+
 fn compute_context_hash(context: &Option<Vec<u8>>) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"whir-context-binding");
@@ -1615,7 +2530,18 @@ fn ceil_log2(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commitment::Commitment;
+    use crate::cp_snark::{CPSnark, IdentityRelation};
+    use crate::fiat_shamir::FSCommitment;
+    use crate::folding::{
+        FoldedInstance, FoldedOutputInstance, FoldedOutputWitness, FoldedWitness,
+    };
     use crate::r1cs::R1CSMatrices;
+    use crate::ring::extension::ExtFieldElement;
+    use crate::ring::tensor::TensorElement;
+    use crate::ring::{RingElement, RingVector};
+    use crate::rok::{BatchedLinearRelation, LinearRelation};
+    use crate::HashCommitment;
 
     fn test_relation() -> RelationDescription {
         RelationDescription {
@@ -1665,6 +2591,39 @@ mod tests {
     }
 
     #[test]
+    fn standalone_cp_snark_large_messages_roundtrip() {
+        let num_messages = 8usize;
+        let max_message_size = 128usize;
+        let cp = CPSnark::<WhirSnark, HashCommitment>::setup(num_messages, max_message_size);
+        let scheme = HashCommitment::new();
+        let relation = IdentityRelation;
+
+        let messages: Vec<Vec<u8>> = (0..num_messages)
+            .map(|msg_i| {
+                (0..max_message_size)
+                    .map(|byte_i| ((byte_i * 31 + msg_i * 17 + 7) % 251) as u8)
+                    .collect()
+            })
+            .collect();
+        let (commitments, openings): (Vec<_>, Vec<_>) =
+            messages.iter().map(|msg| scheme.commit(msg)).unzip();
+        let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
+
+        let proof = cp
+            .prove(
+                &scheme,
+                &message_refs,
+                &openings,
+                &commitments,
+                b"",
+                &relation,
+            )
+            .expect("WHIR standalone CP prove must succeed");
+
+        assert!(cp.verify(&scheme, &commitments, b"", &relation, &proof));
+    }
+
+    #[test]
     fn cp_snark_proof_is_succinct() {
         let (pk, _vk) = WhirSnark::setup(&test_relation());
         let witness: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
@@ -1690,6 +2649,7 @@ mod tests {
             n_pub: 1,
             is_output_snark: true,
             is_cp_snark: false,
+            typed_cp: None,
         };
         let ctx_bytes = serialize::serialize_context(&ctx);
 
@@ -1723,6 +2683,7 @@ mod tests {
             n_pub: 1,
             is_output_snark: true,
             is_cp_snark: false,
+            typed_cp: None,
         };
         let ctx_bytes = serialize::serialize_context(&ctx);
 
@@ -1742,6 +2703,499 @@ mod tests {
         assert!(!WhirSnark::verify(&vk, &wrong_instance, &proof));
     }
 
+    fn typed_output_fixture() -> (
+        RelationDescription,
+        FoldedOutputInstance,
+        FoldedOutputWitness,
+    ) {
+        // Public x=1, private w=1, constraint x * w = w.
+        let mut r1cs = R1CSMatrices::new(1, 2, 1);
+        r1cs.a.insert(0, 0, 1);
+        r1cs.b.insert(0, 1, 1);
+        r1cs.c.insert(0, 1, 1);
+
+        let ctx = WhirContext {
+            r1cs,
+            q: 2013265921,
+            d: 1,
+            n_pub: 1,
+            is_output_snark: true,
+            is_cp_snark: false,
+            typed_cp: None,
+        };
+        let relation = RelationDescription {
+            num_instance_vars: 1,
+            num_witness_vars: 1,
+            num_constraints: 1,
+            context: Some(serialize::serialize_context(&ctx)),
+        };
+
+        let mut one_eval = TensorElement::zero();
+        one_eval.data[0][0] = 1;
+        let evals = [one_eval.clone(), one_eval.clone(), one_eval];
+        let commitment = Commitment {
+            value: RingVector::zero(1),
+        };
+        let folded_instance = FoldedInstance {
+            commitment: commitment.clone(),
+            public_input: vec![RingElement::from_constant(1)],
+            evaluation_values: evals.to_vec(),
+        };
+        let folded_witness = FoldedWitness {
+            witness: RingVector::from(vec![RingElement::from_constant(1)]),
+            monomial_vectors: Vec::new(),
+        };
+        let output_instance = FoldedOutputInstance {
+            folded_instance,
+            linear_relation: LinearRelation {
+                commitment,
+                evaluation_point: Vec::<ExtFieldElement>::new(),
+                evaluation_values: evals,
+            },
+            batched_relation: BatchedLinearRelation {
+                commitments: Vec::new(),
+                evaluation_point: Vec::new(),
+                evaluation_values: Vec::new(),
+            },
+        };
+        let output_witness = FoldedOutputWitness { folded_witness };
+
+        (relation, output_instance, output_witness)
+    }
+
+    fn mul_ring_ntt(
+        lhs: &RingElement,
+        rhs: &RingElement,
+        ntt: &crate::ring::ntt::NttContext,
+    ) -> RingElement {
+        let lhs_ntt = ntt.forward(lhs);
+        let rhs_ntt = ntt.forward(rhs);
+        ntt.inverse(&ntt.pointwise_mul(&lhs_ntt, &rhs_ntt))
+    }
+
+    fn mul_ring_babybear(lhs: &RingElement, rhs: &RingElement) -> RingElement {
+        let mut acc = [0i128; D];
+        for i in 0..D {
+            for j in 0..D {
+                let prod = lhs.coeffs[i] as i128 * rhs.coeffs[j] as i128;
+                let idx = i + j;
+                if idx < D {
+                    acc[idx] += prod;
+                } else {
+                    acc[idx - D] -= prod;
+                }
+            }
+        }
+        let mut coeffs = [0i64; D];
+        for (out, value) in coeffs.iter_mut().zip(acc) {
+            let p = 2_013_265_921i128;
+            let mut reduced = value % p;
+            if reduced < 0 {
+                reduced += p;
+            }
+            if reduced > p / 2 {
+                reduced -= p;
+            }
+            *out = reduced as i64;
+        }
+        RingElement { coeffs }
+    }
+
+    fn typed_cp_direct_fixture() -> (
+        RelationDescription,
+        crate::cp_relation_core::CpPublicStatement,
+        crate::cp_relation_core::CpWitnessBundle,
+    ) {
+        let q = 257;
+        let params = SymphonyParams {
+            q,
+            d: D,
+            kappa: 2,
+            ell_np: 1,
+            ell_h: D,
+            lambda_pj: 1,
+            n_bar: 3,
+            m: 1,
+            b: 16,
+            k_cs: 1,
+            n_in: 1,
+            ntt: SymphonyParams::try_ntt(q, D),
+        };
+        let ext_ctx = ExtFieldContext::new(q);
+        let mut r1cs = R1CSMatrices::new(1, 3, 1);
+        r1cs.a.insert(0, 1, 1);
+        r1cs.b.insert(0, 2, 1);
+        r1cs.c.insert(0, 0, 15);
+
+        let ajtai =
+            crate::commitment::AjtaiParams::setup(params.kappa, params.n(), q, params.ntt());
+        let public_inputs = vec![vec![1i64]];
+        let original_witnesses = vec![RingVector::from(vec![
+            RingElement::from_constant(3),
+            RingElement::from_constant(5),
+        ])];
+        let full_witness = crate::commitment::opening::assemble_full_witness(
+            &public_inputs[0],
+            &original_witnesses[0],
+        );
+        let (commitment, _) = ajtai.commit(&full_witness);
+        let monomial_vector_len = 4;
+        let monomial_vectors = vec![vec![RingElement::zero(); monomial_vector_len]; params.k_g()];
+        let mon_ajtai = crate::commitment::AjtaiParams::setup_deterministic(
+            params.kappa,
+            monomial_vector_len,
+            q,
+            params.ntt(),
+            b"range-proof-monomial",
+        );
+        let mut monomial_commitments = Vec::with_capacity(params.k_g());
+        for monomial_vector in &monomial_vectors {
+            let (commitment, _) = mon_ajtai.commit(&RingVector::from(monomial_vector.clone()));
+            monomial_commitments.push(commitment);
+        }
+        let shared_challenges = crate::cp_relation_core::CpSharedChallengeData {
+            sumcheck_seed_had: Vec::new(),
+            alpha: ExtFieldElement { c0: 5, c1: 3 },
+            hadamard_sumcheck_challenges: Vec::new(),
+            sumcheck_seed_mon: vec![
+                ExtFieldElement { c0: 2, c1: 1 },
+                ExtFieldElement { c0: 3, c1: 2 },
+            ],
+            monomial_sumcheck_challenges: vec![
+                ExtFieldElement { c0: 11, c1: 6 },
+                ExtFieldElement { c0: 13, c1: 7 },
+            ],
+        };
+        let monomial_challenges = crate::rok::monomial::MonomialChallenges {
+            s: shared_challenges.sumcheck_seed_mon.clone(),
+            alpha: shared_challenges.alpha,
+            sumcheck_challenges: shared_challenges.monomial_sumcheck_challenges.clone(),
+        };
+        let monomial_proof = crate::rok::monomial::prove(
+            &monomial_commitments,
+            &monomial_vectors,
+            &monomial_challenges,
+            &ext_ctx,
+        );
+        let gr1cs_proof = crate::rok::gr1cs::GR1CSProof {
+            hadamard_proof: crate::rok::hadamard::HadamardProof {
+                sumcheck_proof: crate::sumcheck::SumcheckProof {
+                    round_messages: Vec::new(),
+                },
+                evaluation_matrix: [
+                    TensorElement::zero(),
+                    TensorElement::zero(),
+                    TensorElement::zero(),
+                ],
+            },
+            range_proof: crate::rok::range_proof::RangeProof {
+                monomial_commitments,
+                monomial_vectors,
+                monomial_proof,
+                projected_values: vec![0; 3],
+            },
+        };
+        let fs_messages: Vec<Vec<u8>> = [gr1cs_proof.clone()]
+            .iter()
+            .map(crate::snark::cp_snark::encode_gr1cs_round_message)
+            .collect();
+        let scheme = crate::digest_core::PublicDigestScheme::Poseidon2BabyBear;
+        let mut fs_commitments = Vec::with_capacity(fs_messages.len());
+        let mut fs_openings = Vec::with_capacity(fs_messages.len());
+        for message in &fs_messages {
+            let (commitment, opening) = crate::digest_core::fs_commit_with_scheme(scheme, message);
+            fs_commitments.push(commitment.to_vec());
+            fs_openings.push(opening.to_vec());
+        }
+        let challenges = crate::digest_core::derive_challenges_with_scheme(
+            scheme,
+            &public_inputs,
+            r1cs.num_constraints,
+            r1cs.num_variables,
+            r1cs.num_public,
+            &fs_commitments,
+        );
+        let typed_beta =
+            crate::snark::cp_snark::typed_r1cs::poseidon_challenges_to_betas(&challenges)
+                .expect("typed beta");
+        let beta = &typed_beta[0];
+        let mut folded_commitment = commitment.clone();
+        for elem in &mut folded_commitment.value.elements {
+            *elem = mul_ring_ntt(elem, beta, params.ntt());
+        }
+        let folded_public_input = public_inputs[0]
+            .iter()
+            .map(|&value| mul_ring_ntt(&RingElement::from_constant(value), beta, params.ntt()))
+            .collect::<Vec<_>>();
+        let mut folded_evaluation_values = vec![TensorElement::zero(); 3];
+        for (idx, eval) in gr1cs_proof
+            .hadamard_proof
+            .evaluation_matrix
+            .iter()
+            .enumerate()
+        {
+            for t in 0..crate::params::T {
+                let row = RingElement {
+                    coeffs: eval.data[t],
+                };
+                folded_evaluation_values[idx].data[t] = mul_ring_babybear(&row, beta).coeffs;
+            }
+        }
+        let folded_instance = FoldedInstance {
+            commitment: folded_commitment,
+            public_input: folded_public_input,
+            evaluation_values: folded_evaluation_values.clone(),
+        };
+        let linear_relation = LinearRelation {
+            commitment: folded_instance.commitment.clone(),
+            evaluation_point: Vec::new(),
+            evaluation_values: [
+                folded_evaluation_values[0].clone(),
+                folded_evaluation_values[1].clone(),
+                folded_evaluation_values[2].clone(),
+            ],
+        };
+        let batched_relation = BatchedLinearRelation {
+            commitments: Vec::new(),
+            evaluation_point: Vec::new(),
+            evaluation_values: Vec::new(),
+        };
+        let folding_proof = crate::folding::FoldingProof {
+            commitments: vec![commitment.clone()],
+            gr1cs_proofs: vec![gr1cs_proof],
+            beta: typed_beta,
+            folded_instance: folded_instance.clone(),
+            linear_relation,
+            batched_relation,
+        };
+        let folded_witness = FoldedWitness {
+            witness: original_witnesses[0].clone(),
+            monomial_vectors: Vec::new(),
+        };
+        let folded_output_instance =
+            crate::folding::folded_output_instance_from_proof(&folding_proof);
+        let folded_output_witness =
+            crate::folding::folded_output_witness_from_folded(&folded_witness);
+        let fold_inputs = vec![crate::digest_core::FoldInput {
+            commitment_bytes: crate::snark::cp_snark::encode_commitment_to_bytes(&commitment),
+            public_input: public_inputs[0].clone(),
+            eval_values_bytes: fs_messages[0].clone(),
+        }];
+        let cp_public_instance = crate::cp_relation_core::CpPublicInstance {
+            fs_root: crate::digest_core::digest_fs_root_with_scheme(scheme, &fs_commitments),
+            fold_root: crate::digest_core::digest_fold_root_with_scheme(scheme, &fold_inputs),
+            challenge_digest: crate::digest_core::digest_challenge_digest_with_scheme(
+                scheme,
+                &challenges,
+            ),
+            transcript_seed_digest: crate::digest_core::digest_transcript_seed_with_scheme(
+                scheme,
+                &public_inputs,
+                r1cs.num_constraints,
+                r1cs.num_variables,
+                r1cs.num_public,
+            ),
+            x_folded: folded_instance.clone(),
+            folded_output: folded_output_instance.clone(),
+        };
+        let statement = crate::cp_relation_core::CpPublicStatement::new(
+            cp_public_instance,
+            public_inputs.clone(),
+            &r1cs,
+            scheme,
+        )
+        .with_fs_commitments(fs_commitments.clone());
+        let witness = crate::cp_relation_core::CpWitnessBundle {
+            transcript_bytes: Vec::new(),
+            fs_commitments,
+            fs_openings,
+            fs_messages,
+            fold_inputs,
+            original_witnesses,
+            folded_output: folded_instance,
+            folded_output_instance: folded_output_instance.clone(),
+            folded_output_witness,
+            folded_witness,
+            folding_proof,
+            shared_challenges: crate::cp_relation_core::CpSharedChallengeData {
+                sumcheck_seed_had: shared_challenges.sumcheck_seed_had,
+                alpha: shared_challenges.alpha,
+                hadamard_sumcheck_challenges: shared_challenges.hadamard_sumcheck_challenges,
+                sumcheck_seed_mon: shared_challenges.sumcheck_seed_mon,
+                monomial_sumcheck_challenges: shared_challenges.monomial_sumcheck_challenges,
+            },
+        };
+        let (cp_r1cs, cp_layout) = crate::snark::cp_snark::generate_cp_r1cs(
+            params.ell_np,
+            params.kappa,
+            params.n_in,
+            r1cs.num_constraints,
+            ext_ctx.alpha,
+            q,
+        );
+        let descriptor = crate::snark::TypedCpSetupDescriptor {
+            params,
+            ajtai,
+            original_r1cs: r1cs,
+            cp_r1cs,
+            cp_layout,
+        };
+        let relation = WhirSnark::typed_cp_relation_description(&descriptor)
+            .expect("typed CP relation description");
+        (relation, statement, witness)
+    }
+
+    #[test]
+    fn typed_output_roundtrip_direct() {
+        let (relation, output_instance, output_witness) = typed_output_fixture();
+        let (pk, vk) = WhirSnark::setup(&relation);
+
+        assert!(WhirSnark::has_authoritative_typed_output());
+        let proof = WhirSnark::prove_typed_output(&pk, &output_instance, &output_witness)
+            .expect("typed WHIR output proof");
+
+        assert_eq!(
+            WhirSnark::verify_typed_output(&vk, &output_instance, &proof),
+            Some(true)
+        );
+
+        let mut tampered = output_instance.clone();
+        tampered.folded_instance.public_input[0].coeffs[0] = 0;
+        assert_eq!(
+            WhirSnark::verify_typed_output(&vk, &tampered, &proof),
+            Some(false)
+        );
+
+        let legacy_instance = 1i64.to_le_bytes();
+        let legacy_witness = 1i64.to_le_bytes();
+        let legacy_proof = WhirSnark::prove(&pk, &legacy_instance, &legacy_witness);
+        assert_eq!(
+            WhirSnark::verify_typed_output(&vk, &output_instance, &legacy_proof),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn typed_cp_full_digest_roundtrip_direct_authoritative() {
+        let (relation, statement, witness) = typed_cp_direct_fixture();
+        let ctx = deserialize_context(relation.context.as_ref().unwrap()).unwrap();
+        let typed = ctx.typed_cp.as_ref().unwrap();
+        let (r1cs, layout) = typed_cp_digest_r1cs_from_context(&ctx, typed).unwrap();
+        let instance = crate::snark::cp_snark::encode_typed_cp_digest_instance(
+            &statement,
+            &statement.fs_commitments,
+            &layout,
+        )
+        .unwrap();
+        let cp_ntt = Some(crate::ring::ntt::NttContext::new(ctx.q));
+        let ext_ctx = ExtFieldContext::new(ctx.q);
+        let witness_bytes = crate::snark::cp_snark::encode_typed_cp_digest_witness(
+            &statement,
+            &witness,
+            &layout,
+            &cp_ntt,
+            ext_ctx.alpha,
+            ctx.q,
+            &typed.ajtai,
+            &typed.original_r1cs,
+        )
+        .unwrap();
+        let z = instance
+            .chunks_exact(8)
+            .chain(witness_bytes.chunks_exact(8))
+            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        if !r1cs.is_satisfied_mod(&z, 2_013_265_921) {
+            let az = r1cs.a.mul_vec_mod(&z, 2_013_265_921);
+            let bz = r1cs.b.mul_vec_mod(&z, 2_013_265_921);
+            let cz = r1cs.c.mul_vec_mod(&z, 2_013_265_921);
+            let row = (0..r1cs.num_constraints)
+                .find(|&idx| {
+                    ((az[idx] as i128 * bz[idx] as i128 - cz[idx] as i128) % 2_013_265_921i128) != 0
+                })
+                .unwrap();
+            panic!(
+                "typed CP fixture first unsatisfied row {row}: az={} bz={} cz={}",
+                az[row], bz[row], cz[row]
+            );
+        }
+
+        let (pk, vk) = WhirSnark::setup(&relation);
+
+        assert_eq!(
+            WhirSnark::public_digest_scheme(),
+            crate::digest_core::PublicDigestScheme::Poseidon2BabyBear
+        );
+        assert!(WhirSnark::has_authoritative_typed_cp());
+
+        let proof =
+            WhirSnark::prove_typed_cp(&pk, &statement, &witness).expect("full typed CP WHIR proof");
+        assert_eq!(
+            WhirSnark::verify_typed_cp(&vk, &statement, &proof),
+            Some(true)
+        );
+
+        let mut tampered_digest = statement.clone();
+        tampered_digest.instance.fs_root[0] ^= 1;
+        assert_eq!(
+            WhirSnark::verify_typed_cp(&vk, &tampered_digest, &proof),
+            Some(false)
+        );
+
+        let mut tampered_input = statement.clone();
+        tampered_input.public_inputs[0][0] += 1;
+        assert_eq!(
+            WhirSnark::verify_typed_cp(&vk, &tampered_input, &proof),
+            Some(false)
+        );
+
+        let mut legacy_statement = statement.clone();
+        legacy_statement.digest_scheme = crate::digest_core::PublicDigestScheme::Sha256;
+        assert!(WhirSnark::prove_typed_cp(&pk, &legacy_statement, &witness).is_none());
+        assert_eq!(
+            WhirSnark::verify_typed_cp(&vk, &legacy_statement, &proof),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn typed_output_rejects_malformed_relation() {
+        let (relation, mut output_instance, output_witness) = typed_output_fixture();
+        let (pk, vk) = WhirSnark::setup(&relation);
+
+        let valid_instance = output_instance.clone();
+        let valid_proof = WhirSnark::prove_typed_output(&pk, &valid_instance, &output_witness)
+            .expect("typed WHIR output proof");
+
+        output_instance.linear_relation.evaluation_values[0].data[0][0] += 1;
+        assert!(WhirSnark::prove_typed_output(&pk, &output_instance, &output_witness).is_none());
+        assert_eq!(
+            WhirSnark::verify_typed_output(&vk, &output_instance, &valid_proof),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn typed_output_rejects_spliced_transcript_instance() {
+        let (relation, output_instance, output_witness) = typed_output_fixture();
+        let (pk, vk) = WhirSnark::setup(&relation);
+        let proof = WhirSnark::prove_typed_output(&pk, &output_instance, &output_witness)
+            .expect("typed WHIR output proof");
+
+        let mut spliced = output_instance.clone();
+        spliced.batched_relation.commitments.push(Commitment {
+            value: RingVector::zero(1),
+        });
+        spliced
+            .batched_relation
+            .evaluation_values
+            .push(TensorElement::zero());
+        assert_eq!(
+            WhirSnark::verify_typed_output(&vk, &spliced, &proof),
+            Some(false)
+        );
+    }
+
     #[test]
     fn output_snark_rejects_forged_az_bz_cz_claims() {
         let mut r1cs = R1CSMatrices::new(1, 2, 1);
@@ -1756,6 +3210,7 @@ mod tests {
             n_pub: 1,
             is_output_snark: true,
             is_cp_snark: false,
+            typed_cp: None,
         };
         let ctx_bytes = serialize::serialize_context(&ctx);
         let relation = RelationDescription {
@@ -1785,6 +3240,189 @@ mod tests {
     }
 
     // --- Shared helper tests ---
+
+    #[test]
+    fn canonical_whir_proof_payload_is_deterministic_and_binding() {
+        let proof = WhirProof {
+            sumcheck_rounds_3: vec![[
+                BabyBear::from_u32(1),
+                BabyBear::from_u32(2),
+                BabyBear::from_u32(3),
+            ]],
+            sumcheck_rounds_4: vec![[
+                BabyBear::from_u32(4),
+                BabyBear::from_u32(5),
+                BabyBear::from_u32(6),
+                BabyBear::from_u32(7),
+            ]],
+            evaluations: [
+                BabyBear::from_u32(8),
+                BabyBear::from_u32(9),
+                BabyBear::from_u32(10),
+            ],
+            whir_pcs_proof: WhirPcsProof::<F, EF, WhirMmcs>::default(),
+            z_eval: BabyBear::from_u32(11),
+            linear_checks: vec![WhirLinearCheckProof {
+                rounds: vec![[
+                    BabyBear::from_u32(12),
+                    BabyBear::from_u32(13),
+                    BabyBear::from_u32(14),
+                ]],
+                z_eval: BabyBear::from_u32(15),
+            }],
+            num_vars: 3,
+            is_output: true,
+        };
+
+        let encoded = canonical_whir_proof_bytes(&proof);
+        assert!(encoded.starts_with(WHIR_PROOF_PAYLOAD_MAGIC));
+        assert_eq!(
+            &encoded[WHIR_PROOF_PAYLOAD_MAGIC.len()..WHIR_PROOF_PAYLOAD_MAGIC.len() + 2],
+            &WHIR_PROOF_PAYLOAD_VERSION.to_le_bytes()
+        );
+        assert_eq!(encoded, canonical_whir_proof_bytes(&proof));
+        let decoded = whir_proof_from_canonical_bytes(&encoded).expect("WHIR payload decodes");
+        assert_eq!(canonical_whir_proof_bytes(&decoded), encoded);
+
+        let mut tampered = proof;
+        tampered.z_eval += BabyBear::ONE;
+        assert_ne!(encoded, canonical_whir_proof_bytes(&tampered));
+
+        let mut bad_kind = encoded.clone();
+        bad_kind[WHIR_PROOF_PAYLOAD_MAGIC.len() + 2] = 2;
+        assert_eq!(
+            whir_proof_from_canonical_bytes(&bad_kind).unwrap_err(),
+            WhirProofPayloadError::InvalidProofKind(2)
+        );
+
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert_eq!(
+            whir_proof_from_canonical_bytes(&trailing).unwrap_err(),
+            WhirProofPayloadError::TrailingBytes
+        );
+
+        let mut truncated = encoded.clone();
+        truncated.pop();
+        assert_eq!(
+            whir_proof_from_canonical_bytes(&truncated).unwrap_err(),
+            WhirProofPayloadError::Truncated
+        );
+
+        let mut noncanonical = encoded;
+        let first_sumcheck_value = WHIR_PROOF_PAYLOAD_MAGIC.len() + 2 + 1 + 8 + 8;
+        noncanonical[first_sumcheck_value..first_sumcheck_value + 4]
+            .copy_from_slice(&2_013_265_921u32.to_le_bytes());
+        assert_eq!(
+            whir_proof_from_canonical_bytes(&noncanonical).unwrap_err(),
+            WhirProofPayloadError::NonCanonicalBabyBear(2_013_265_921)
+        );
+    }
+
+    fn synthetic_whir_fixture_proof(is_output: bool) -> WhirProof {
+        WhirProof {
+            sumcheck_rounds_3: vec![[
+                BabyBear::from_u32(1),
+                BabyBear::from_u32(2),
+                BabyBear::from_u32(3),
+            ]],
+            sumcheck_rounds_4: vec![[
+                BabyBear::from_u32(4),
+                BabyBear::from_u32(5),
+                BabyBear::from_u32(6),
+                BabyBear::from_u32(7),
+            ]],
+            evaluations: [
+                BabyBear::from_u32(8),
+                BabyBear::from_u32(9),
+                BabyBear::from_u32(10),
+            ],
+            whir_pcs_proof: WhirPcsProof::<F, EF, WhirMmcs>::default(),
+            z_eval: BabyBear::from_u32(11),
+            linear_checks: vec![WhirLinearCheckProof {
+                rounds: vec![[
+                    BabyBear::from_u32(12),
+                    BabyBear::from_u32(13),
+                    BabyBear::from_u32(14),
+                ]],
+                z_eval: BabyBear::from_u32(15),
+            }],
+            num_vars: 3,
+            is_output,
+        }
+    }
+
+    fn whir_public_proof_v2_minimal_fixture_bytes() -> Vec<u8> {
+        crate::public_proof::PublicProofEnvelope {
+            digest_scheme: crate::digest_core::PublicDigestScheme::Poseidon2BabyBear,
+            public_inputs: vec![vec![1]],
+            r1cs_num_constraints: 1,
+            r1cs_num_variables: 3,
+            r1cs_num_public: 1,
+            fs_commitments: vec![vec![0x11; 32]],
+            fs_root: [0x22; 32],
+            fold_root: [0x33; 32],
+            challenge_digest: [0x44; 32],
+            transcript_seed_digest: [0x55; 32],
+            folded_output_bytes: b"folded-output-fixture-v1".to_vec(),
+            cp_proof_bytes: canonical_whir_proof_bytes(&synthetic_whir_fixture_proof(false)),
+            output_proof_bytes: canonical_whir_proof_bytes(&synthetic_whir_fixture_proof(true)),
+        }
+        .to_bytes()
+    }
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    fn hex_decode(input: &str) -> Vec<u8> {
+        let clean = input
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+        assert_eq!(clean.len() % 2, 0, "hex fixture must have even length");
+        clean
+            .chunks_exact(2)
+            .map(|pair| {
+                let hi = (pair[0] as char).to_digit(16).expect("hex high nibble");
+                let lo = (pair[1] as char).to_digit(16).expect("hex low nibble");
+                ((hi << 4) | lo) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn whir_public_proof_v2_minimal_golden_fixture_is_stable() {
+        let fixture = include_str!("../../../tests/fixtures/public_proof_v2_whir_minimal.hex");
+        let expected = hex_decode(fixture);
+        let actual = whir_public_proof_v2_minimal_fixture_bytes();
+        assert_eq!(expected, actual);
+
+        let envelope =
+            crate::public_proof::PublicProofEnvelope::from_bytes(&actual).expect("fixture decodes");
+        assert_eq!(
+            envelope.digest_scheme,
+            crate::digest_core::PublicDigestScheme::Poseidon2BabyBear
+        );
+        assert_eq!(envelope.public_inputs, vec![vec![1]]);
+        assert!(whir_proof_from_canonical_bytes(&envelope.cp_proof_bytes).is_ok());
+        assert!(whir_proof_from_canonical_bytes(&envelope.output_proof_bytes).is_ok());
+    }
+
+    #[test]
+    #[ignore = "prints the golden WHIR public proof v2 fixture hex"]
+    fn print_whir_public_proof_v2_minimal_fixture_hex() {
+        println!(
+            "{}",
+            hex_encode(&whir_public_proof_v2_minimal_fixture_bytes())
+        );
+    }
 
     #[test]
     fn eq_table_correctness() {
@@ -1859,6 +3497,7 @@ mod tests {
             n_pub: 1,
             is_output_snark: true,
             is_cp_snark: false,
+            typed_cp: None,
         };
         let bytes = serialize::serialize_context(&ctx);
         let ctx2 = deserialize_context(&bytes).unwrap();

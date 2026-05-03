@@ -7,4 +7,5 @@ pub mod digest_core;
 pub mod folding_core;
 pub mod output_backend_api;
 pub mod proof_orchestrator;
+pub mod public_proof;
 pub mod transcript_core;

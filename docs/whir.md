@@ -45,7 +45,7 @@ Unit struct implementing `BackendSnark`. Routes to two paths:
 
 ```rust
 pub struct WhirProvingKey {
-    pub seed: u64,                      // Deterministic seed derived from relation hash
+    pub seed: [u8; 32],                 // Deterministic seed derived from relation hash
     pub context_hash: [u8; 32],         // SHA-256 binding (context swap detection)
     pub relation: RelationDescription,  // Stored for context access at prove time
 }
@@ -102,7 +102,7 @@ The `build_whir_infra(seed, num_variables)` function deterministically construct
 
 | Component | Type | Role |
 |-----------|------|------|
-| Permutation | `Poseidon2BabyBear<16>` | Core permutation (seeded via `SmallRng`) |
+| Permutation | `Poseidon2BabyBear<16>` | Core permutation (seeded via `ChaCha20Rng` from the full 32-byte relation seed) |
 | Hash | `PaddingFreeSponge<Perm, 16, 8, 8>` | Sponge-based hash for Merkle leaves |
 | Compression | `TruncatedPermutation<Perm, 2, 8, 16>` | 2-to-1 Merkle node compression |
 | Challenger | `DuplexChallenger<F, Perm, 16, 8>` | Fiat-Shamir challenge derivation |
@@ -117,6 +117,262 @@ Configuration:
 - Starting log inverse rate: 1
 
 Both prover and verifier call `build_whir_infra` with the same seed to get identical configurations, ensuring Fiat-Shamir transcript consistency.
+
+The public verifier boundary also has Poseidon2/BabyBear digest scaffolding for
+the typed CP relation. These field-native digests serialize as eight canonical
+BabyBear `u32` limbs. Fiat-Shamir message commitments in that scheme are
+`Poseidon2BabyBear("fs-commit" || len(message) || message || opening)`. WHIR
+public proofs use this scheme now that typed CP is authoritative.
+
+`WhirSnark::public_digest_scheme()` returns `Poseidon2BabyBear`, and
+`WhirSnark::has_authoritative_typed_cp()` returns true. The public verifier
+path reconstructs `CpPublicStatement` from public inputs, public FS
+commitments, public roots/digests, and the folded output, then verifies the
+typed CP WHIR proof without witness-side data.
+
+The public output proof is a WHIR transcript-binding proof over the public
+folded-output bytes. The semantic folded-output derivation is enforced by the
+authoritative typed CP proof.
+
+## Product Routing
+
+The product WHIR verifier API is `prove_public` / `verify_public` over
+`PublicProofBundle<WhirSnark, WhirSnark>` or
+`PublicSymphonyProof<WhirSnark>`. That route is public-only: it reconstructs
+`CpPublicStatement` from caller-supplied public inputs, R1CS metadata, public
+FS commitments, public digests, and the folded output, then verifies the WHIR
+typed CP and typed output proofs. It does not read FS openings, FS messages,
+fold inputs, original witnesses, folding proof internals, folded witnesses, or
+CP witness bundles.
+
+The older `prove_v2` / `verify_v2` names are compatibility aliases for the same
+public boundary. Legacy `prove` / `verify` remain compatibility/debug paths for
+full proof objects and may inspect witness-side data. SHA-256 is compatibility
+only for non-WHIR and legacy/full verifier routes; WHIR public verification
+uses Poseidon2/BabyBear and must not fall back to SHA-256 or explicit
+witness-side soundness checks.
+
+The security review package for this boundary is
+`docs/whir_public_security_review.md`. It maps public soundness claims to code,
+tests, audit row blocks, public proof fields, and digest bodies.
+
+The current typed CP digest layer reconstructs the Poseidon absorption bodies
+from structured private/public variables instead of leaving them as arbitrary
+private bytes:
+
+- FS commitment bodies bind `len(message) || message || opening`, with the
+  message length fixed by setup and message bytes tied to the fold-root
+  GR1CS-evaluation message bytes.
+- `fs_root` body bytes bind to the public FS commitment BabyBear limbs, with
+  canonical count and per-commitment length prefixes.
+- `fold_root` body bytes bind to CP-core commitment columns, public input
+  columns, and the structured GR1CS message bytes, with canonical per-entry
+  length prefixes.
+- Per-round `challenge` Poseidon blocks bind transcript bytes to public inputs,
+  R1CS metadata, public FS commitments, and the static canonical transcript
+  frame bytes.
+- `challenge_digest` body bytes bind to the private per-round challenge digest
+  outputs and canonical per-challenge length prefixes.
+- Each 32-byte per-round `Poseidon2BabyBear("challenge", ...)` output is bound
+  to the CP-R1CS folding challenge `beta` for the same round. The mapping is
+  fixed-shape and circuit-native: every challenge byte is decomposed as
+  `byte = d0 + 5*d1 + 25*q` with `d0,d1 in 0..=4`, then the two beta
+  coefficients are `d0 - 2` and `d1 - 2`, yielding 64 coefficients in
+  `{-2,-1,0,1,2}`.
+- `transcript_seed_digest` body bytes bind to the public inputs and R1CS
+  metadata in the typed CP statement, with canonical input counts and metadata
+  lengths.
+- The Hadamard prefix of `encode_gr1cs_round_message` is bound to existing
+  CP-R1CS Hadamard columns: round counts, per-round evaluation counts,
+  sumcheck evaluations, and evaluation-matrix values.
+- For GR1CS messages with private proof data available at setup/proving time,
+  the range-proof section shape is parsed and its canonical count/length
+  prefixes are constrained in-circuit: monomial commitment count and element
+  lengths, monomial vector count and lengths, monomial sumcheck round/evaluation
+  counts, monomial evaluation count, square-evaluation count, and projected
+  value count.
+- Range-proof payload sections now have structured private columns, and their
+  canonical serialized bytes are constrained to match those columns: monomial
+  commitments, monomial vectors, monomial sumcheck evaluations, monomial
+  evaluation tensors, square evaluations, and `projected_values`.
+- The structured monomial vectors now have local semantic constraints: each
+  coefficient has a boolean square, each ring element has at most one nonzero
+  coefficient, and projected values are reconstructed from the monomial
+  decomposition digits with `d_prime = D - 2`.
+- Range-proof monomial commitments now use deterministic
+  verifier-reconstructable Ajtai matrices, and the typed CP R1CS constrains
+  each structured monomial commitment to open to its structured monomial vector.
+- The typed CP witness bundle carries monomial sumcheck seed/challenge material
+  in addition to the Hadamard challenges, and the typed CP R1CS now constrains
+  the monomial verifier equations against those variables: degree-4 sumcheck
+  round consistency, final evaluation consistency, coefficient cubic checks,
+  and square-evaluation boolean consistency.
+- The monomial evaluation claims are constrained to equal the multilinear
+  evaluations of the structured monomial-vector coefficient tables at the
+  monomial sumcheck point. The square-evaluation claims are constrained to
+  equal the multilinear evaluations of the structured square tables at the same
+  point.
+
+This layer is now routed as WHIR's authoritative typed CP relation. It proves canonical byte
+reconstruction, digest correctness, monomial-vector well-formedness, and
+projected-value reconstruction, monomial commitment opening validity, monomial
+sumcheck/evaluation consistency, and Poseidon challenge-to-beta binding. It
+also proves the monomial sumcheck verifier equations over the structured
+monomial evaluation and square-evaluation claims, and binds those claims back
+to the structured monomial-vector tables. The folded output checkpoint is also
+arithmetized at the typed CP R1CS level: CP-core rows derive the folded
+commitment and folded public input from the bound beta values, and dedicated
+folded-evaluation rows derive the public folded evaluation tensors from the
+same beta-weighted GR1CS evaluation matrices. Typed folded-output consistency is
+checked at the statement boundary by requiring `folded_output.folded_instance`
+to equal `x_folded`. WHIR setup/prove/verify now routes direct typed CP proofs
+through this full typed CP digest R1CS; the verifier encodes the public typed
+CP instance from `CpPublicStatement`, including public FS commitments, and does
+not require witness-side CP data.
+Consequently `WhirSnark::public_digest_scheme()` is `Poseidon2BabyBear` and
+`has_authoritative_typed_cp()` is true.
+
+The typed CP arithmetization now has an audit harness exposed through the
+WHIR-gated CP R1CS module. `generate_typed_cp_digest_r1cs_with_audit` returns
+the generated R1CS, layout, and `TypedCpAuditReport`; the legacy
+`generate_typed_cp_digest_r1cs` wrapper still returns only the R1CS and layout.
+The report records dimensions plus contiguous row blocks by security category:
+CP folding core, byte constraints, Poseidon digest gadgets, GR1CS message
+reconstruction, range/monomial semantics, challenge-to-beta binding,
+folded-output derivation, Ajtai opening checks, original R1CS validity, and
+public-input binding.
+
+Each audit block lists the `CpFieldRelation` responsibility it enforces. The
+current small range-shaped snapshot has these row totals by category:
+
+| Audit block kind | Rows | Primary check |
+|---|---:|---|
+| CP folding core | 11,520 | Folded commitment/input and Hadamard CP-core consistency |
+| Byte constraints | 138,742 | Canonical byte packing, length framing, and transcript body binding |
+| Poseidon digest gadgets | 368,340 | Poseidon2/BabyBear digest correctness |
+| GR1CS message reconstruction | 7,889 | FS/fold GR1CS message bytes reconstruct from structured variables |
+| Range/monomial semantics | 2,704 | Monomial openings, monomiality, sumcheck/evaluation, square checks, projected values |
+| Challenge-to-beta binding | 872 | Poseidon challenge bytes map to CP `beta` coefficients |
+| Folded-output derivation | 896 | Public folded evaluation tensors derive from beta-weighted GR1CS evaluations |
+| Ajtai opening checks | 128 | Original witness commitments open under Ajtai |
+| Original R1CS validity | 64 | Original assignments satisfy the source R1CS |
+| Public-input binding | 99 | Public inputs and R1CS metadata bind statement/digest bodies |
+
+Tests assert that these blocks cover every typed CP R1CS row, that targeted
+mutations report the expected block kind, and that software `CpFieldRelation`
+checks agree with typed CP R1CS satisfaction over the standard mutation corpus.
+
+### Public verifier profiling baseline
+
+`benches/whir_scaling.rs` now prints typed CP relation/proof metadata alongside
+the public verifier benchmark. The `public_verify_v2_vs_k` Criterion timing
+measures only `verify_public`; proof construction, relation profiling, proof
+serialization, and envelope sizing happen before the timed loop. The default
+curve remains `k = [1]`; set `SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,...` when an
+explicit broader curve is needed.
+
+The printed profiling fields are:
+
+| Field | Meaning |
+|---|---|
+| `typed_cp_public_inputs` | Number of public BabyBear slots in the typed CP R1CS |
+| `typed_cp_witness_variables` | Number of private BabyBear witness slots in the typed CP R1CS |
+| `typed_cp_rows` | Number of typed CP R1CS constraints |
+| `typed_cp_whir_num_vars` | WHIR multilinear variable count for the typed CP proof |
+| `cp_proof_bytes` | Canonical WHIR CP proof payload bytes |
+| `output_proof_bytes` | Canonical WHIR typed-output proof payload bytes |
+| `public_envelope_bytes` | Versioned public proof envelope bytes |
+| `audit_rows` | Row totals by `TypedCpAuditBlockKind` |
+
+Optional component benchmark groups are also available:
+`typed_cp_prove_only_vs_k`, `typed_cp_verify_only_vs_k`,
+`typed_output_verify_only_vs_k`, and `public_proof_size_vs_k`. These groups
+reuse prebuilt valid public fixtures and are selected through the normal
+Criterion filter.
+
+Initial local baseline:
+
+| Item | Value |
+|---|---|
+| Date | 2026-05-03 08:25:47 CEST |
+| Machine | Darwin 25.3.0 arm64 (`pauls-macbook-pro-9.home`) |
+| Rust | `rustc 1.93.1`, `cargo 1.93.1` |
+| Command | `cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"` |
+| k values | `[1]` |
+| Public verify time | 3.8789 s - 3.9313 s, mean 3.9059 s |
+| Throughput | 0.2544 - 0.2578 elem/s, mean 0.2560 elem/s |
+| Typed CP dimensions | 618 public, 1,117,125 witness variables, 1,127,260 rows |
+| WHIR typed CP `num_vars` | 21 |
+| Proof sizes | CP 1,205,322 bytes; output 951 bytes; envelope 1,221,492 bytes |
+
+Audit row totals for this baseline:
+
+| Audit block kind | Rows |
+|---|---:|
+| CP folding core | 11,520 |
+| Byte constraints | 307,623 |
+| Poseidon digest gadgets | 780,060 |
+| GR1CS message reconstruction | 17,781 |
+| Range/monomial semantics | 8,217 |
+| Challenge-to-beta binding | 872 |
+| Folded-output derivation | 896 |
+| Ajtai opening checks | 128 |
+| Original R1CS validity | 64 |
+| Public-input binding | 99 |
+
+Criterion compares against any existing local history under `target/criterion`.
+Reset that directory before recording a new clean baseline, or treat the
+reported `change` block as a local-history comparison rather than a protocol
+regression claim.
+
+Milestone E optimization pass:
+
+- WHIR now caches generated typed CP relations by serialized context hash and
+  typed CP relation descriptions by descriptor hash. Repeated public
+  verification no longer regenerates the typed CP R1CS/layout on every call.
+- The typed CP Poseidon digest composition now absorbs the canonical packed
+  byte-template linear expressions directly. This removes the duplicated
+  private packed-input columns and input-equality rows while preserving the
+  exact documented `digest_core` byte semantics.
+- Standalone Poseidon gadget APIs remain unchanged for regression tests.
+
+Post-optimization local baseline:
+
+| Item | Before Milestone E | After Milestone E |
+|---|---:|---:|
+| Public verify mean (`k=1`) | 3.9059 s | 2.0178 s |
+| Public verify interval | 3.8789 s - 3.9313 s | 1.9993 s - 2.0357 s |
+| Typed CP public inputs | 618 | 618 |
+| Typed CP witness variables | 1,117,125 | 1,106,068 |
+| Typed CP rows | 1,127,260 | 1,116,203 |
+| WHIR typed CP `num_vars` | 21 | 21 |
+| CP proof bytes | 1,205,322 | 1,202,970 |
+| Output proof bytes | 951 | 953 |
+| Public envelope bytes | 1,221,492 | 1,219,142 |
+
+Post-optimization audit row totals for the public benchmark fixture:
+
+| Audit block kind | Rows |
+|---|---:|
+| CP folding core | 11,520 |
+| Byte constraints | 296,566 |
+| Poseidon digest gadgets | 780,060 |
+| GR1CS message reconstruction | 17,781 |
+| Range/monomial semantics | 8,217 |
+| Challenge-to-beta binding | 872 |
+| Folded-output derivation | 896 |
+| Ajtai opening checks | 128 |
+| Original R1CS validity | 64 |
+| Public-input binding | 99 |
+
+Post-optimization component timings for `k=1`:
+
+| Benchmark group | Time |
+|---|---:|
+| `typed_cp_verify_only_vs_k` | 1.8436 s - 1.8661 s, mean 1.8557 s |
+| `typed_cp_prove_only_vs_k` | 1.4766 s - 1.4998 s, mean 1.4883 s |
+| `typed_output_verify_only_vs_k` | 43.698 us - 45.599 us, mean 44.460 us |
+| `public_proof_size_vs_k` envelope serialization | 55.575 us - 59.592 us, mean 57.404 us |
 
 ---
 
@@ -216,6 +472,78 @@ embedded Hadamard verifier and are not a standalone authoritative typed CP
 relation; the validated modular WHIR path keeps the explicit algebraic
 `CpRelation::check_with_algebra` check mandatory.
 
+### Typed output authority
+
+At the public boundary, the WHIR output proof is a transcript-binding proof over
+the verifier-visible `FoldedOutputInstance`. The semantic claim that this output
+was derived correctly from the original statements is owned by authoritative
+typed CP, including FS commitment/message binding, fold replay, challenge digest
+binding, beta binding, original Ajtai/R1CS validity, and folded-output
+derivation.
+
+### Typed CP status
+
+`CpFieldRelation` is now the software source of truth for the field-native typed
+CP relation. It takes `CpPublicStatement` directly, so public inputs and R1CS
+dimensions are public data instead of values recovered from a SHA transcript. It
+checks scheme-aware FS openings, GR1CS message reconstruction, fold root,
+challenge digest, folded output consistency, Ajtai openings, and original R1CS
+satisfaction.
+
+This relation is arithmetized inside WHIR. The code has
+tested R1CS building blocks for the Poseidon2/BabyBear digest gadget, Ajtai
+opening validity, original R1CS satisfaction, exact-byte digest-body packing,
+canonical digest-body framing, transcript metadata binding, FS/fold-root public
+payload binding, and Hadamard-message prefix reconstruction from CP-R1CS
+Hadamard columns. It also constrains the fixed range-proof serialization shape
+prefixes when a GR1CS proof is present, reconstructs the range-proof payloads
+from structured variables, enforces monomial sumcheck/evaluation semantics,
+binds Poseidon-derived challenge outputs to CP-R1CS `beta` columns, and derives
+the public folded commitment, public input, and evaluation tensors from those
+bound beta values. WHIR direct typed CP setup/prove/verify now uses this full
+typed CP R1CS, and public routing selects it because
+`has_authoritative_typed_cp()` is true.
+
+Digest-binding checkpoint: the typed CP R1CS layer now has canonical
+fixed-shape Poseidon2/BabyBear digest composition for the public CP statement.
+It composes the statement wrapper with exact-byte private-input digest gadgets
+for:
+
+- FS commitments;
+- `fs_root`;
+- `fold_root`;
+- `challenge_digest`;
+- `transcript_seed_digest`.
+
+The public side exposes the serialized eight-limb BabyBear digests, public
+inputs, R1CS dimensions, and folded CP instance coordinates. The private side
+carries body bytes, byte-decomposition bits, and Poseidon auxiliary values. Each
+body byte is 8-bit range constrained, and every private Poseidon absorption
+limb is constrained to the exact `digest_core` byte packing:
+`"symphony-v2" || len(domain) || domain || len(body) || body`, chunked in
+3-byte little-endian BabyBear limbs with the final length sentinel. The witness
+encoder checks the setup-derived input lengths and rejects non-canonical
+variable-length bodies.
+
+The FS root body is additionally constrained to the verifier-visible FS
+commitment limbs, and the digest bodies now constrain internal length prefixes,
+R1CS metadata, and static transcript framing. The Hadamard section of the GR1CS
+message is no longer arbitrary bytes when the CP-R1CS layout has Hadamard
+columns: its serialized evaluations and evaluation matrix are tied directly to
+those columns. Range-proof section boundaries and payloads are fixed to the
+parsed private proof shape, the monomial range payload has semantic constraints,
+and Poseidon-derived challenges are bound to the CP-R1CS `beta` columns through
+the documented base-5 byte mapping. The folded output checkpoint adds public
+folded-evaluation tensor slots and constrains them to beta-weighted GR1CS
+evaluation matrices, complementing the CP-core folded commitment and public
+input rows.
+
+Routing checkpoint: typed CP relation descriptions are wired through setup and
+cached by the modular and single-backend orchestrators. WHIR advertises
+`has_authoritative_typed_cp()`, so public proving and verification use the typed
+CP proof path; legacy SHA/full verifier compatibility paths remain available
+for non-authoritative backends.
+
 ---
 
 ## Spartan vs WHIR Comparison
@@ -277,6 +605,6 @@ All WHIR-specific dependencies are feature-gated behind `whir`:
 - `p3-dft` — `Radix2DFTSmallBatch` for polynomial DFT operations.
 - `p3-matrix` — Dense/row-major matrix types.
 - `p3-util`, `p3-maybe-rayon`, `p3-multilinear-util`, `p3-commit` — Supporting utilities.
-- `rand` — `SmallRng` for deterministic Poseidon2 permutation seeding.
+- `rand` — `ChaCha20Rng` for deterministic Poseidon2 permutation seeding.
 
 All Plonky3 crates are pinned to revision `b0fa5139`.

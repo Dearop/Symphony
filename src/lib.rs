@@ -41,15 +41,22 @@ pub use modular::digest_core;
 pub use modular::folding_core;
 pub use modular::output_backend_api;
 pub use modular::proof_orchestrator;
+pub use modular::public_proof;
 pub use modular::transcript_core;
 
 pub use commitment::{AjtaiParams, Commitment};
-pub use cp_relation_core::{CpPublicInstance as ModularCpPublicInstance, CpWitnessBundle};
+pub use cp_relation_core::{
+    CpPublicInstance as ModularCpPublicInstance, CpPublicStatement, CpWitnessBundle,
+};
 pub use cp_snark::{CPProof, CPSnark, CommittedRelation};
 pub use fiat_shamir::hash_commitment::HashCommitment;
 pub use params::SymphonyParams;
 pub use proof_orchestrator::{
-    ProofBundle, ProofBundleV2, Prover as ModularProver, Verifier as ModularVerifier,
+    ProofBundle, ProofBundleV2, Prover as ModularProver, PublicProofBundle,
+    Verifier as ModularVerifier,
+};
+pub use public_proof::{
+    PublicProofEnvelope, PublicProofEnvelopeError, PUBLIC_PROOF_ENVELOPE_VERSION,
 };
 pub use r1cs::R1CSMatrices;
 pub use snark::spartan::{SpartanProof, SpartanProvingKey, SpartanSnark, SpartanVerifyingKey};
@@ -57,6 +64,12 @@ pub use snark::sumcheck_snark::{
     SumcheckProofData, SumcheckProvingKey, SumcheckSnark, SumcheckVerifyingKey,
 };
 #[cfg(feature = "whir")]
-pub use snark::whir::{WhirProof, WhirProvingKey, WhirSnark, WhirVerifyingKey};
-pub use snark::{BackendSnark, SymphonyProof, SymphonyProofV2, SymphonyProver, SymphonyVerifier};
+pub use snark::whir::{
+    canonical_whir_proof_bytes, whir_proof_from_canonical_bytes, WhirProof, WhirProofPayloadError,
+    WhirProvingKey, WhirSnark, WhirVerifyingKey, WHIR_PROOF_PAYLOAD_VERSION,
+};
+pub use snark::{
+    BackendSnark, PublicSymphonyProof, SymphonyProof, SymphonyProofV2, SymphonyProver,
+    SymphonyVerifier,
+};
 pub use snark::{DummySnark, DummySymphonyProof, DummySymphonyProver, DummySymphonyVerifier};

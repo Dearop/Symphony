@@ -27,6 +27,7 @@ pub fn to_proof_bundle<S: BackendSnark>(proof: SymphonyProof<S>) -> ProofBundle<
         folded_output_witness: proof.witness_data.folded_output_witness,
         folded_witness: proof.witness_data.folded_witness,
         folding_proof: proof.witness_data.folding_proof,
+        shared_challenges: proof.witness_data.shared_challenges,
     };
 
     ProofBundle {
@@ -58,6 +59,7 @@ pub fn from_proof_bundle<S: BackendSnark>(
             fold_inputs: bundle.witness_bundle.fold_inputs,
             original_witnesses: bundle.witness_bundle.original_witnesses,
             folding_proof: bundle.witness_bundle.folding_proof,
+            shared_challenges: bundle.witness_bundle.shared_challenges,
             folded_output_witness: bundle.witness_bundle.folded_output_witness,
             folded_witness: bundle.witness_bundle.folded_witness,
         },

@@ -93,6 +93,21 @@ fn cp_whir_proof_wire_bytes(
     whir_proof_wire_bytes(&proof.backend_proof) + proof.transcript_digest.len()
 }
 
+#[cfg(feature = "whir")]
+fn cp_public_instance_bytes(num_messages: usize, public_statement_len: usize) -> usize {
+    8 + num_messages * (8 + 32) + 8 + public_statement_len + 32
+}
+
+#[cfg(feature = "whir")]
+fn cp_witness_bytes(num_messages: usize, max_message_size: usize) -> usize {
+    8 + num_messages * (8 + max_message_size) + num_messages * 32
+}
+
+#[cfg(feature = "whir")]
+fn babybear_packed_len(byte_len: usize) -> usize {
+    byte_len.div_ceil(3) + 1
+}
+
 // ---------------------------------------------------------------------------
 // Common fixtures
 // ---------------------------------------------------------------------------
@@ -459,9 +474,16 @@ fn bench_whir_cp_scaling(c: &mut Criterion) {
         );
 
         let proof_bytes = cp_whir_proof_wire_bytes(&proof);
+        let public_instance_bytes = cp_public_instance_bytes(num_messages, 0);
+        let encoded_witness_bytes = cp_witness_bytes(num_messages, max_message_size);
         eprintln!(
-            "[whir_cp_snark] witness_size={witness_size} proof_bytes~={proof_bytes} \
+            "[whir_cp_snark] total_message_bytes={witness_size} \
+             messages={num_messages} max_message_bytes={max_message_size} \
+             public_instance_bytes={public_instance_bytes} \
+             encoded_witness_bytes={encoded_witness_bytes} \
+             packed_witness_elems~={} proof_bytes~={proof_bytes} \
              num_vars={} whir_rounds={}",
+            babybear_packed_len(encoded_witness_bytes),
             proof.backend_proof.num_vars,
             proof.backend_proof.whir_pcs_proof.rounds.len()
         );
