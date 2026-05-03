@@ -45,8 +45,9 @@ use symphony::ring::ntt::NttContext;
 use symphony::ring::{RingElement, RingVector};
 use symphony::rok::range_proof::RangeProofParams;
 use symphony::snark::cp_snark::{
-    generate_cp_r1cs, generate_typed_cp_digest_r1cs_with_audit,
-    typed_cp_digest_input_lengths_from_setup, TypedCpAuditBlockKind,
+    generate_cp_r1cs, generate_typed_cp_digest_r1cs_compressed_fs_with_audit,
+    generate_typed_cp_digest_r1cs_with_audit, typed_cp_digest_input_lengths_from_setup,
+    TypedCpAuditBlockKind,
 };
 use symphony::snark::{BackendSnark, RelationDescription, TypedCpSetupDescriptor};
 use symphony::{
@@ -279,10 +280,14 @@ struct TypedCpProfile {
     public_inputs: usize,
     witness_variables: usize,
     rows: usize,
+    compressed_public_inputs: usize,
+    compressed_witness_variables: usize,
+    compressed_rows: usize,
     whir_num_vars: usize,
     cp_proof_bytes: usize,
     output_proof_bytes: usize,
     public_envelope_bytes: usize,
+    compressed_public_envelope_bytes: usize,
     audit_rows: Vec<(TypedCpAuditBlockKind, usize)>,
 }
 
@@ -328,6 +333,7 @@ fn typed_cp_profile_from_descriptor(
     cp_proof: &symphony::WhirProof,
     output_proof: &symphony::WhirProof,
     public_envelope_bytes: usize,
+    compressed_public_envelope_bytes: usize,
 ) -> TypedCpProfile {
     let lengths = typed_cp_digest_input_lengths_from_setup(
         descriptor.cp_layout.ell_np,
@@ -349,6 +355,17 @@ fn typed_cp_profile_from_descriptor(
     audit
         .validate_against(&typed_cp_r1cs)
         .expect("typed CP audit profile must match generated R1CS");
+    let (compressed_typed_cp_r1cs, _compressed_typed_cp_layout, compressed_audit) =
+        generate_typed_cp_digest_r1cs_compressed_fs_with_audit(
+            &descriptor.cp_r1cs,
+            &descriptor.cp_layout,
+            &descriptor.ajtai,
+            &descriptor.original_r1cs,
+            &lengths,
+        );
+    compressed_audit
+        .validate_against(&compressed_typed_cp_r1cs)
+        .expect("compressed typed CP audit profile must match generated R1CS");
 
     let audit_rows = [
         TypedCpAuditBlockKind::CpFoldingCore,
@@ -370,10 +387,15 @@ fn typed_cp_profile_from_descriptor(
         public_inputs: typed_cp_r1cs.num_public,
         witness_variables: typed_cp_r1cs.num_variables - typed_cp_r1cs.num_public,
         rows: typed_cp_r1cs.num_constraints,
+        compressed_public_inputs: compressed_typed_cp_r1cs.num_public,
+        compressed_witness_variables: compressed_typed_cp_r1cs.num_variables
+            - compressed_typed_cp_r1cs.num_public,
+        compressed_rows: compressed_typed_cp_r1cs.num_constraints,
         whir_num_vars: cp_proof.num_vars,
         cp_proof_bytes: canonical_whir_proof_bytes(cp_proof).len(),
         output_proof_bytes: canonical_whir_proof_bytes(output_proof).len(),
         public_envelope_bytes,
+        compressed_public_envelope_bytes,
         audit_rows,
     }
 }
@@ -391,16 +413,23 @@ fn print_public_profile(label: &str, fixture: &PublicWhirBenchFixture) {
     let profile = &fixture.profile;
     eprintln!(
         "[{label} k={}] typed_cp_public_inputs={} typed_cp_witness_variables={} \
-         typed_cp_rows={} typed_cp_whir_num_vars={} cp_proof_bytes={} \
-         output_proof_bytes={} public_envelope_bytes={} audit_rows={}",
+         typed_cp_rows={} compressed_typed_cp_public_inputs={} \
+         compressed_typed_cp_witness_variables={} compressed_typed_cp_rows={} \
+         typed_cp_whir_num_vars={} cp_proof_bytes={} \
+         output_proof_bytes={} public_envelope_bytes={} compressed_public_envelope_bytes={} \
+         audit_rows={}",
         fixture.k,
         profile.public_inputs,
         profile.witness_variables,
         profile.rows,
+        profile.compressed_public_inputs,
+        profile.compressed_witness_variables,
+        profile.compressed_rows,
         profile.whir_num_vars,
         profile.cp_proof_bytes,
         profile.output_proof_bytes,
         profile.public_envelope_bytes,
+        profile.compressed_public_envelope_bytes,
         audit_rows_for_log(profile),
     );
 }
@@ -453,11 +482,21 @@ fn public_whir_fixture(k: usize) -> PublicWhirBenchFixture {
             &output_proof_bytes,
         )
         .len();
+    let compressed_public_envelope_bytes = proof
+        .canonical_compressed_public_envelope_bytes(
+            <WhirSnark as BackendSnark>::public_digest_scheme(),
+            &public_inputs,
+            &r1cs,
+            &cp_proof_bytes,
+            &output_proof_bytes,
+        )
+        .len();
     let profile = typed_cp_profile_from_descriptor(
         &descriptor,
         &proof.cp_proof,
         &proof.output_proof,
         public_envelope_bytes,
+        compressed_public_envelope_bytes,
     );
 
     PublicWhirBenchFixture {
@@ -944,6 +983,21 @@ fn bench_public_proof_size_vs_k(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("canonical_envelope_bytes", k), |b| {
             b.iter(|| {
                 black_box(fixture.proof.canonical_public_envelope_bytes(
+                    black_box(<WhirSnark as BackendSnark>::public_digest_scheme()),
+                    black_box(&fixture.public_inputs),
+                    black_box(&fixture.r1cs),
+                    black_box(&cp_proof_bytes),
+                    black_box(&output_proof_bytes),
+                ));
+            });
+        });
+
+        group.throughput(Throughput::Bytes(
+            fixture.profile.compressed_public_envelope_bytes as u64,
+        ));
+        group.bench_function(BenchmarkId::new("compressed_envelope_bytes", k), |b| {
+            b.iter(|| {
+                black_box(fixture.proof.canonical_compressed_public_envelope_bytes(
                     black_box(<WhirSnark as BackendSnark>::public_digest_scheme()),
                     black_box(&fixture.public_inputs),
                     black_box(&fixture.r1cs),

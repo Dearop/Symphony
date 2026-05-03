@@ -208,3 +208,16 @@ counts:
 ```text
 SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
 ```
+
+## Performance Roadmap Envelope
+
+The current product envelope is version 1 and includes the public
+`fs_commitments` vector. The performance roadmap introduces a version 2
+compressed envelope that omits that linear vector and keeps only `fs_root`,
+`fold_root`, `challenge_digest`, `transcript_seed_digest`, folded output bytes,
+and backend proof bytes.
+
+Version 2 is currently a measured wire-shape target, not the active product
+verifier route. `verify_public` still consumes `ProofBundleV2` until the typed
+CP relation moves FS commitment digest outputs from public instance slots into
+private witness data.

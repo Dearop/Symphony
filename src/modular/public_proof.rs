@@ -8,6 +8,7 @@
 use crate::digest_core::{Digest32, PublicDigestScheme};
 
 pub const PUBLIC_PROOF_ENVELOPE_VERSION: u16 = 1;
+pub const COMPRESSED_PUBLIC_PROOF_ENVELOPE_VERSION: u16 = 2;
 const PUBLIC_PROOF_ENVELOPE_MAGIC: &[u8; 8] = b"SYMPUB2\0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +29,22 @@ pub struct PublicProofEnvelope {
     pub r1cs_num_variables: usize,
     pub r1cs_num_public: usize,
     pub fs_commitments: Vec<Vec<u8>>,
+    pub fs_root: Digest32,
+    pub fold_root: Digest32,
+    pub challenge_digest: Digest32,
+    pub transcript_seed_digest: Digest32,
+    pub folded_output_bytes: Vec<u8>,
+    pub cp_proof_bytes: Vec<u8>,
+    pub output_proof_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompressedPublicProofEnvelope {
+    pub digest_scheme: PublicDigestScheme,
+    pub public_inputs: Vec<Vec<i64>>,
+    pub r1cs_num_constraints: usize,
+    pub r1cs_num_variables: usize,
+    pub r1cs_num_public: usize,
     pub fs_root: Digest32,
     pub fold_root: Digest32,
     pub challenge_digest: Digest32,
@@ -114,6 +131,91 @@ impl PublicProofEnvelope {
             r1cs_num_variables,
             r1cs_num_public,
             fs_commitments,
+            fs_root,
+            fold_root,
+            challenge_digest,
+            transcript_seed_digest,
+            folded_output_bytes,
+            cp_proof_bytes,
+            output_proof_bytes,
+        })
+    }
+}
+
+impl CompressedPublicProofEnvelope {
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(PUBLIC_PROOF_ENVELOPE_MAGIC);
+        write_u16(&mut out, COMPRESSED_PUBLIC_PROOF_ENVELOPE_VERSION);
+        out.push(digest_scheme_id(self.digest_scheme));
+
+        write_len(&mut out, self.public_inputs.len());
+        for input in &self.public_inputs {
+            write_len(&mut out, input.len());
+            for value in input {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        write_len(&mut out, self.r1cs_num_constraints);
+        write_len(&mut out, self.r1cs_num_variables);
+        write_len(&mut out, self.r1cs_num_public);
+
+        out.extend_from_slice(&self.fs_root);
+        out.extend_from_slice(&self.fold_root);
+        out.extend_from_slice(&self.challenge_digest);
+        out.extend_from_slice(&self.transcript_seed_digest);
+        write_bytes(&mut out, &self.folded_output_bytes);
+        write_bytes(&mut out, &self.cp_proof_bytes);
+        write_bytes(&mut out, &self.output_proof_bytes);
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PublicProofEnvelopeError> {
+        let mut reader = Reader::new(bytes);
+        if reader.read_exact(PUBLIC_PROOF_ENVELOPE_MAGIC.len())? != PUBLIC_PROOF_ENVELOPE_MAGIC {
+            return Err(PublicProofEnvelopeError::BadMagic);
+        }
+
+        let version = reader.read_u16()?;
+        if version != COMPRESSED_PUBLIC_PROOF_ENVELOPE_VERSION {
+            return Err(PublicProofEnvelopeError::UnsupportedVersion(version));
+        }
+
+        let digest_scheme = digest_scheme_from_id(reader.read_u8()?)?;
+        let public_input_count = reader.read_len()?;
+        let mut public_inputs = Vec::with_capacity(public_input_count);
+        for _ in 0..public_input_count {
+            let len = reader.read_len()?;
+            let mut input = Vec::with_capacity(len);
+            for _ in 0..len {
+                input.push(reader.read_i64()?);
+            }
+            public_inputs.push(input);
+        }
+
+        let r1cs_num_constraints = reader.read_len()?;
+        let r1cs_num_variables = reader.read_len()?;
+        let r1cs_num_public = reader.read_len()?;
+        let fs_root = reader.read_digest()?;
+        let fold_root = reader.read_digest()?;
+        let challenge_digest = reader.read_digest()?;
+        let transcript_seed_digest = reader.read_digest()?;
+        let folded_output_bytes = reader.read_bytes()?.to_vec();
+        let cp_proof_bytes = reader.read_bytes()?.to_vec();
+        let output_proof_bytes = reader.read_bytes()?.to_vec();
+
+        if !reader.is_finished() {
+            return Err(PublicProofEnvelopeError::TrailingBytes);
+        }
+
+        Ok(Self {
+            digest_scheme,
+            public_inputs,
+            r1cs_num_constraints,
+            r1cs_num_variables,
+            r1cs_num_public,
             fs_root,
             fold_root,
             challenge_digest,
@@ -259,11 +361,48 @@ mod tests {
         }
     }
 
+    fn sample_compressed_envelope() -> CompressedPublicProofEnvelope {
+        let envelope = sample_envelope();
+        CompressedPublicProofEnvelope {
+            digest_scheme: envelope.digest_scheme,
+            public_inputs: envelope.public_inputs,
+            r1cs_num_constraints: envelope.r1cs_num_constraints,
+            r1cs_num_variables: envelope.r1cs_num_variables,
+            r1cs_num_public: envelope.r1cs_num_public,
+            fs_root: envelope.fs_root,
+            fold_root: envelope.fold_root,
+            challenge_digest: envelope.challenge_digest,
+            transcript_seed_digest: envelope.transcript_seed_digest,
+            folded_output_bytes: envelope.folded_output_bytes,
+            cp_proof_bytes: envelope.cp_proof_bytes,
+            output_proof_bytes: envelope.output_proof_bytes,
+        }
+    }
+
     #[test]
     fn public_proof_envelope_roundtrips() {
         let envelope = sample_envelope();
         let bytes = envelope.to_bytes();
         assert_eq!(PublicProofEnvelope::from_bytes(&bytes), Ok(envelope));
+    }
+
+    #[test]
+    fn compressed_public_proof_envelope_roundtrips_and_omits_fs_commitments() {
+        let uncompressed = sample_envelope().to_bytes();
+        let envelope = sample_compressed_envelope();
+        let bytes = envelope.to_bytes();
+
+        assert_eq!(
+            CompressedPublicProofEnvelope::from_bytes(&bytes),
+            Ok(envelope)
+        );
+        assert!(bytes.len() < uncompressed.len());
+        assert_eq!(
+            PublicProofEnvelope::from_bytes(&bytes),
+            Err(PublicProofEnvelopeError::UnsupportedVersion(
+                COMPRESSED_PUBLIC_PROOF_ENVELOPE_VERSION
+            ))
+        );
     }
 
     #[test]

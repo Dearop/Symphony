@@ -8,6 +8,7 @@ Read it before making implementation decisions.
 Use these documents as the authoritative references for WHIR public verifier work:
 
 - `docs/whir_typed_cp_authority_plan.md` - canonical implementation plan, milestone status, and production-grade roadmap.
+- `docs/whir_public_performance_north_star_plan.md` - performance roadmap for moving from authoritative but linear WHIR public verification to a compressed/sublinear public verifier.
 - `docs/whir_public_security_review.md` - security review package mapping WHIR public verifier claims to code, tests, row blocks, fields, and assumptions.
 - `docs/public_proof_v2.md` - canonical public verifier boundary and proof shape.
 - `docs/whir.md` - WHIR backend architecture and current implementation status.

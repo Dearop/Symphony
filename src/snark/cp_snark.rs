@@ -41,6 +41,8 @@ pub use typed_r1cs::{
     encode_typed_cp_partial_witness, encode_typed_cp_statement_instance,
     generate_original_statement_r1cs, generate_poseidon2_digest_r1cs,
     generate_poseidon2_private_digest_r1cs, generate_typed_cp_digest_r1cs,
+    generate_typed_cp_digest_r1cs_compressed_fs,
+    generate_typed_cp_digest_r1cs_compressed_fs_with_audit,
     generate_typed_cp_digest_r1cs_with_audit, generate_typed_cp_partial_r1cs,
     generate_typed_cp_statement_r1cs, poseidon2_babybear_digest_elems, poseidon_challenge_body,
     poseidon_challenge_digest_body, poseidon_fold_root_body, poseidon_fs_commit_body,

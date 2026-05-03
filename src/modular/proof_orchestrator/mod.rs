@@ -16,7 +16,7 @@ use crate::digest_core::{
 use crate::folding_core::{FoldSemantics, Statement, SymphonyFoldSemantics};
 use crate::output_backend_api::OutputBackend;
 use crate::params::SymphonyParams;
-use crate::public_proof::PublicProofEnvelope;
+use crate::public_proof::{CompressedPublicProofEnvelope, PublicProofEnvelope};
 use crate::r1cs::R1CSMatrices;
 use crate::ring::extension::ExtFieldContext;
 use crate::ring::RingVector;
@@ -195,6 +195,38 @@ impl<CPB: CpBackend, OB: OutputBackend> ProofBundleV2<CPB, OB> {
             r1cs_num_variables: r1cs.num_variables,
             r1cs_num_public: r1cs.num_public,
             fs_commitments: self.fs_commitments.clone(),
+            fs_root: self.fs_root,
+            fold_root: self.fold_root,
+            challenge_digest: self.challenge_digest,
+            transcript_seed_digest: self.transcript_seed_digest,
+            folded_output_bytes: cp_snark::encode_folded_output_instance(&self.folded_output),
+            cp_proof_bytes: cp_proof_bytes.to_vec(),
+            output_proof_bytes: output_proof_bytes.to_vec(),
+        }
+        .to_bytes()
+    }
+
+    /// Build the versioned compressed public proof envelope bytes.
+    ///
+    /// This envelope omits the linear `fs_commitments` vector and keeps only
+    /// the public roots/digests. It is a performance-roadmap wire shape; the
+    /// current product verifier still uses [`ProofBundleV2`] directly until the
+    /// typed CP relation moves FS commitments fully into private witness data.
+    #[must_use]
+    pub fn canonical_compressed_public_envelope_bytes(
+        &self,
+        scheme: PublicDigestScheme,
+        public_inputs: &[Vec<i64>],
+        r1cs: &R1CSMatrices,
+        cp_proof_bytes: &[u8],
+        output_proof_bytes: &[u8],
+    ) -> Vec<u8> {
+        CompressedPublicProofEnvelope {
+            digest_scheme: scheme,
+            public_inputs: public_inputs.to_vec(),
+            r1cs_num_constraints: r1cs.num_constraints,
+            r1cs_num_variables: r1cs.num_variables,
+            r1cs_num_public: r1cs.num_public,
             fs_root: self.fs_root,
             fold_root: self.fold_root,
             challenge_digest: self.challenge_digest,

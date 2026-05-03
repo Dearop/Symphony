@@ -153,6 +153,7 @@ pub struct TypedCpDigestBlockLayout {
 #[derive(Debug, Clone)]
 pub struct TypedCpDigestR1csLayout {
     pub statement: TypedCpStatementR1csLayout,
+    pub fs_commitments_are_public: bool,
     pub fs_commitment_blocks: Vec<TypedCpDigestBlockLayout>,
     pub challenge_blocks: Vec<TypedCpDigestBlockLayout>,
     pub range_payload_blocks: Vec<Option<TypedCpRangePayloadBlockLayout>>,
@@ -1381,6 +1382,58 @@ pub fn generate_typed_cp_digest_r1cs_with_audit(
     original_r1cs: &R1CSMatrices,
     lengths: &TypedCpDigestInputLengths,
 ) -> (R1CSMatrices, TypedCpDigestR1csLayout, TypedCpAuditReport) {
+    generate_typed_cp_digest_r1cs_with_audit_mode(
+        cp_r1cs,
+        cp_layout,
+        ajtai,
+        original_r1cs,
+        lengths,
+        true,
+    )
+}
+
+pub fn generate_typed_cp_digest_r1cs_compressed_fs_with_audit(
+    cp_r1cs: &R1CSMatrices,
+    cp_layout: &CpR1csLayout,
+    ajtai: &crate::commitment::AjtaiParams,
+    original_r1cs: &R1CSMatrices,
+    lengths: &TypedCpDigestInputLengths,
+) -> (R1CSMatrices, TypedCpDigestR1csLayout, TypedCpAuditReport) {
+    generate_typed_cp_digest_r1cs_with_audit_mode(
+        cp_r1cs,
+        cp_layout,
+        ajtai,
+        original_r1cs,
+        lengths,
+        false,
+    )
+}
+
+pub fn generate_typed_cp_digest_r1cs_compressed_fs(
+    cp_r1cs: &R1CSMatrices,
+    cp_layout: &CpR1csLayout,
+    ajtai: &crate::commitment::AjtaiParams,
+    original_r1cs: &R1CSMatrices,
+    lengths: &TypedCpDigestInputLengths,
+) -> (R1CSMatrices, TypedCpDigestR1csLayout) {
+    let (r1cs, layout, _audit) = generate_typed_cp_digest_r1cs_compressed_fs_with_audit(
+        cp_r1cs,
+        cp_layout,
+        ajtai,
+        original_r1cs,
+        lengths,
+    );
+    (r1cs, layout)
+}
+
+fn generate_typed_cp_digest_r1cs_with_audit_mode(
+    cp_r1cs: &R1CSMatrices,
+    cp_layout: &CpR1csLayout,
+    ajtai: &crate::commitment::AjtaiParams,
+    original_r1cs: &R1CSMatrices,
+    lengths: &TypedCpDigestInputLengths,
+    fs_commitments_are_public: bool,
+) -> (R1CSMatrices, TypedCpDigestR1csLayout, TypedCpAuditReport) {
     let (statement_r1cs, statement_layout) =
         generate_typed_cp_statement_r1cs(cp_r1cs, cp_layout, ajtai, original_r1cs);
     assert_eq!(lengths.fs_commitment_inputs.len(), cp_layout.ell_np);
@@ -1389,10 +1442,15 @@ pub fn generate_typed_cp_digest_r1cs_with_audit(
     assert_eq!(lengths.challenge_inputs.len(), cp_layout.ell_np);
     assert_eq!(lengths.challenge_bodies.len(), cp_layout.ell_np);
 
-    let digest_publics = (lengths.fs_commitment_inputs.len() + 4) * OUT;
+    let public_fs_commitments = if fs_commitments_are_public {
+        lengths.fs_commitment_inputs.len()
+    } else {
+        0
+    };
+    let digest_publics = (public_fs_commitments + 4) * OUT;
     let folded_eval_publics = lengths.folded_evaluation_values * T * D;
     let off_fs_commitments = statement_layout.num_public;
-    let off_fs_root = off_fs_commitments + lengths.fs_commitment_inputs.len() * OUT;
+    let off_fs_root = off_fs_commitments + public_fs_commitments * OUT;
     let off_fold_root = off_fs_root + OUT;
     let off_challenge_digest = off_fold_root + OUT;
     let off_transcript_seed_digest = off_challenge_digest + OUT;
@@ -1413,7 +1471,7 @@ pub fn generate_typed_cp_digest_r1cs_with_audit(
             input_len,
             body_len,
             off_fs_commitments + idx * OUT,
-            false,
+            !fs_commitments_are_public,
         ));
     }
     digest_specs.push((
@@ -1680,11 +1738,10 @@ pub fn generate_typed_cp_digest_r1cs_with_audit(
     let transcript_seed_idx = fs_count + 3;
     let challenge_start_idx = fs_count + 4;
     let start = row_offset;
-    row_offset = insert_fs_root_public_commitment_constraints(
+    row_offset = insert_fs_root_commitment_constraints(
         &mut r1cs,
         row_offset,
-        off_fs_commitments,
-        lengths.fs_commitment_inputs.len(),
+        &digest_blocks[0..fs_count],
         &digest_blocks[fs_root_idx],
     );
     audit.push(
@@ -1699,7 +1756,6 @@ pub fn generate_typed_cp_digest_r1cs_with_audit(
         &mut r1cs,
         row_offset,
         &statement_layout,
-        off_fs_commitments,
         &digest_blocks[0..fs_count],
         &digest_blocks[fs_root_idx],
         &digest_blocks[fold_root_idx],
@@ -1767,6 +1823,7 @@ pub fn generate_typed_cp_digest_r1cs_with_audit(
 
     let layout = TypedCpDigestR1csLayout {
         statement: statement_layout,
+        fs_commitments_are_public,
         fs_commitment_blocks,
         challenge_blocks,
         range_payload_blocks,
@@ -1917,7 +1974,11 @@ pub fn encode_typed_cp_digest_instance(
     fs_commitments: &[Vec<u8>],
     layout: &TypedCpDigestR1csLayout,
 ) -> Option<Vec<u8>> {
-    if fs_commitments.len() != layout.fs_commitment_blocks.len() {
+    if layout.fs_commitments_are_public && fs_commitments.len() != layout.fs_commitment_blocks.len()
+    {
+        return None;
+    }
+    if !layout.fs_commitments_are_public && !fs_commitments.is_empty() {
         return None;
     }
     let mut out = encode_typed_cp_statement_instance(
@@ -1925,10 +1986,12 @@ pub fn encode_typed_cp_digest_instance(
         &public.public_inputs,
         &layout.statement,
     );
-    for commitment in fs_commitments {
-        let commitment: Digest32 = commitment.as_slice().try_into().ok()?;
-        for elem in digest32_to_babybear_elems(&commitment)? {
-            out.extend_from_slice(&(elem.as_canonical_u32() as i64).to_le_bytes());
+    if layout.fs_commitments_are_public {
+        for commitment in fs_commitments {
+            let commitment: Digest32 = commitment.as_slice().try_into().ok()?;
+            for elem in digest32_to_babybear_elems(&commitment)? {
+                out.extend_from_slice(&(elem.as_canonical_u32() as i64).to_le_bytes());
+            }
         }
     }
     for digest in [
@@ -2014,52 +2077,68 @@ pub fn encode_typed_cp_digest_witness(
 
     let mut append_digest_witness = |domain: &[u8],
                                      body: Vec<u8>,
-                                     expected_input_len: usize,
-                                     expected_body_len: usize|
+                                     block: &TypedCpDigestBlockLayout,
+                                     output_is_private: bool,
+                                     expected_digest: Option<&[u8]>|
      -> Option<()> {
-        if body.len() != expected_body_len {
+        if body.len() != block.body_len {
             return None;
         }
         let input = poseidon_digest_input_elems(domain, &body);
-        if input.len() != expected_input_len {
+        if input.len() != block.input_len {
             return None;
+        }
+        let digest = poseidon2_babybear_digest_elems(domain, &input);
+        let digest_bytes = serialize_poseidon_digest_elems(digest);
+        if expected_digest.is_some_and(|expected| expected != digest_bytes.as_slice()) {
+            return None;
+        }
+        if output_is_private {
+            for elem in digest {
+                out.extend_from_slice(&(elem.as_canonical_u32() as i64).to_le_bytes());
+            }
         }
         out.extend_from_slice(&encode_poseidon2_digest_witness(domain, &input));
         append_digest_body_binding_witness(&mut out, &body);
         Some(())
     };
 
-    for ((message, opening), block) in witness
+    for (((message, opening), commitment), block) in witness
         .fs_messages
         .iter()
         .zip(witness.fs_openings.iter())
+        .zip(witness.fs_commitments.iter())
         .zip(layout.fs_commitment_blocks.iter())
     {
         let opening: Digest32 = opening.as_slice().try_into().ok()?;
         append_digest_witness(
             b"fs-commit",
             poseidon_fs_commit_body(message, &opening),
-            block.input_len,
-            block.body_len,
+            block,
+            !layout.fs_commitments_are_public,
+            Some(commitment.as_slice()),
         )?;
     }
     append_digest_witness(
         b"fs-root",
         poseidon_fs_root_body(&witness.fs_commitments),
-        layout.fs_root_block.input_len,
-        layout.fs_root_block.body_len,
+        &layout.fs_root_block,
+        false,
+        Some(public.instance.fs_root.as_slice()),
     )?;
     append_digest_witness(
         b"fold-root",
         poseidon_fold_root_body(&witness.fold_inputs),
-        layout.fold_root_block.input_len,
-        layout.fold_root_block.body_len,
+        &layout.fold_root_block,
+        false,
+        Some(public.instance.fold_root.as_slice()),
     )?;
     append_digest_witness(
         b"challenge-digest",
         poseidon_challenge_digest_body(&challenges),
-        layout.challenge_digest_block.input_len,
-        layout.challenge_digest_block.body_len,
+        &layout.challenge_digest_block,
+        false,
+        Some(public.instance.challenge_digest.as_slice()),
     )?;
     append_digest_witness(
         b"transcript-seed",
@@ -2069,8 +2148,9 @@ pub fn encode_typed_cp_digest_witness(
             public.r1cs_num_variables,
             public.r1cs_num_public,
         ),
-        layout.transcript_seed_block.input_len,
-        layout.transcript_seed_block.body_len,
+        &layout.transcript_seed_block,
+        false,
+        Some(public.instance.transcript_seed_digest.as_slice()),
     )?;
 
     for (idx, block) in layout.challenge_blocks.iter().enumerate() {
@@ -2082,23 +2162,13 @@ pub fn encode_typed_cp_digest_witness(
             public.r1cs_num_public,
             &witness.fs_commitments,
         );
-        if body.len() != block.body_len {
-            return None;
-        }
-        let input = poseidon_digest_input_elems(b"challenge", &body);
-        if input.len() != block.input_len {
-            return None;
-        }
-        let digest = poseidon2_babybear_digest_elems(b"challenge", &input);
-        let digest_bytes = serialize_poseidon_digest_elems(digest);
-        if challenges.get(idx).map(Vec::as_slice) != Some(digest_bytes.as_slice()) {
-            return None;
-        }
-        for elem in digest {
-            out.extend_from_slice(&(elem.as_canonical_u32() as i64).to_le_bytes());
-        }
-        out.extend_from_slice(&encode_poseidon2_digest_witness(b"challenge", &input));
-        append_digest_body_binding_witness(&mut out, &body);
+        append_digest_witness(
+            b"challenge",
+            body,
+            block,
+            true,
+            challenges.get(idx).map(Vec::as_slice),
+        )?;
     }
 
     for (idx, block) in layout.range_payload_blocks.iter().enumerate() {
@@ -2902,22 +2972,22 @@ fn insert_digest_body_binding_constraints(
     row
 }
 
-fn insert_fs_root_public_commitment_constraints(
+fn insert_fs_root_commitment_constraints(
     r1cs: &mut R1CSMatrices,
     mut row: usize,
-    off_fs_commitments: usize,
-    num_commitments: usize,
+    fs_commitment_blocks: &[TypedCpDigestBlockLayout],
     fs_root_block: &TypedCpDigestBlockLayout,
 ) -> usize {
+    let num_commitments = fs_commitment_blocks.len();
     let expected_body_len = 8 + num_commitments * (8 + OUT * 4);
     assert_eq!(fs_root_block.body_len, expected_body_len);
 
     for commitment_idx in 0..num_commitments {
         let body_commitment_offset = 8 + commitment_idx * (8 + OUT * 4) + 8;
         for limb in 0..OUT {
-            let public_limb_col = off_fs_commitments + commitment_idx * OUT + limb;
+            let commitment_limb_col = fs_commitment_blocks[commitment_idx].off_public_output + limb;
             let body_byte_col = fs_root_block.off_body_bytes + body_commitment_offset + limb * 4;
-            r1cs.a.insert(row, public_limb_col, 1);
+            r1cs.a.insert(row, commitment_limb_col, 1);
             r1cs.a.insert(row, body_byte_col, -1);
             r1cs.a.insert(row, body_byte_col + 1, -256);
             r1cs.a.insert(row, body_byte_col + 2, -65_536);
@@ -3379,7 +3449,6 @@ fn insert_structured_digest_body_constraints(
     r1cs: &mut R1CSMatrices,
     mut row: usize,
     statement: &TypedCpStatementR1csLayout,
-    off_fs_commitments: usize,
     fs_commitment_blocks: &[TypedCpDigestBlockLayout],
     fs_root_block: &TypedCpDigestBlockLayout,
     fold_root_block: &TypedCpDigestBlockLayout,
@@ -3772,7 +3841,7 @@ fn insert_structured_digest_body_constraints(
                     r1cs,
                     row,
                     challenge_block.off_body_bytes + 8 + transcript_commitment + limb * 4,
-                    off_fs_commitments + commitment_idx * OUT + limb,
+                    fs_commitment_blocks[commitment_idx].off_public_output + limb,
                 );
             }
         }
@@ -7337,6 +7406,79 @@ mod tests {
     }
 
     #[test]
+    fn typed_cp_digest_compressed_fs_r1cs_accepts_private_fs_commitments() {
+        let fixture = typed_cp_digest_fixture();
+        let ext_ctx = crate::ring::extension::ExtFieldContext::new(fixture.params.q);
+        let (cp_r1cs, cp_layout) = super::super::r1cs::generate_cp_r1cs(
+            fixture.params.ell_np,
+            fixture.params.kappa,
+            fixture.params.n_in,
+            fixture.original_r1cs.num_constraints,
+            ext_ctx.alpha,
+            fixture.params.q,
+        );
+        let lengths = typed_cp_digest_input_lengths(&fixture.public, &fixture.witness).unwrap();
+        let (compressed_r1cs, compressed_layout, audit) =
+            generate_typed_cp_digest_r1cs_compressed_fs_with_audit(
+                &cp_r1cs,
+                &cp_layout,
+                &fixture.ajtai,
+                &fixture.original_r1cs,
+                &lengths,
+            );
+        assert!(!compressed_layout.fs_commitments_are_public);
+        assert_eq!(
+            compressed_layout.num_public + compressed_layout.fs_commitment_blocks.len() * OUT,
+            fixture.layout.num_public
+        );
+        assert!(
+            compressed_layout.fs_commitment_blocks[0].off_public_output
+                >= compressed_layout.num_public
+        );
+        assert!(encode_typed_cp_digest_instance(
+            &fixture.public,
+            &fixture.witness.fs_commitments,
+            &compressed_layout,
+        )
+        .is_none());
+
+        let instance =
+            encode_typed_cp_digest_instance(&fixture.public, &[], &compressed_layout).unwrap();
+        let witness_bytes = encode_typed_cp_digest_witness(
+            &fixture.public,
+            &fixture.witness,
+            &compressed_layout,
+            &fixture.params.ntt,
+            ext_ctx.alpha,
+            fixture.params.q,
+            &fixture.ajtai,
+            &fixture.original_r1cs,
+        )
+        .unwrap();
+        let mut z = bytes_to_i64_vec(&instance, &witness_bytes);
+        assert_eq!(z.len(), compressed_layout.num_variables);
+        if let Some(row) = first_unsatisfied_row_mod(&compressed_r1cs, &z, BB_P) {
+            let az = compressed_r1cs.a.mul_vec_mod(&z, BB_P);
+            let bz = compressed_r1cs.b.mul_vec_mod(&z, BB_P);
+            let cz = compressed_r1cs.c.mul_vec_mod(&z, BB_P);
+            panic!(
+                "first compressed FS unsatisfied row: {row}, az={}, bz={}, cz={}",
+                az[row], bz[row], cz[row]
+            );
+        }
+
+        z[compressed_layout.fs_commitment_blocks[0].off_public_output] += 1;
+        assert!(!compressed_r1cs.is_satisfied_mod(&z, BB_P));
+        let blocks = audit.unsatisfied_blocks(&compressed_r1cs, &z, BB_P);
+        assert!(
+            blocks
+                .iter()
+                .any(|block| block.kind == TypedCpAuditBlockKind::PoseidonDigestGadgets),
+            "private FS commitment output mutation should hit Poseidon digest binding, got {blocks:?}"
+        );
+    }
+
+    #[test]
     fn typed_cp_digest_r1cs_rejects_bad_private_digest_inputs() {
         let fixture = typed_cp_digest_fixture();
 
@@ -7347,7 +7489,7 @@ mod tests {
         let mut witness = fixture.witness.clone();
         witness.fs_openings[0][0] ^= 1;
         let ext_ctx = crate::ring::extension::ExtFieldContext::new(fixture.params.q);
-        let witness_bytes = encode_typed_cp_digest_witness(
+        assert!(encode_typed_cp_digest_witness(
             &fixture.public,
             &witness,
             &fixture.layout,
@@ -7357,15 +7499,7 @@ mod tests {
             &fixture.ajtai,
             &fixture.original_r1cs,
         )
-        .unwrap();
-        let instance = encode_typed_cp_digest_instance(
-            &fixture.public,
-            &fixture.witness.fs_commitments,
-            &fixture.layout,
-        )
-        .unwrap();
-        let z = bytes_to_i64_vec(&instance, &witness_bytes);
-        assert!(!fixture.digest_r1cs.is_satisfied_mod(&z, BB_P));
+        .is_none());
     }
 
     #[test]

@@ -374,6 +374,41 @@ Post-optimization component timings for `k=1`:
 | `typed_output_verify_only_vs_k` | 43.698 us - 45.599 us, mean 44.460 us |
 | `public_proof_size_vs_k` envelope serialization | 55.575 us - 59.592 us, mean 57.404 us |
 
+### Public verifier performance north star
+
+The authoritative WHIR public verifier is now multi-statement, but the current
+cost model is still a linear typed-CP baseline rather than the final north-star
+performance profile. After fixing the `ell_np > 1` typed CP witness layout,
+the public verifier benchmark succeeds for `k = 1, 2`:
+
+| k | `verify_public` mean | Typed CP rows | CP proof bytes | Public envelope bytes |
+|---:|---:|---:|---:|---:|
+| 1 | 2.0219 s | 1,116,203 | 1,202,354 | 1,218,527 |
+| 2 | 4.1157 s | 2,221,456 | 1,254,768 | 1,270,994 |
+
+Command:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
+```
+
+The near-doubling from `k = 1` to `k = 2` is expected for the current
+monolithic typed CP R1CS. The public route is authoritative and public-only,
+but the CP proof still proves a relation whose rows grow with
+`params.ell_np`. The largest `k = 2` row blocks are:
+
+| Audit block kind | Rows |
+|---|---:|
+| Poseidon digest gadgets | 1,559,524 |
+| Byte constraints | 594,512 |
+| GR1CS message reconstruction | 35,562 |
+| Range/monomial semantics | 16,434 |
+
+The current optimization target is documented in
+[`whir_public_performance_north_star_plan.md`](whir_public_performance_north_star_plan.md):
+compress the public boundary first, then replace the monolithic linear typed CP
+proof with a leaf/accumulator or recursive aggregation architecture.
+
 ---
 
 ## WHIR PCS Integration

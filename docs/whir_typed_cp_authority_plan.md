@@ -470,6 +470,13 @@ benchmarks show typed CP verification remains the dominant public verifier
 cost: `typed_cp_verify_only_vs_k` mean 1.8557 s, typed output verification mean
 44.460 us, and public envelope serialization mean 57.404 us.
 
+Multi-statement public verification is now directly measured. The
+`public_verify_v2_vs_k` benchmark succeeds for `k = 1, 2`, but still scales
+near-linearly because the authoritative typed CP proof is one monolithic R1CS:
+`k=1` verifies in 2.0219 s with 1,116,203 typed CP rows, while `k=2` verifies
+in 4.1157 s with 2,221,456 typed CP rows. The north-star performance plan is
+tracked in [`whir_public_performance_north_star_plan.md`](whir_public_performance_north_star_plan.md).
+
 ### Production Milestone F - Legacy Compatibility and Routing Cleanup
 
 Goal: make the public path the product boundary while preserving intentional
