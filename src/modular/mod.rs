@@ -1,6 +1,7 @@
 //! Reusable modular CP pipeline components.
 
 pub mod adapter_symphony;
+pub mod batched_cp;
 pub mod cp_backend_api;
 pub mod cp_relation_core;
 pub mod digest_core;

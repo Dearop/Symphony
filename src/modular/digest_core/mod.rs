@@ -28,6 +28,30 @@ pub fn digest_fs_root_with_scheme(scheme: PublicDigestScheme, commitments: &[Vec
     }
 }
 
+/// Domain-separated digest helper for new public-boundary objects.
+#[must_use]
+pub fn digest_domain_with_scheme(
+    scheme: PublicDigestScheme,
+    domain: &[u8],
+    body: &[u8],
+) -> Digest32 {
+    match scheme {
+        PublicDigestScheme::Sha256 => {
+            use sha2::{Digest, Sha256};
+
+            let mut h = Sha256::new();
+            h.update(b"symphony-public-domain-digest-v1");
+            h.update((domain.len() as u64).to_le_bytes());
+            h.update(domain);
+            h.update((body.len() as u64).to_le_bytes());
+            h.update(body);
+            h.finalize().into()
+        }
+        #[cfg(feature = "whir")]
+        PublicDigestScheme::Poseidon2BabyBear => poseidon_babybear::digest_bytes(domain, body),
+    }
+}
+
 /// Digest of all fold inputs.
 pub fn digest_fold_root(inputs: &[FoldInput]) -> Digest32 {
     crate::folding::digest::digest_fold_inputs(inputs)

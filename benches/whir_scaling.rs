@@ -11,6 +11,15 @@
 //!   cargo bench --bench whir_scaling --features whir -- "typed_cp_verify_only_vs_k"
 //!   cargo bench --bench whir_scaling --features whir -- "typed_output_verify_only_vs_k"
 //!   cargo bench --bench whir_scaling --features whir -- "public_proof_size_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_shape_profile_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_verify_only_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_product_oracle_whir_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_whir_v2_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_columnar_v2_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_columnar_poseidon_v2_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_family_columnar_v2_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_family_columnar_poseidon_v2_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "public_proof_batched_cp_size_vs_k"
 //!   SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
 //!
 //! Reset local Criterion history for this bench:
@@ -26,11 +35,24 @@
 //!   whir_scaling/typed_cp_verify_only_vs_k  – typed CP backend verification only
 //!   whir_scaling/typed_output_verify_only_vs_k – typed output backend verification only
 //!   whir_scaling/public_proof_size_vs_k     – public proof serialization size only
+//!   whir_scaling/batched_cp_shape_profile_vs_k – structured batched CP shape/manifest profiling
+//!   whir_scaling/batched_cp_verify_only_vs_k – structured batched CP software evaluator only
+//!   whir_scaling/batched_cp_product_oracle_whir_vs_k – SYMBTC1 WHIR oracle proof only
+//!   whir_scaling/batched_cp_semantic_whir_v2_vs_k – SYMBTC2 full-selection semantic proof candidate
+//!   whir_scaling/batched_cp_semantic_columnar_v2_vs_k – SYMBTC2 columnar residual skeleton
+//!   whir_scaling/batched_cp_semantic_columnar_poseidon_v2_vs_k – SYMBT2C Poseidon/BabyBear residual skeleton
+//!   whir_scaling/batched_cp_semantic_family_columnar_v2_vs_k – SYMBT2F family-local residual skeleton
+//!   whir_scaling/batched_cp_semantic_family_columnar_poseidon_v2_vs_k – SYMBT2F Poseidon/BabyBear family-local skeleton
+//!   whir_scaling/public_proof_batched_cp_size_vs_k – structured batched CP public-boundary size only
 
 use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use symphony::batched_cp::{
+    BatchedCpBucket, BatchedCpEvaluator, BatchedCpItem, BatchedCpSemanticConstraintFamily,
+    BatchedCpSemanticFamilyColumnarV2Table,
+};
 use symphony::commitment::{AjtaiParams, Commitment};
 use symphony::cp_backend_api::CpBackend;
 use symphony::cp_snark::IdentityRelation;
@@ -38,7 +60,7 @@ use symphony::fiat_shamir::FSCommitment;
 use symphony::folding::FoldingStatement;
 use symphony::output_backend_api::OutputBackend;
 use symphony::params::{SymphonyParams, D};
-use symphony::proof_orchestrator::Prover;
+use symphony::proof_orchestrator::{ProofBundle, Prover};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::extension::ExtFieldContext;
 use symphony::ring::ntt::NttContext;
@@ -47,12 +69,25 @@ use symphony::rok::range_proof::RangeProofParams;
 use symphony::snark::cp_snark::{
     generate_cp_r1cs, generate_typed_cp_digest_r1cs_compressed_fs_with_audit,
     generate_typed_cp_digest_r1cs_with_audit, typed_cp_digest_input_lengths_from_setup,
-    TypedCpAuditBlockKind,
+    TypedCpAuditBlockKind, TypedCpSplitComponent,
+};
+use symphony::snark::whir::{
+    whir_typed_batched_cp_columnar_v2_private_opening_profile,
+    whir_typed_batched_cp_family_columnar_v2_private_opening_profile,
+    whir_typed_batched_cp_family_columnar_v2_verify_with_cache_stats,
+    WhirBatchedCpColumnarV2OpeningProfile,
 };
 use symphony::snark::{BackendSnark, RelationDescription, TypedCpSetupDescriptor};
 use symphony::{
-    canonical_whir_proof_bytes, CPSnark, HashCommitment, PublicProofBundle, SumcheckSnark,
-    WhirProvingKey, WhirSnark, WhirVerifyingKey,
+    canonical_whir_proof_bytes,
+    cp_relation_core::CpPublicStatement,
+    digest_core::{
+        derive_challenges_with_scheme, digest_challenge_digest_with_scheme,
+        digest_domain_with_scheme, digest_fold_root_with_scheme, digest_fs_root_with_scheme,
+        digest_transcript_seed_with_scheme, fs_commit_with_scheme, PublicDigestScheme,
+    },
+    CPSnark, HashCommitment, PublicProofBundle, SumcheckSnark, WhirProof, WhirProvingKey,
+    WhirSnark, WhirVerifyingKey,
 };
 
 const WHIR_CP_NUM_MESSAGES: usize = 8;
@@ -92,6 +127,116 @@ fn public_verify_ks() -> Vec<usize> {
     values.sort_unstable();
     values.dedup();
     values
+}
+
+fn top_family_columnar_tables(tables: &[BatchedCpSemanticFamilyColumnarV2Table]) -> String {
+    let mut ranked = tables
+        .iter()
+        .map(|table| {
+            let num_vars = (table.column_kinds.len() * table.padded_row_count)
+                .next_power_of_two()
+                .max(2)
+                .trailing_zeros() as usize;
+            (
+                num_vars,
+                table.row_count,
+                table.padded_row_count,
+                format!("{:?}", table.family),
+                table.label.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.cmp(a));
+    ranked
+        .into_iter()
+        .take(5)
+        .map(|(num_vars, rows, padded_rows, family, label)| {
+            format!("{family}:{label}:rows={rows},padded_rows={padded_rows},num_vars={num_vars}")
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+#[derive(Default)]
+struct FamilyColumnarAttribution {
+    table_count: usize,
+    subproof_count: usize,
+    proof_bytes: usize,
+    private_opening_evals: usize,
+    sampled_checks: usize,
+    query_count: usize,
+    merkle_path_queries: usize,
+    row_count: usize,
+    padded_row_count: usize,
+    max_num_vars: usize,
+    transcript_label_bytes: usize,
+}
+
+fn family_subproof_payload_bytes(proof: &WhirProof, subproof_index: usize) -> usize {
+    let Some(subproof) = proof.family_columnar_subproofs.get(subproof_index) else {
+        return 0;
+    };
+    let pcs_bytes =
+        serde_json::to_vec(&subproof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
+    // table_index + num_vars + z_eval + pcs_len + pcs_bytes, matching the
+    // family-subproof section in canonical_whir_proof_bytes.
+    8 + 8 + 4 + 8 + pcs_bytes.len()
+}
+
+fn family_columnar_attribution_profile(
+    tables: &[BatchedCpSemanticFamilyColumnarV2Table],
+    opening_profile: &WhirBatchedCpColumnarV2OpeningProfile,
+    proof: &WhirProof,
+) -> String {
+    let mut by_family = std::collections::BTreeMap::<
+        BatchedCpSemanticConstraintFamily,
+        FamilyColumnarAttribution,
+    >::new();
+    for (entry, table) in opening_profile.families.iter().zip(tables) {
+        let stats = by_family.entry(entry.family).or_default();
+        let num_vars = entry.num_vars.unwrap_or_else(|| {
+            (table.column_kinds.len() * table.padded_row_count)
+                .next_power_of_two()
+                .max(2)
+                .trailing_zeros() as usize
+        });
+        stats.table_count += 1;
+        stats.row_count += table.row_count;
+        stats.padded_row_count += table.padded_row_count;
+        stats.max_num_vars = stats.max_num_vars.max(num_vars);
+        stats.private_opening_evals += entry.section.len;
+        stats.sampled_checks += entry.sampled_check_count;
+        stats.query_count += entry.sampled_check_count;
+        stats.merkle_path_queries += entry.sampled_check_count;
+        stats.transcript_label_bytes += table.label.len() + format!("{:?}", entry.family).len();
+        stats.proof_bytes += entry.section.len * 4;
+        if let Some(subproof_index) = entry.subproof_index {
+            stats.subproof_count += 1;
+            stats.proof_bytes += family_subproof_payload_bytes(proof, subproof_index);
+        }
+    }
+
+    by_family
+        .into_iter()
+        .map(|(family, stats)| {
+            format!(
+                "{family:?}:tables={},subproofs={},proof_bytes~={},private_evals={},queries={},merkle_paths~={},rows={},padded_rows={},max_num_vars={},transcript_label_bytes={},prove_work~={},verify_work~={}",
+                stats.table_count,
+                stats.subproof_count,
+                stats.proof_bytes,
+                stats.private_opening_evals,
+                stats.query_count,
+                stats.merkle_path_queries,
+                stats.row_count,
+                stats.padded_row_count,
+                stats.max_num_vars,
+                stats.transcript_label_bytes,
+                stats.padded_row_count,
+                stats.proof_bytes + stats.merkle_path_queries * stats.max_num_vars.max(1),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn criterion_filter_allows(group: &str) -> bool {
@@ -177,6 +322,41 @@ fn public_verify_params(ell_np: usize) -> SymphonyParams {
     }
 }
 
+fn batched_cp_columnar_dev_params() -> SymphonyParams {
+    SymphonyParams {
+        q: 257,
+        d: D,
+        kappa: 2,
+        ell_np: 2,
+        ell_h: D,
+        lambda_pj: 4,
+        n_bar: 4,
+        m: 4,
+        b: 16,
+        k_cs: 1,
+        n_in: 1,
+        ntt: SymphonyParams::try_ntt(257, D),
+    }
+}
+
+fn batched_cp_columnar_poseidon_dev_params() -> SymphonyParams {
+    const BB_P: u64 = 2_013_265_921;
+    SymphonyParams {
+        q: BB_P,
+        d: D,
+        kappa: 2,
+        ell_np: 2,
+        ell_h: D,
+        lambda_pj: 4,
+        n_bar: 4,
+        m: 4,
+        b: 16,
+        k_cs: 1,
+        n_in: 1,
+        ntt: SymphonyParams::try_ntt(BB_P, D),
+    }
+}
+
 fn make_folding_statement(z: &[i64], n_in: usize, ajtai: &AjtaiParams) -> FoldingStatement {
     let full_ring = RingVector {
         elements: z.iter().map(|&v| RingElement::from_constant(v)).collect(),
@@ -235,6 +415,150 @@ fn make_modular_statement<
     (c, z[..n_in].to_vec(), witness_part)
 }
 
+fn make_batched_cp_columnar_dev_item(
+    prover: &Prover<SumcheckSnark, SumcheckSnark>,
+    r1cs: &R1CSMatrices,
+    z: &[i64],
+    tag: u8,
+) -> BatchedCpItem {
+    let n_in = r1cs.num_public;
+    let statements = vec![
+        make_modular_statement(prover, z, n_in),
+        make_modular_statement(prover, z, n_in),
+    ];
+    let public_inputs: Vec<Vec<i64>> = statements
+        .iter()
+        .map(|statement| statement.1.clone())
+        .collect();
+    let proof: ProofBundle<SumcheckSnark, SumcheckSnark> = prover.prove(&statements, r1cs);
+    let public = CpPublicStatement::new(
+        proof.cp_public_instance.clone(),
+        public_inputs,
+        r1cs,
+        PublicDigestScheme::Sha256,
+    );
+    BatchedCpItem {
+        item_tag: [tag; 32],
+        public,
+        witness: proof.witness_bundle,
+    }
+}
+
+fn poseidon_shape_batched_cp_item(
+    mut item: BatchedCpItem,
+    prover: &Prover<SumcheckSnark, SumcheckSnark>,
+) -> BatchedCpItem {
+    let scheme = PublicDigestScheme::Poseidon2BabyBear;
+    let mut fs_commitments = Vec::with_capacity(item.witness.fs_messages.len());
+    let mut fs_openings = Vec::with_capacity(item.witness.fs_messages.len());
+    for message in &item.witness.fs_messages {
+        let (commitment, opening) = fs_commit_with_scheme(scheme, message);
+        fs_commitments.push(commitment.to_vec());
+        fs_openings.push(opening.to_vec());
+    }
+
+    item.public.digest_scheme = scheme;
+    item.witness.fs_commitments = fs_commitments;
+    item.witness.fs_openings = fs_openings;
+    item.public.instance.fs_root = digest_fs_root_with_scheme(scheme, &item.witness.fs_commitments);
+    item.public.instance.fold_root =
+        digest_fold_root_with_scheme(scheme, &item.witness.fold_inputs);
+    let challenges = derive_challenges_with_scheme(
+        scheme,
+        &item.public.public_inputs,
+        item.public.r1cs_num_constraints,
+        item.public.r1cs_num_variables,
+        item.public.r1cs_num_public,
+        &item.witness.fs_commitments,
+    );
+    item.public.instance.challenge_digest =
+        digest_challenge_digest_with_scheme(scheme, &challenges);
+    let typed_beta =
+        symphony::snark::cp_snark::typed_r1cs::poseidon_challenges_to_betas(&challenges)
+            .expect("Poseidon challenges should map to typed beta");
+    item.witness.folding_proof.beta = typed_beta;
+    item.witness.folded_witness = symphony::folding::retarget_folding_proof_to_current_beta(
+        &mut item.witness.folding_proof,
+        &item.public.public_inputs,
+        &item.witness.original_witnesses,
+        prover.params.q,
+        prover.params.ntt(),
+    )
+    .expect("Poseidon beta should retarget folded state");
+    item.public.instance.x_folded = item.witness.folding_proof.folded_instance.clone();
+    item.witness.folded_output = item.public.instance.x_folded.clone();
+    item.public.instance.folded_output =
+        symphony::folding::folded_output_instance_from_proof(&item.witness.folding_proof);
+    item.witness.folded_output_instance = item.public.instance.folded_output.clone();
+    item.witness.folded_output_witness =
+        symphony::folding::folded_output_witness_from_folded(&item.witness.folded_witness);
+    item.public.instance.transcript_seed_digest = digest_transcript_seed_with_scheme(
+        scheme,
+        &item.public.public_inputs,
+        item.public.r1cs_num_constraints,
+        item.public.r1cs_num_variables,
+        item.public.r1cs_num_public,
+    );
+    item
+}
+
+fn batched_cp_columnar_dev_fixture(
+    k: usize,
+) -> (
+    Prover<SumcheckSnark, SumcheckSnark>,
+    R1CSMatrices,
+    BatchedCpBucket,
+) {
+    assert!(
+        (1..=255).contains(&k),
+        "SYMBT2C columnar dev benchmark expects 1 <= k <= 255"
+    );
+    let params = batched_cp_columnar_dev_params();
+    let (prover, _verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params);
+    let (r1cs, z) = multi_r1cs();
+    let items = (0..k)
+        .map(|idx| make_batched_cp_columnar_dev_item(&prover, &r1cs, &z, (idx + 1) as u8))
+        .collect();
+    let whir_parameter_digest = digest_domain_with_scheme(
+        PublicDigestScheme::Sha256,
+        b"whir-scaling-symbt2c-columnar-dev-params",
+        b"batched-cp",
+    );
+    let bucket = BatchedCpBucket::new(items, whir_parameter_digest)
+        .expect("SYMBT2C columnar dev fixture must batch same-shaped CP items");
+    (prover, r1cs, bucket)
+}
+
+fn batched_cp_columnar_poseidon_dev_fixture(
+    k: usize,
+) -> (
+    Prover<SumcheckSnark, SumcheckSnark>,
+    R1CSMatrices,
+    BatchedCpBucket,
+) {
+    assert!(
+        (1..=255).contains(&k),
+        "SYMBT2C Poseidon columnar dev benchmark expects 1 <= k <= 255"
+    );
+    let params = batched_cp_columnar_poseidon_dev_params();
+    let (prover, _verifier) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params);
+    let (r1cs, z) = multi_r1cs();
+    let items = (0..k)
+        .map(|idx| {
+            let item = make_batched_cp_columnar_dev_item(&prover, &r1cs, &z, (idx + 1) as u8);
+            poseidon_shape_batched_cp_item(item, &prover)
+        })
+        .collect();
+    let whir_parameter_digest = digest_domain_with_scheme(
+        PublicDigestScheme::Sha256,
+        b"whir-scaling-symbt2c-columnar-poseidon-dev-params",
+        b"batched-cp",
+    );
+    let bucket = BatchedCpBucket::new(items, whir_parameter_digest)
+        .expect("SYMBT2C Poseidon columnar fixture must batch same-shaped CP items");
+    (prover, r1cs, bucket)
+}
+
 fn whir_proof_wire_bytes(proof: &symphony::WhirProof) -> usize {
     let mut size = 0usize;
     size += proof.sumcheck_rounds_3.len() * 12;
@@ -289,6 +613,7 @@ struct TypedCpProfile {
     public_envelope_bytes: usize,
     compressed_public_envelope_bytes: usize,
     audit_rows: Vec<(TypedCpAuditBlockKind, usize)>,
+    split_rows: Vec<(TypedCpSplitComponent, usize)>,
 }
 
 struct PublicWhirBenchFixture {
@@ -299,6 +624,8 @@ struct PublicWhirBenchFixture {
     cp_statement: symphony::CpPublicStatement,
     cp_witness: symphony::CpWitnessBundle,
     verifier: symphony::proof_orchestrator::Verifier<WhirSnark, WhirSnark>,
+    ajtai: AjtaiParams,
+    input_bound: u64,
     typed_cp_pk: WhirProvingKey,
     typed_cp_vk: WhirVerifyingKey,
     typed_output_vk: WhirVerifyingKey,
@@ -397,6 +724,7 @@ fn typed_cp_profile_from_descriptor(
         public_envelope_bytes,
         compressed_public_envelope_bytes,
         audit_rows,
+        split_rows: audit.split_row_counts(),
     }
 }
 
@@ -409,6 +737,15 @@ fn audit_rows_for_log(profile: &TypedCpProfile) -> String {
         .join(",")
 }
 
+fn split_rows_for_log(profile: &TypedCpProfile) -> String {
+    profile
+        .split_rows
+        .iter()
+        .map(|(component, rows)| format!("{component:?}={rows}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn print_public_profile(label: &str, fixture: &PublicWhirBenchFixture) {
     let profile = &fixture.profile;
     eprintln!(
@@ -417,7 +754,7 @@ fn print_public_profile(label: &str, fixture: &PublicWhirBenchFixture) {
          compressed_typed_cp_witness_variables={} compressed_typed_cp_rows={} \
          typed_cp_whir_num_vars={} cp_proof_bytes={} \
          output_proof_bytes={} public_envelope_bytes={} compressed_public_envelope_bytes={} \
-         audit_rows={}",
+         audit_rows={} split_rows={}",
         fixture.k,
         profile.public_inputs,
         profile.witness_variables,
@@ -431,7 +768,38 @@ fn print_public_profile(label: &str, fixture: &PublicWhirBenchFixture) {
         profile.public_envelope_bytes,
         profile.compressed_public_envelope_bytes,
         audit_rows_for_log(profile),
+        split_rows_for_log(profile),
     );
+}
+
+fn batched_cp_items_from_fixture(fixture: &PublicWhirBenchFixture, k: usize) -> Vec<BatchedCpItem> {
+    (0..k)
+        .map(|idx| {
+            let mut tag = [0u8; 32];
+            tag[..8].copy_from_slice(&(idx as u64).to_le_bytes());
+            BatchedCpItem {
+                item_tag: tag,
+                public: fixture.cp_statement.clone(),
+                witness: fixture.cp_witness.clone(),
+            }
+        })
+        .collect()
+}
+
+fn batched_cp_whir_parameter_digest() -> [u8; 32] {
+    digest_domain_with_scheme(
+        <WhirSnark as BackendSnark>::public_digest_scheme(),
+        b"batched-cp-whir-parameter-digest",
+        b"whir-scaling-benchmark-v1",
+    )
+}
+
+fn batched_cp_bucket_from_fixture(fixture: &PublicWhirBenchFixture, k: usize) -> BatchedCpBucket {
+    BatchedCpBucket::new(
+        batched_cp_items_from_fixture(fixture, k),
+        batched_cp_whir_parameter_digest(),
+    )
+    .expect("same-shape batched CP profile fixture must batch")
 }
 
 fn public_whir_fixture(k: usize) -> PublicWhirBenchFixture {
@@ -507,6 +875,8 @@ fn public_whir_fixture(k: usize) -> PublicWhirBenchFixture {
         cp_statement,
         cp_witness: full_proof.witness_bundle,
         verifier,
+        ajtai: prover.ajtai.clone(),
+        input_bound: params.b_input(),
         typed_cp_pk,
         typed_cp_vk,
         typed_output_vk,
@@ -1011,6 +1381,794 @@ fn bench_public_proof_size_vs_k(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_batched_cp_shape_profile_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_shape_profile_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_shape_profile_vs_k");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    let base_fixture = public_whir_fixture(1);
+    for k in public_verify_ks() {
+        let items = batched_cp_items_from_fixture(&base_fixture, k);
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let manifest = bucket.manifest();
+        let round_commitments = bucket.round_message_commitments();
+        let public = bucket.public_statement();
+        let structured_relation = bucket.shape.structured_relation_description();
+        eprintln!(
+            "[batched_cp_shape_profile_vs_k k={k}] shape_id={} batch_log_size={} \
+             batch_capacity={} active_count={} product_domain_size={} manifest_bytes={} \
+             round_message_commitments={} witness_oracle_rows={} round_message_oracles={} \
+             structured_relation_id={} structured_relation_constraints={}",
+            hex_digest(&bucket.shape.shape_id),
+            bucket.shape.batch_log_size,
+            bucket.shape.batch_capacity,
+            bucket.shape.active_count,
+            bucket.shape.product_domain_size(),
+            manifest.body.len(),
+            round_commitments.commitments.len(),
+            bucket.witness_bundle().witness_oracle_rows.len(),
+            bucket.witness_bundle().round_message_oracles.len(),
+            hex_digest(&structured_relation.relation_id()),
+            structured_relation
+                .to_relation_description()
+                .num_constraints,
+        );
+        black_box(public);
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("build_shape_manifest", k), |b| {
+            b.iter(|| {
+                let bucket = BatchedCpBucket::new(
+                    black_box(items.clone()),
+                    black_box(batched_cp_whir_parameter_digest()),
+                )
+                .expect("same-shape batched CP profile fixture must batch");
+                black_box(bucket.public_statement());
+                black_box(bucket.witness_bundle());
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_verify_only_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_verify_only_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_verify_only_vs_k");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    let base_fixture = public_whir_fixture(1);
+    for k in public_verify_ks() {
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let verify_ok = BatchedCpEvaluator::check(
+            &public,
+            &witness,
+            &base_fixture.ajtai,
+            &base_fixture.r1cs,
+            base_fixture.input_bound,
+        )
+        .is_ok();
+        eprintln!(
+            "[batched_cp_verify_only_vs_k k={k}] software_verify={} public_statement_bytes={} \
+             witness_oracle_rows={} round_message_oracles={}",
+            verify_ok,
+            public.canonical_bytes().len(),
+            witness.witness_oracle_rows.len(),
+            witness.round_message_oracles.len(),
+        );
+        assert!(
+            verify_ok,
+            "batched CP software evaluator must pass for k={k}"
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("software_evaluator", k), |b| {
+            b.iter(|| {
+                black_box(
+                    BatchedCpEvaluator::check(
+                        black_box(&public),
+                        black_box(&witness),
+                        black_box(&base_fixture.ajtai),
+                        black_box(&base_fixture.r1cs),
+                        black_box(base_fixture.input_bound),
+                    )
+                    .is_ok(),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_public_proof_batched_cp_size_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/public_proof_batched_cp_size_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/public_proof_batched_cp_size_vs_k");
+    group.sample_size(20);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    let base_fixture = public_whir_fixture(1);
+    for k in public_verify_ks() {
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let public = bucket.public_statement();
+        let public_bytes = public.canonical_bytes();
+        let manifest = bucket.manifest();
+        eprintln!(
+            "[public_proof_batched_cp_size_vs_k k={k}] public_statement_bytes={} \
+             manifest_body_bytes={} round_message_commitments={} shape_id={}",
+            public_bytes.len(),
+            manifest.body.len(),
+            public.round_message_commitments.len(),
+            hex_digest(&public.shape.shape_id),
+        );
+
+        group.throughput(Throughput::Bytes(public_bytes.len() as u64));
+        group.bench_function(BenchmarkId::new("public_statement_bytes", k), |b| {
+            b.iter(|| {
+                black_box(public.canonical_bytes());
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_product_oracle_whir_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_product_oracle_whir_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_product_oracle_whir_vs_k");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    let base_fixture = public_whir_fixture(1);
+    for k in public_verify_ks() {
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let relation =
+            <WhirSnark as CpBackend>::typed_batched_cp_relation_description(&bucket.shape)
+                .expect("WHIR should expose SYMBTC1 structured relation metadata");
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let proof = <WhirSnark as CpBackend>::prove_typed_batched_cp(&pk, &public, &witness)
+            .expect("SYMBTC1 product-domain WHIR proof must be produced");
+        let verify_ok = <WhirSnark as CpBackend>::verify_typed_batched_cp(&vk, &public, &proof)
+            .unwrap_or(false);
+        assert!(
+            verify_ok,
+            "SYMBTC1 product-domain WHIR proof must verify for k={k}"
+        );
+        eprintln!(
+            "[batched_cp_product_oracle_whir_vs_k k={k}] verify={} proof_bytes={} \
+             oracle_public_bytes={} product_oracle_bytes={} public_oracle_claims={} \
+             whir_num_vars={} constraints={}",
+            verify_ok,
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            bucket
+                .witness_bundle()
+                .canonical_product_oracle_bytes(&bucket.shape)
+                .expect("canonical product oracle bytes")
+                .len(),
+            bucket
+                .shape
+                .canonical_product_oracle_public_packed_claim_count_for_statement(&public)
+                .expect("statement-specific public oracle claims"),
+            proof.num_vars,
+            relation.num_constraints,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("prove_product_oracle", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::prove_typed_batched_cp(
+                        black_box(&pk),
+                        black_box(&public),
+                        black_box(&witness),
+                    )
+                    .expect("SYMBTC1 product-domain WHIR proof must be produced"),
+                );
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("verify_product_oracle", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::verify_typed_batched_cp(
+                        black_box(&vk),
+                        black_box(&public),
+                        black_box(&proof),
+                    )
+                    .unwrap_or(false),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_semantic_whir_v2_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_semantic_whir_v2_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_semantic_whir_v2_vs_k");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    let base_fixture = public_whir_fixture(1);
+    for k in public_verify_ks() {
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let semantic_v2 = bucket.shape.semantic_v2_relation_description(
+            &base_fixture.ajtai,
+            &base_fixture.r1cs,
+            base_fixture.input_bound,
+        );
+        let relation = semantic_v2.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let proof = <WhirSnark as CpBackend>::prove_typed_batched_cp(&pk, &public, &witness)
+            .expect("SYMBTC2 semantic WHIR proof candidate must be produced");
+        let verify_ok = <WhirSnark as CpBackend>::verify_typed_batched_cp(&vk, &public, &proof)
+            .unwrap_or(false);
+        assert!(
+            verify_ok,
+            "SYMBTC2 semantic WHIR proof candidate must verify for k={k}"
+        );
+        let profile = symphony::snark::whir::whir_typed_batched_cp_private_opening_profile(
+            &vk.seed,
+            &vk.relation,
+            &public,
+        )
+        .expect("SYMBTC2 private-opening profile");
+        eprintln!(
+            "[batched_cp_semantic_whir_v2_vs_k k={k}] verify={} proof_bytes={} \
+             public_statement_bytes={} product_oracle_bytes={} whir_num_vars={} \
+             semantic_columns={} residual_families={} private_openings={} \
+             equality_openings={} poseidon_openings={} ajtai_openings={} original_r1cs_openings={}",
+            verify_ok,
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            bucket
+                .witness_bundle()
+                .canonical_product_oracle_bytes(&bucket.shape)
+                .expect("canonical product oracle bytes")
+                .len(),
+            proof.num_vars,
+            semantic_v2.v2_layout.semantic_column_count,
+            semantic_v2.v2_layout.residual_family_count,
+            profile.total_len,
+            profile.equality.len,
+            profile.poseidon_r1cs.len,
+            profile.ajtai_opening.len,
+            profile.original_r1cs.len,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("prove_semantic_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::prove_typed_batched_cp(
+                        black_box(&pk),
+                        black_box(&public),
+                        black_box(&witness),
+                    )
+                    .expect("SYMBTC2 semantic WHIR proof candidate must be produced"),
+                );
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("verify_semantic_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::verify_typed_batched_cp(
+                        black_box(&vk),
+                        black_box(&public),
+                        black_box(&proof),
+                    )
+                    .unwrap_or(false),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_semantic_columnar_v2_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_semantic_columnar_v2_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_semantic_columnar_v2_vs_k");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    for k in public_verify_ks() {
+        let (prover, r1cs, bucket) = batched_cp_columnar_dev_fixture(k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let columnar_v2 = bucket.shape.semantic_columnar_v2_relation_description(
+            &prover.ajtai,
+            &r1cs,
+            prover.params.b_input(),
+        );
+        let relation = columnar_v2.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let proof = <WhirSnark as CpBackend>::prove_typed_batched_cp(&pk, &public, &witness)
+            .expect("SYMBTC2 columnar WHIR proof skeleton must be produced");
+        let verify_ok = <WhirSnark as CpBackend>::verify_typed_batched_cp(&vk, &public, &proof)
+            .unwrap_or(false);
+        assert!(
+            verify_ok,
+            "SYMBTC2 columnar WHIR proof skeleton must verify for k={k}"
+        );
+        let opening_profile = whir_typed_batched_cp_columnar_v2_private_opening_profile(
+            &vk.seed,
+            &vk.relation,
+            &public,
+        )
+        .expect("SYMBT2C opening profile");
+        let residual_profile = opening_profile
+            .families
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{:?}:residuals={},checks={},evals={}",
+                    entry.family,
+                    entry.residual_count,
+                    entry.sampled_check_count,
+                    entry.section.len
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        eprintln!(
+            "[batched_cp_semantic_columnar_v2_vs_k k={k}] verify={} proof_bytes={} \
+             public_statement_bytes={} semantic_columns={} column_rows={} residuals={} \
+             private_openings={} whir_num_vars={} residual_profile={}",
+            verify_ok,
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            columnar_v2.columnar_layout.columns.len(),
+            columnar_v2.columnar_layout.column_row_count,
+            columnar_v2.columnar_layout.residuals.len(),
+            proof.private_opening_evals.len(),
+            proof.num_vars,
+            residual_profile,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("prove_columnar_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::prove_typed_batched_cp(
+                        black_box(&pk),
+                        black_box(&public),
+                        black_box(&witness),
+                    )
+                    .expect("SYMBTC2 columnar WHIR proof skeleton must be produced"),
+                );
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("verify_columnar_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::verify_typed_batched_cp(
+                        black_box(&vk),
+                        black_box(&public),
+                        black_box(&proof),
+                    )
+                    .unwrap_or(false),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_semantic_columnar_poseidon_v2_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_semantic_columnar_poseidon_v2_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_semantic_columnar_poseidon_v2_vs_k");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    for k in public_verify_ks() {
+        let (prover, r1cs, bucket) = batched_cp_columnar_poseidon_dev_fixture(k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let columnar_v2 = bucket.shape.semantic_columnar_v2_relation_description(
+            &prover.ajtai,
+            &r1cs,
+            prover.params.b_input(),
+        );
+        let relation = columnar_v2.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let proof = <WhirSnark as CpBackend>::prove_typed_batched_cp(&pk, &public, &witness)
+            .expect("SYMBT2C Poseidon columnar WHIR proof skeleton must be produced");
+        let verify_ok = <WhirSnark as CpBackend>::verify_typed_batched_cp(&vk, &public, &proof)
+            .unwrap_or(false);
+        assert!(
+            verify_ok,
+            "SYMBT2C Poseidon columnar WHIR proof skeleton must verify for k={k}"
+        );
+        let opening_profile = whir_typed_batched_cp_columnar_v2_private_opening_profile(
+            &vk.seed,
+            &vk.relation,
+            &public,
+        )
+        .expect("SYMBT2C Poseidon opening profile");
+        let residual_profile = opening_profile
+            .families
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{:?}:residuals={},checks={},evals={}",
+                    entry.family,
+                    entry.residual_count,
+                    entry.sampled_check_count,
+                    entry.section.len
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        eprintln!(
+            "[batched_cp_semantic_columnar_poseidon_v2_vs_k k={k}] verify={} proof_bytes={} \
+             public_statement_bytes={} semantic_columns={} column_rows={} residuals={} \
+             private_openings={} whir_num_vars={} residual_profile={}",
+            verify_ok,
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            columnar_v2.columnar_layout.columns.len(),
+            columnar_v2.columnar_layout.column_row_count,
+            columnar_v2.columnar_layout.residuals.len(),
+            proof.private_opening_evals.len(),
+            proof.num_vars,
+            residual_profile,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("prove_columnar_poseidon_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::prove_typed_batched_cp(
+                        black_box(&pk),
+                        black_box(&public),
+                        black_box(&witness),
+                    )
+                    .expect("SYMBT2C Poseidon columnar WHIR proof skeleton must be produced"),
+                );
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("verify_columnar_poseidon_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::verify_typed_batched_cp(
+                        black_box(&vk),
+                        black_box(&public),
+                        black_box(&proof),
+                    )
+                    .unwrap_or(false),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_semantic_family_columnar_v2_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_semantic_family_columnar_v2_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/batched_cp_semantic_family_columnar_v2_vs_k");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    for k in public_verify_ks() {
+        let (prover, r1cs, bucket) = batched_cp_columnar_dev_fixture(k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let family_v2 = bucket
+            .shape
+            .semantic_family_columnar_v2_relation_description(
+                &prover.ajtai,
+                &r1cs,
+                prover.params.b_input(),
+            );
+        let relation = family_v2.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let proof = <WhirSnark as CpBackend>::prove_typed_batched_cp(&pk, &public, &witness)
+            .expect("SYMBT2F WHIR proof skeleton must be produced");
+        let (verify_ok, cache_stats) =
+            whir_typed_batched_cp_family_columnar_v2_verify_with_cache_stats(&vk, &public, &proof)
+                .expect("SYMBT2F cache stats");
+        assert!(
+            verify_ok,
+            "SYMBT2F WHIR proof skeleton must verify for k={k}"
+        );
+        let unique_num_vars = proof
+            .family_columnar_subproofs
+            .iter()
+            .map(|subproof| subproof.num_vars)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let opening_profile = whir_typed_batched_cp_family_columnar_v2_private_opening_profile(
+            &vk.seed,
+            &vk.relation,
+            &public,
+        )
+        .expect("SYMBT2F opening profile");
+        let residual_profile = opening_profile
+            .families
+            .iter()
+            .zip(&family_v2.family_layout.tables)
+            .map(|(entry, table)| {
+                format!(
+                    "{:?}:rows={},padded_rows={},num_vars={},subproof={:?},checks={},evals={}",
+                    entry.family,
+                    table.row_count,
+                    entry.padded_row_count.unwrap_or(table.padded_row_count),
+                    entry.num_vars.unwrap_or_else(|| {
+                        (table.column_kinds.len() * table.padded_row_count)
+                            .next_power_of_two()
+                            .max(2)
+                            .trailing_zeros() as usize
+                    }),
+                    entry.subproof_index,
+                    entry.sampled_check_count,
+                    entry.section.len
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let max_table_num_vars = family_v2
+            .family_layout
+            .tables
+            .iter()
+            .map(|table| {
+                (table.column_kinds.len() * table.padded_row_count)
+                    .next_power_of_two()
+                    .max(2)
+                    .trailing_zeros() as usize
+            })
+            .max()
+            .unwrap_or(0);
+        let top_tables = top_family_columnar_tables(&family_v2.family_layout.tables);
+        let family_attribution = family_columnar_attribution_profile(
+            &family_v2.family_layout.tables,
+            &opening_profile,
+            &proof,
+        );
+        eprintln!(
+            "[batched_cp_semantic_family_columnar_v2_vs_k k={k}] verify={} proof_bytes={} \
+             public_statement_bytes={} family_tables={} total_family_fields={} \
+             family_subproofs={} unique_num_vars={} infra_cache_hits={} infra_cache_misses={} \
+             private_openings={} max_table_num_vars={} top_tables={} family_attribution={} \
+             residual_profile={}",
+            verify_ok,
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            family_v2.family_layout.tables.len(),
+            family_v2.family_layout.total_field_len,
+            proof.family_columnar_subproofs.len(),
+            unique_num_vars,
+            cache_stats.hits,
+            cache_stats.misses,
+            proof.private_opening_evals.len(),
+            max_table_num_vars,
+            top_tables,
+            family_attribution,
+            residual_profile,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("prove_family_columnar_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::prove_typed_batched_cp(
+                        black_box(&pk),
+                        black_box(&public),
+                        black_box(&witness),
+                    )
+                    .expect("SYMBT2F WHIR proof skeleton must be produced"),
+                );
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("verify_family_columnar_v2", k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::verify_typed_batched_cp(
+                        black_box(&vk),
+                        black_box(&public),
+                        black_box(&proof),
+                    )
+                    .unwrap_or(false),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_batched_cp_semantic_family_columnar_poseidon_v2_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/batched_cp_semantic_family_columnar_poseidon_v2_vs_k")
+    {
+        return;
+    }
+    let mut group =
+        c.benchmark_group("whir_scaling/batched_cp_semantic_family_columnar_poseidon_v2_vs_k");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(5));
+
+    for k in public_verify_ks() {
+        let (prover, r1cs, bucket) = batched_cp_columnar_poseidon_dev_fixture(k);
+        let public = bucket.public_statement();
+        let witness = bucket.witness_bundle();
+        let family_v2 = bucket
+            .shape
+            .semantic_family_columnar_v2_relation_description(
+                &prover.ajtai,
+                &r1cs,
+                prover.params.b_input(),
+            );
+        let relation = family_v2.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let proof = <WhirSnark as CpBackend>::prove_typed_batched_cp(&pk, &public, &witness)
+            .expect("SYMBT2F Poseidon WHIR proof skeleton must be produced");
+        let (verify_ok, cache_stats) =
+            whir_typed_batched_cp_family_columnar_v2_verify_with_cache_stats(&vk, &public, &proof)
+                .expect("SYMBT2F Poseidon cache stats");
+        assert!(
+            verify_ok,
+            "SYMBT2F Poseidon WHIR proof skeleton must verify for k={k}"
+        );
+        let unique_num_vars = proof
+            .family_columnar_subproofs
+            .iter()
+            .map(|subproof| subproof.num_vars)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let opening_profile = whir_typed_batched_cp_family_columnar_v2_private_opening_profile(
+            &vk.seed,
+            &vk.relation,
+            &public,
+        )
+        .expect("SYMBT2F Poseidon opening profile");
+        let residual_profile = opening_profile
+            .families
+            .iter()
+            .zip(&family_v2.family_layout.tables)
+            .map(|(entry, table)| {
+                format!(
+                    "{:?}:rows={},padded_rows={},num_vars={},subproof={:?},checks={},evals={}",
+                    entry.family,
+                    table.row_count,
+                    entry.padded_row_count.unwrap_or(table.padded_row_count),
+                    entry.num_vars.unwrap_or_else(|| {
+                        (table.column_kinds.len() * table.padded_row_count)
+                            .next_power_of_two()
+                            .max(2)
+                            .trailing_zeros() as usize
+                    }),
+                    entry.subproof_index,
+                    entry.sampled_check_count,
+                    entry.section.len
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let max_table_num_vars = family_v2
+            .family_layout
+            .tables
+            .iter()
+            .map(|table| {
+                (table.column_kinds.len() * table.padded_row_count)
+                    .next_power_of_two()
+                    .max(2)
+                    .trailing_zeros() as usize
+            })
+            .max()
+            .unwrap_or(0);
+        let top_tables = top_family_columnar_tables(&family_v2.family_layout.tables);
+        let family_attribution = family_columnar_attribution_profile(
+            &family_v2.family_layout.tables,
+            &opening_profile,
+            &proof,
+        );
+        eprintln!(
+            "[batched_cp_semantic_family_columnar_poseidon_v2_vs_k k={k}] verify={} proof_bytes={} \
+             public_statement_bytes={} family_tables={} total_family_fields={} \
+             family_subproofs={} unique_num_vars={} infra_cache_hits={} infra_cache_misses={} \
+             private_openings={} max_table_num_vars={} top_tables={} family_attribution={} \
+             residual_profile={}",
+            verify_ok,
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            family_v2.family_layout.tables.len(),
+            family_v2.family_layout.total_field_len,
+            proof.family_columnar_subproofs.len(),
+            unique_num_vars,
+            cache_stats.hits,
+            cache_stats.misses,
+            proof.private_opening_evals.len(),
+            max_table_num_vars,
+            top_tables,
+            family_attribution,
+            residual_profile,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(
+            BenchmarkId::new("prove_family_columnar_poseidon_v2", k),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        <WhirSnark as CpBackend>::prove_typed_batched_cp(
+                            black_box(&pk),
+                            black_box(&public),
+                            black_box(&witness),
+                        )
+                        .expect("SYMBT2F Poseidon WHIR proof skeleton must be produced"),
+                    );
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("verify_family_columnar_poseidon_v2", k),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        <WhirSnark as CpBackend>::verify_typed_batched_cp(
+                            black_box(&vk),
+                            black_box(&public),
+                            black_box(&proof),
+                        )
+                        .unwrap_or(false),
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
 // ---------------------------------------------------------------------------
 
 criterion_group!(
@@ -1024,5 +2182,14 @@ criterion_group!(
     bench_typed_cp_verify_only_vs_k,
     bench_typed_output_verify_only_vs_k,
     bench_public_proof_size_vs_k,
+    bench_batched_cp_shape_profile_vs_k,
+    bench_batched_cp_verify_only_vs_k,
+    bench_batched_cp_product_oracle_whir_vs_k,
+    bench_batched_cp_semantic_whir_v2_vs_k,
+    bench_batched_cp_semantic_columnar_v2_vs_k,
+    bench_batched_cp_semantic_columnar_poseidon_v2_vs_k,
+    bench_batched_cp_semantic_family_columnar_v2_vs_k,
+    bench_batched_cp_semantic_family_columnar_poseidon_v2_vs_k,
+    bench_public_proof_batched_cp_size_vs_k,
 );
 criterion_main!(benches);

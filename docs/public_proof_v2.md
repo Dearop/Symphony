@@ -89,16 +89,17 @@ ordering, versioning, and length delimiting. Decoders must reject unknown
 versions, unknown digest schemes, truncated fields, integer-length overflows,
 and trailing bytes.
 
-WHIR proof payloads are also versioned. Version 1 starts with the fixed magic
+WHIR proof payloads are also versioned. Version 2 starts with the fixed magic
 bytes `SYMWHPF\0`, followed by the WHIR payload version, proof kind, sumcheck
-rounds, public BabyBear evaluations, linear-check proof data, and a
+rounds, public BabyBear evaluations, linear-check proof data, private opening
+evaluations, optional development-only SYMBT2F family subproof payloads, and a
 length-delimited upstream WHIR PCS proof serialization. These bytes are produced
 by `canonical_whir_proof_bytes`, decoded by
 `whir_proof_from_canonical_bytes`, and are the canonical payloads to place in
 the public envelope's `cp_proof_bytes` and `output_proof_bytes` fields for
 WHIR.
 
-The golden version-1 WHIR public envelope fixture is:
+The golden version-2 WHIR public envelope fixture is:
 
 ```text
 tests/fixtures/public_proof_v2_whir_minimal.hex

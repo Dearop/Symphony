@@ -48,6 +48,22 @@ pub trait CpBackend {
         statement: &crate::cp_relation_core::CpPublicStatement,
         proof: &Self::Proof,
     ) -> Option<bool>;
+    fn typed_batched_cp_relation_description(
+        shape: &crate::batched_cp::BatchedCpStatementShape,
+    ) -> Option<RelationDescription> {
+        let _ = shape;
+        None
+    }
+    fn prove_typed_batched_cp(
+        pk: &Self::ProvingKey,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+        witness: &crate::batched_cp::BatchedCpWitnessBundle,
+    ) -> Option<Self::Proof>;
+    fn verify_typed_batched_cp(
+        vk: &Self::VerifyingKey,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+        proof: &Self::Proof,
+    ) -> Option<bool>;
 }
 
 impl<T: BackendSnark> CpBackend for T {
@@ -105,5 +121,27 @@ impl<T: BackendSnark> CpBackend for T {
         proof: &Self::Proof,
     ) -> Option<bool> {
         T::verify_typed_cp(vk, statement, proof)
+    }
+
+    fn typed_batched_cp_relation_description(
+        shape: &crate::batched_cp::BatchedCpStatementShape,
+    ) -> Option<RelationDescription> {
+        T::typed_batched_cp_relation_description(shape)
+    }
+
+    fn prove_typed_batched_cp(
+        pk: &Self::ProvingKey,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+        witness: &crate::batched_cp::BatchedCpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        T::prove_typed_batched_cp(pk, statement, witness)
+    }
+
+    fn verify_typed_batched_cp(
+        vk: &Self::VerifyingKey,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        T::verify_typed_batched_cp(vk, statement, proof)
     }
 }

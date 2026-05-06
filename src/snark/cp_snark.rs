@@ -50,5 +50,6 @@ pub use typed_r1cs::{
     typed_cp_digest_input_lengths_from_setup, OriginalStatementR1csLayout,
     Poseidon2DigestR1csLayout, Poseidon2PrivateDigestR1csLayout, TypedCpAuditBlock,
     TypedCpAuditBlockKind, TypedCpAuditReport, TypedCpDigestBlockLayout, TypedCpDigestInputLengths,
-    TypedCpDigestR1csLayout, TypedCpPartialR1csLayout, TypedCpStatementR1csLayout,
+    TypedCpDigestR1csLayout, TypedCpPartialR1csLayout, TypedCpSplitComponent,
+    TypedCpStatementR1csLayout,
 };

@@ -278,11 +278,15 @@ The printed profiling fields are:
 | `typed_cp_public_inputs` | Number of public BabyBear slots in the typed CP R1CS |
 | `typed_cp_witness_variables` | Number of private BabyBear witness slots in the typed CP R1CS |
 | `typed_cp_rows` | Number of typed CP R1CS constraints |
+| `compressed_typed_cp_public_inputs` | Number of public BabyBear slots in the compressed-FS development typed CP R1CS |
+| `compressed_typed_cp_witness_variables` | Number of private BabyBear witness slots in the compressed-FS development typed CP R1CS |
+| `compressed_typed_cp_rows` | Number of constraints in the compressed-FS development typed CP R1CS |
 | `typed_cp_whir_num_vars` | WHIR multilinear variable count for the typed CP proof |
 | `cp_proof_bytes` | Canonical WHIR CP proof payload bytes |
 | `output_proof_bytes` | Canonical WHIR typed-output proof payload bytes |
 | `public_envelope_bytes` | Versioned public proof envelope bytes |
 | `audit_rows` | Row totals by `TypedCpAuditBlockKind` |
+| `split_rows` | Row totals attributed to the planned typed CP leaf, accumulator, and leaf/accumulator binding components |
 
 Optional component benchmark groups are also available:
 `typed_cp_prove_only_vs_k`, `typed_cp_verify_only_vs_k`,
@@ -407,7 +411,178 @@ but the CP proof still proves a relation whose rows grow with
 The current optimization target is documented in
 [`whir_public_performance_north_star_plan.md`](whir_public_performance_north_star_plan.md):
 compress the public boundary first, then replace the monolithic linear typed CP
-proof with a leaf/accumulator or recursive aggregation architecture.
+proof with a same-shape structured batched CP relation.
+
+The typed CP audit report now classifies every row into the planned split
+architecture components:
+
+- `Leaf`: per-statement FS commitment opening/message checks, GR1CS message
+  reconstruction, range/monomial semantics, Ajtai opening validity, and
+  original R1CS validity.
+- `Accumulator`: CP folding core, root/digest checks, challenge-to-beta
+  binding, folded-output derivation, public input/R1CS metadata binding, and
+  per-round challenge transcript checks.
+- `LeafAccumulatorBinding`: rows that explicitly tie leaf-origin bytes to
+  accumulator bodies, such as FS-message/fold-root byte equality.
+
+This classification is profiling only. The product verifier still checks one
+authoritative monolithic typed CP proof until the P3/P4 structured batched CP
+proof path is implemented.
+
+For the current default `k = 1` public fixture, the split attribution is:
+
+| Planned component | Rows |
+|---|---:|
+| Leaf | 523,374 |
+| Accumulator | 577,117 |
+| Leaf/accumulator binding | 15,712 |
+
+The structured batched CP work now has a non-authoritative `SYMBTC1` relation
+context for same-shape batches. That context carries the shape id, product
+domain size, public statement byte size, witness-oracle row length, and
+per-round message-oracle lengths. It deliberately reports zero R1CS
+constraints so it cannot be confused with a flattened/appended typed CP R1CS.
+There is also a non-authoritative semantic relation description for the next
+P4 step. It binds the same shape to typed product-oracle byte ranges, an Ajtai
+parameter digest plus indexed Ajtai matrix, an original R1CS matrix digest, the
+input bound, and the semantic constraint families that a future WHIR
+structured-constraint verifier must enforce: Poseidon digest correctness,
+manifest membership, round-message binding, challenge derivation,
+challenge-to-beta binding, folded-output derivation, Ajtai opening validity,
+original R1CS validity, and active padding policy. WHIR now consumes this
+semantic description through a structured block interface. The currently
+enabled blocks are manifest membership, challenge-derivation body binding,
+challenge-to-beta binding, folded-output accumulator body binding, sampled
+Ajtai opening equations, sampled original R1CS equations, round-message
+binding, and active padding policy: sampled typed product-oracle byte-equality
+constraints bind manifest item
+tags/public statements to the typed witness rows; public packed-value
+constraints bind the batch challenge body to the public shape, manifest digest,
+round-message commitments, WHIR parameter digest, and batch dimensions; another
+public packed-value block binds the challenge digest to its canonical base-5
+beta ring element; the folded-output block binds each active item's folded
+output contribution in the typed witness row to the folded-output accumulator
+body, checks that the public `x_folded` copy equals the folded instance
+embedded in the item's `FoldedOutputInstance`, and binds that accumulator body
+to the public accumulator-root bytes; the same block now duplicates each active
+item's `FoldInput` fields in a fold-input
+reconstruction body and checks that commitment bytes, public-input bytes, and
+GR1CS eval-message bytes agree with the typed witness row, with the eval
+message also tied to the corresponding `M_i(T,U_i)` row. The same structured
+round-message block now exposes the witness-row FS message ranges and samples
+equalities tying those bytes to the corresponding `M_i(T,U_i)` row; FS opening
+ranges are also typed in the product-oracle layout. The
+`PoseidonDigestCorrectness` block now includes a canonical
+`fs-commit` body section with `len(message) || message || opening`, and samples
+equalities tying that body back to the witness-row FS message/opening ranges.
+For Poseidon2/BabyBear shapes, the product oracle also carries private
+Poseidon trace columns for each FS commitment: digest output limbs, canonical
+Poseidon input limbs, and the x^7 S-box auxiliary values used by the same
+private-digest R1CS gadget as monolithic typed CP. WHIR samples rows from that
+Poseidon private-digest R1CS's full row domain and checks `A(z) * B(z) = C(z)`
+over opened trace variables, while byte equalities bind the trace output limbs
+to the FS commitment bytes. This removes the earlier first/last-row candidate
+surface and gives the Poseidon block a proximity-style full-domain challenge
+surface, but it is still sampled development coverage rather than complete
+authoritative hash proof composition. For
+Poseidon2/BabyBear shapes, the product-oracle layout exposes folded
+public-input, folded commitment, and folded Hadamard-evaluation algebra offsets,
+and a BabyBear-modulus regression checks those offsets directly against the
+canonical oracle bytes. The WHIR sampled-opening path now samples those folded
+public-input, commitment, and evaluation algebra constraints as part of the
+non-authoritative SYMBTC1 proof, but this sampled development coverage is not
+counted as semantic authority. Sampled byte
+equalities bind `M_i(T,U_i)` round-message rows to
+their duplicated digest-body bytes; and active-marker equalities bind each
+witness/message/digest-body row to the manifest marker for the same batch item.
+The `AjtaiOpeningValidity` block samples original commitment-opening equations
+over the indexed Ajtai matrix: for each sampled `(item, original statement,
+Ajtai row, ring coefficient)`, WHIR opens the public-input scalars,
+original-witness ring coefficients, and commitment coefficient from the product
+oracle and checks the BabyBear cyclotomic equation `A_row * [x || w] = c`.
+The `OriginalR1csValidity` block samples source-R1CS equations from the same
+product oracle: for each sampled `(item, original statement, R1CS row, ring
+coefficient)`, WHIR opens assignment coefficients and checks
+`(Az) * (Bz) = Cz` over BabyBear, with public inputs interpreted as constant
+ring elements. Poseidon digest correctness has sampled full-row-domain R1CS
+coverage for FS commitments, Ajtai opening validity has sampled linear opening
+coverage, and original R1CS validity now has sampled source-relation coverage,
+but this is still sampled development coverage rather than complete
+proximity-style semantic authority over the whole committed oracle. Current
+product public routing does not consume this batched path.
+
+The P4 candidate has a separate `SYMBTC2` relation context. `SYMBTC2` wraps the
+semantic relation with an explicit versioned layout and WHIR treats it as a
+full-selection structured candidate: all currently exposed semantic equalities,
+public packed-value claims, folded-output algebra equations, Poseidon
+private-digest R1CS rows, Ajtai opening equations, and original source-R1CS
+equations are selected instead of sampled. The context still reports
+`num_constraints = 0` and is still not a flattened/appended typed CP R1CS. This
+path is intentionally development-only and currently expensive; it is useful for
+auditing coverage and for the `batched_cp_semantic_whir_v2_vs_k` benchmark, but
+it is not promoted to product public routing.
+
+There is also a first columnar SYMBTC2 skeleton under the `SYMBT2C` context.
+This path commits to a typed semantic table and checks bounded residual openings
+for `ActiveOrDummyPolicy`, `ManifestMembership`, `RoundMessageBinding`,
+`ChallengeDerivation`, `ChallengeToBetaBinding`, `PoseidonDigestCorrectness`,
+`FoldedOutputDerivation`, `AjtaiOpeningValidity`, and
+`OriginalR1csValidity` when the selected shape has non-empty constraints for
+those families. Equality-style checks use two-column residuals; Poseidon and
+original-R1CS checks use product residuals `a * b = c`. This remains a
+development-only sampled/proximity candidate and is not promoted to product
+public routing. Audit and benchmark tooling can derive a SYMBT2C
+private-opening profile that maps proof eval spans back to residual families;
+this is used for targeted negative tests and performance reporting only, not as
+public verifier input. The default `batched_cp_semantic_columnar_v2_vs_k`
+benchmark uses a fast SHA-shaped same-shape CP fixture for this development
+profile; Poseidon/BabyBear-specific columnar semantics remain in focused tests
+and in the separate `batched_cp_semantic_columnar_poseidon_v2_vs_k` benchmark,
+which defaults to `k = 1` and instantiates all nine residual families. The
+Poseidon/BabyBear SYMBT2C WHIR proof-profile test passes but is ignored by
+default because it is a heavy audit path.
+
+`SYMBT2F` is the family-local columnar successor to the rectangular `SYMBT2C`
+baseline. It preserves the same residual equations and exact-byte
+Poseidon2/BabyBear semantics, but semantic families now produce one or more
+compact labeled tables, each with its own row domain and internal WHIR PCS
+subproof. The dominant-domain split partitions `RoundMessageBinding` by CP
+round and byte-binding direction, and partitions `FoldedOutputDerivation` into
+contribution binding, self-consistency, fold-input reconstruction, and folded
+linear/ring-mul equation tables. This reduces the largest local table from
+`num_vars = 19` to `num_vars = 17`, while increasing the number of internal
+development subproofs.
+
+The message-section shrink further partitions round-message and fold-input
+round-message reconstruction equalities by canonical GR1CS message section:
+`header`, `hadamard-evals`, `range-payload`, `monomial-payload`,
+`square-evals`, `projected-values`, and `trailing-frame`. Any section exceeding
+`8192` rows is split into stable chunk tables. This caps the targeted
+two-column message equality tables at `num_vars <= 14`; the current overall
+maximum is `num_vars = 16`, from manifest membership and folded-output
+contribution binding. Benchmark output includes a `family_attribution` profile
+that reports subproof count, approximate proof bytes, query proxies, row
+counts, and max `num_vars` per semantic family. Current measurements show that
+`RoundMessageBinding` and `FoldedOutputDerivation` dominate proof size and
+subproof count, so the next P4 performance lever is shared family-level WHIR
+verification or multi-proof aggregation, not more blind table splitting. This
+is still a development-only, non-authoritative path. Product public
+verification still uses the authoritative monolithic typed CP route.
+WHIR can now prove and verify a `SYMBTC1` product-domain oracle proof for this
+context: one WHIR commitment to the canonical batch oracle and one
+transcript-bound opening, plus openings for all verifier-known packed oracle
+chunks. Those public chunks cover the oracle domain tags, shape/context bytes,
+indices, active markers, inactive padding lengths, round framing,
+round-message digest-body framing, manifest digest-body framing, batch
+challenge digest-body framing, the concrete public manifest digest, concrete
+public round-message commitments, and final length sentinel. This is
+deliberately not CP-authoritative yet; it binds the product-domain oracle and
+its public framing and enforces sampled byte equality between selected
+structured byte ranges, including round-message oracle rows and folded-output
+accumulator body contributions, and sampled Poseidon private-digest R1CS rows
+for FS commitment traces. It does not enforce the full structured CP predicate
+or complete Poseidon hash authority over that oracle. Product public
+verification therefore still uses the authoritative monolithic typed CP proof.
 
 ---
 

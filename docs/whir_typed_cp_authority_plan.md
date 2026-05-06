@@ -270,12 +270,12 @@ Milestone A status: implemented. The repository now defines
 `PUBLIC_PROOF_ENVELOPE_VERSION = 1` and a canonical `SYMPUB2\0` public proof
 envelope for public fields plus length-delimited backend proof payloads. The
 envelope round-trips and rejects unknown versions, unknown digest schemes,
-truncation, and trailing bytes. WHIR defines `WHIR_PROOF_PAYLOAD_VERSION = 1`,
+truncation, and trailing bytes. WHIR defines `WHIR_PROOF_PAYLOAD_VERSION = 2`,
 `canonical_whir_proof_bytes`, and `whir_proof_from_canonical_bytes` for the
 backend-owned CP/output proof payloads placed inside the public envelope.
 
 The reviewed golden fixture is
-`tests/fixtures/public_proof_v2_whir_minimal.hex`. It freezes the version-1
+`tests/fixtures/public_proof_v2_whir_minimal.hex`. It freezes the version-2
 WHIR+WHIR public envelope wire format with canonical WHIR CP/output payloads.
 The fixture is deterministic and intentionally synthetic; live public WHIR
 proving still uses randomized FS openings. The live WHIR+WHIR integration test

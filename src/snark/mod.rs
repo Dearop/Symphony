@@ -167,6 +167,36 @@ pub trait BackendSnark {
         None
     }
 
+    /// Optional structured batched typed-CP relation description.
+    ///
+    /// This P3/P4 hook is intentionally separate from the authoritative
+    /// monolithic typed CP path. Returning `Some` here must not affect product
+    /// public routing until the structured WHIR path has equivalent negative
+    /// coverage and is explicitly promoted.
+    fn typed_batched_cp_relation_description(
+        _shape: &crate::batched_cp::BatchedCpStatementShape,
+    ) -> Option<RelationDescription> {
+        None
+    }
+
+    /// Optional structured batched typed-CP proving path.
+    fn prove_typed_batched_cp(
+        _pk: &Self::ProvingKey,
+        _statement: &crate::batched_cp::BatchedCpPublicStatement,
+        _witness: &crate::batched_cp::BatchedCpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        None
+    }
+
+    /// Optional structured batched typed-CP verification path.
+    fn verify_typed_batched_cp(
+        _vk: &Self::VerifyingKey,
+        _statement: &crate::batched_cp::BatchedCpPublicStatement,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        None
+    }
+
     /// Optional typed folded-output proving path.
     fn prove_typed_output(
         _pk: &Self::ProvingKey,

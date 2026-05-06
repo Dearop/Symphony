@@ -6,7 +6,7 @@ pub mod generalized;
 use crate::ring::arith::centered_mod;
 
 /// Sparse matrix in COO (coordinate) format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SparseMatrix {
     /// (row, col, value) triples.
     pub entries: Vec<(usize, usize, i64)>,
@@ -71,7 +71,7 @@ impl SparseMatrix {
 /// An R1CS instance is satisfiable iff:
 /// (M_1 · z) ∘ (M_2 · z) = M_3 · z
 /// where z = (x, w) is the full assignment (public input x, witness w).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct R1CSMatrices {
     /// Matrix M_1 (typically called A).
     pub a: SparseMatrix,

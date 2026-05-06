@@ -217,6 +217,13 @@ pub enum TypedCpAuditBlockKind {
     PublicInputBinding,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TypedCpSplitComponent {
+    Leaf,
+    Accumulator,
+    LeafAccumulatorBinding,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedCpAuditBlock {
     pub kind: TypedCpAuditBlockKind,
@@ -224,6 +231,48 @@ pub struct TypedCpAuditBlock {
     pub start_row: usize,
     pub row_count: usize,
     pub cp_field_relation_checks: Vec<String>,
+}
+
+impl TypedCpAuditBlock {
+    pub fn split_component(&self) -> TypedCpSplitComponent {
+        match self.kind {
+            TypedCpAuditBlockKind::AjtaiOpeningChecks
+            | TypedCpAuditBlockKind::OriginalR1csValidity
+            | TypedCpAuditBlockKind::RangeMonomialSemantics => TypedCpSplitComponent::Leaf,
+            TypedCpAuditBlockKind::CpFoldingCore
+            | TypedCpAuditBlockKind::ChallengeToBetaBinding
+            | TypedCpAuditBlockKind::FoldedOutputDerivation
+            | TypedCpAuditBlockKind::PublicInputBinding => TypedCpSplitComponent::Accumulator,
+            TypedCpAuditBlockKind::PoseidonDigestGadgets => {
+                if self.label.contains("fs-commit") {
+                    TypedCpSplitComponent::Leaf
+                } else {
+                    TypedCpSplitComponent::Accumulator
+                }
+            }
+            TypedCpAuditBlockKind::Gr1csMessageReconstruction => {
+                if self.label.contains("fs-message-fold-root-byte-equality") {
+                    TypedCpSplitComponent::LeafAccumulatorBinding
+                } else {
+                    TypedCpSplitComponent::Leaf
+                }
+            }
+            TypedCpAuditBlockKind::ByteConstraints => {
+                if self.label.contains("fs-commit") {
+                    TypedCpSplitComponent::Leaf
+                } else if self.label.contains("fs-root")
+                    || self.label.contains("fold-root")
+                    || self.label.contains("challenge")
+                    || self.label.contains("transcript")
+                    || self.label.contains("structured")
+                {
+                    TypedCpSplitComponent::Accumulator
+                } else {
+                    TypedCpSplitComponent::LeafAccumulatorBinding
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +336,25 @@ impl TypedCpAuditReport {
             .filter(|block| block.kind == kind)
             .map(|block| block.row_count)
             .sum()
+    }
+
+    pub fn row_count_by_split_component(&self, component: TypedCpSplitComponent) -> usize {
+        self.blocks
+            .iter()
+            .filter(|block| block.split_component() == component)
+            .map(|block| block.row_count)
+            .sum()
+    }
+
+    pub fn split_row_counts(&self) -> Vec<(TypedCpSplitComponent, usize)> {
+        [
+            TypedCpSplitComponent::Leaf,
+            TypedCpSplitComponent::Accumulator,
+            TypedCpSplitComponent::LeafAccumulatorBinding,
+        ]
+        .into_iter()
+        .map(|component| (component, self.row_count_by_split_component(component)))
+        .collect()
     }
 
     pub fn unsatisfied_blocks(
@@ -1711,7 +1779,10 @@ fn generate_typed_cp_digest_r1cs_with_audit_mode(
         row_offset += block_r1cs.num_constraints;
         audit.push(
             TypedCpAuditBlockKind::PoseidonDigestGadgets,
-            format!("poseidon-digest-gadget-{idx}"),
+            format!(
+                "poseidon-digest-gadget-{}-{idx}",
+                String::from_utf8_lossy(domain)
+            ),
             start,
             row_offset,
             &["Poseidon2/BabyBear digest correctness"],
@@ -1746,10 +1817,10 @@ fn generate_typed_cp_digest_r1cs_with_audit_mode(
     );
     audit.push(
         TypedCpAuditBlockKind::ByteConstraints,
-        "fs-root-public-commitment-limb-binding",
+        "fs-root-commitment-limb-binding",
         start,
         row_offset,
-        &["FS root binds public FS commitments"],
+        &["FS root binds FS commitment digest outputs"],
     );
     let mut audit_ref = Some(&mut audit);
     row_offset = insert_structured_digest_body_constraints(
@@ -7244,6 +7315,33 @@ mod tests {
                 (TypedCpAuditBlockKind::PublicInputBinding, 99),
             ]
         );
+    }
+
+    #[test]
+    fn typed_cp_audit_report_classifies_leaf_and_accumulator_rows() {
+        let fixture = typed_cp_digest_range_shape_fixture();
+        let split_rows = fixture.audit.split_row_counts();
+        let total_split_rows: usize = split_rows.iter().map(|(_, rows)| *rows).sum();
+        assert_eq!(total_split_rows, fixture.audit.num_constraints);
+        for component in [
+            TypedCpSplitComponent::Leaf,
+            TypedCpSplitComponent::Accumulator,
+            TypedCpSplitComponent::LeafAccumulatorBinding,
+        ] {
+            assert!(
+                fixture.audit.row_count_by_split_component(component) > 0,
+                "{component:?} must have at least one row"
+            );
+        }
+        for block in &fixture.audit.blocks {
+            assert!(
+                split_rows
+                    .iter()
+                    .any(|(component, _)| *component == block.split_component()),
+                "audit block '{}' must be assigned to a split component",
+                block.label
+            );
+        }
     }
 
     #[test]

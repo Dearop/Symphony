@@ -35,6 +35,7 @@ pub mod sumcheck;
 
 // Preserve existing crate-level module paths while keeping implementation grouped.
 pub use modular::adapter_symphony;
+pub use modular::batched_cp;
 pub use modular::cp_backend_api;
 pub use modular::cp_relation_core;
 pub use modular::digest_core;

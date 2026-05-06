@@ -83,7 +83,7 @@ type WhirDft = Radix2DFTSmallBatch<F>;
 
 const DIGEST_ELEMS: usize = 8;
 const WHIR_SECURITY_LEVEL_BITS: usize = 100;
-pub const WHIR_PROOF_PAYLOAD_VERSION: u16 = 1;
+pub const WHIR_PROOF_PAYLOAD_VERSION: u16 = 2;
 const WHIR_PROOF_PAYLOAD_MAGIC: &[u8; 8] = b"SYMWHPF\0";
 
 #[derive(Clone)]
@@ -225,6 +225,77 @@ struct WhirInfra {
     perm: Perm,
 }
 
+struct WhirVerifierInfraEntry {
+    num_variables: usize,
+    infra: WhirInfra,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WhirVerifierInfraCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+}
+
+#[derive(Default)]
+struct WhirVerifierInfraCache {
+    entries: HashMap<usize, WhirVerifierInfraEntry>,
+    stats: WhirVerifierInfraCacheStats,
+}
+
+impl WhirVerifierInfraCache {
+    fn verify_opening_multi(
+        &mut self,
+        seed: &[u8; 32],
+        num_variables: usize,
+        proof: &WhirPcsProof<F, EF, WhirMmcs>,
+        points: &[Vec<BabyBear>],
+        claimed_evals: &[BabyBear],
+    ) -> bool {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.verify_opening_multi_inner(seed, num_variables, proof, points, claimed_evals)
+        }))
+        .unwrap_or(false)
+    }
+
+    fn verify_opening_multi_inner(
+        &mut self,
+        seed: &[u8; 32],
+        num_variables: usize,
+        proof: &WhirPcsProof<F, EF, WhirMmcs>,
+        points: &[Vec<BabyBear>],
+        claimed_evals: &[BabyBear],
+    ) -> bool {
+        if points.len() != claimed_evals.len() {
+            return false;
+        }
+        if points.iter().any(|point| point.len() != num_variables) {
+            return false;
+        }
+        let entry = if self.entries.contains_key(&num_variables) {
+            self.stats.hits += 1;
+            self.entries.get(&num_variables).expect("cache entry")
+        } else {
+            self.stats.misses += 1;
+            let infra = build_whir_infra(seed, num_variables);
+            self.entries.insert(
+                num_variables,
+                WhirVerifierInfraEntry {
+                    num_variables,
+                    infra,
+                },
+            );
+            self.entries
+                .get(&num_variables)
+                .expect("inserted cache entry")
+        };
+        whir_verify_opening_multi_with_entry(entry, proof, points, claimed_evals)
+    }
+
+    fn stats(&self) -> WhirVerifierInfraCacheStats {
+        self.stats
+    }
+}
+
 /// Build WHIR infrastructure deterministically from a seed and polynomial size.
 ///
 /// Both prover and verifier call this with the same arguments to get identical
@@ -305,6 +376,15 @@ pub struct WhirLinearCheckProof {
     pub z_eval: BabyBear,
 }
 
+/// One development-only WHIR PCS subproof for a SYMBT2F family-local table.
+#[derive(Debug, Clone)]
+pub struct WhirFamilyColumnarSubproof {
+    pub table_index: usize,
+    pub num_vars: usize,
+    pub z_eval: BabyBear,
+    pub whir_pcs_proof: WhirPcsProof<F, EF, WhirMmcs>,
+}
+
 /// Proof produced by the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirProof {
@@ -322,10 +402,298 @@ pub struct WhirProof {
     /// Linear checks binding output/CP-R1CS Az, Bz, Cz claims to the same
     /// committed z polynomial.
     pub linear_checks: Vec<WhirLinearCheckProof>,
+    /// Additional private opening evaluations used by structured non-R1CS
+    /// proof paths. For SYMBTC1 these are paired chunk openings whose extracted
+    /// bytes must match across duplicated oracle regions.
+    pub private_opening_evals: Vec<BabyBear>,
+    /// Development-only family-local WHIR PCS subproofs for SYMBT2F.
+    ///
+    /// Product CP/output paths and non-SYMBT2F typed paths must reject proofs
+    /// with this populated.
+    pub family_columnar_subproofs: Vec<WhirFamilyColumnarSubproof>,
     /// Number of sumcheck variables.
     pub num_vars: usize,
     /// Whether this is an output SNARK proof (true) or CP proof (false).
     pub is_output: bool,
+}
+
+/// Private opening slice for one structured batched-CP semantic block.
+///
+/// This is a development/audit helper for the non-authoritative SYMBTC1 path;
+/// it is not part of the public proof format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhirBatchedCpPrivateOpeningSection {
+    pub start: usize,
+    pub len: usize,
+}
+
+impl WhirBatchedCpPrivateOpeningSection {
+    #[must_use]
+    pub const fn end(self) -> usize {
+        self.start + self.len
+    }
+
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Private opening layout for a structured batched-CP WHIR proof.
+///
+/// The sections are ordered exactly as `WhirProof::private_opening_evals`.
+/// This exists so tests and audit tooling can target individual semantic
+/// blocks without relying on hard-coded offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhirBatchedCpPrivateOpeningProfile {
+    pub equality: WhirBatchedCpPrivateOpeningSection,
+    pub folded_public_input: WhirBatchedCpPrivateOpeningSection,
+    pub folded_commitment: WhirBatchedCpPrivateOpeningSection,
+    pub folded_evaluation: WhirBatchedCpPrivateOpeningSection,
+    pub poseidon_r1cs: WhirBatchedCpPrivateOpeningSection,
+    pub ajtai_opening: WhirBatchedCpPrivateOpeningSection,
+    pub original_r1cs: WhirBatchedCpPrivateOpeningSection,
+    pub total_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhirBatchedCpColumnarV2FamilyOpeningProfile {
+    pub family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    pub residual_count: usize,
+    pub sampled_check_count: usize,
+    pub subproof_index: Option<usize>,
+    pub num_vars: Option<usize>,
+    pub padded_row_count: Option<usize>,
+    pub section: WhirBatchedCpPrivateOpeningSection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhirBatchedCpColumnarV2OpeningProfile {
+    pub families: Vec<WhirBatchedCpColumnarV2FamilyOpeningProfile>,
+    pub total_len: usize,
+}
+
+/// Compute the private-opening section layout for a structured typed batched CP proof.
+///
+/// This is a debug/development API only. Product public verification consumes
+/// only the proof and public statement; it must not use this helper.
+pub fn whir_typed_batched_cp_private_opening_profile(
+    seed: &[u8; 32],
+    relation: &RelationDescription,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Option<WhirBatchedCpPrivateOpeningProfile> {
+    let context = relation.context.as_ref()?;
+    let relation = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    if relation.shape() != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return None;
+    }
+    let num_vars = typed_batched_cp_oracle_num_vars(relation.shape());
+
+    let equality_pairs = typed_batched_cp_sampled_equalities(seed, &relation, statement, 64);
+    let equality_len = typed_batched_cp_equality_opening_points(&equality_pairs, num_vars)?.len();
+
+    let linear_constraints = typed_batched_cp_sampled_folded_public_input_linear_constraints(
+        seed, &relation, statement, 8,
+    );
+    let folded_public_input_len =
+        typed_batched_cp_linear_opening_points(&linear_constraints, num_vars)?.len();
+
+    let ring_mul_constraints = typed_batched_cp_sampled_folded_commitment_ring_mul_constraints(
+        seed, &relation, statement, 2,
+    );
+    let folded_commitment_len =
+        typed_batched_cp_ring_mul_opening_points(&ring_mul_constraints, num_vars)?.len();
+
+    let eval_ring_mul_constraints = typed_batched_cp_sampled_folded_evaluation_ring_mul_constraints(
+        seed, &relation, statement, 2,
+    );
+    let folded_evaluation_len =
+        typed_batched_cp_eval_ring_mul_opening_points(&eval_ring_mul_constraints, num_vars)?.len();
+
+    let poseidon_r1cs_constraints =
+        typed_batched_cp_sampled_poseidon_r1cs_constraints(seed, &relation, statement, 8);
+    let poseidon_r1cs_len =
+        typed_batched_cp_poseidon_r1cs_opening_points(&poseidon_r1cs_constraints, num_vars)?.len();
+
+    let ajtai_constraints =
+        typed_batched_cp_sampled_ajtai_opening_constraints(seed, &relation, statement, 2);
+    let ajtai_opening_len =
+        typed_batched_cp_ajtai_opening_points(&ajtai_constraints, num_vars)?.len();
+
+    let original_r1cs_constraints =
+        typed_batched_cp_sampled_original_r1cs_constraints(seed, &relation, statement, 2);
+    let original_r1cs_len =
+        typed_batched_cp_original_r1cs_opening_points(&original_r1cs_constraints, num_vars)?.len();
+
+    let mut start = 0usize;
+    let mut next = |len| {
+        let section = WhirBatchedCpPrivateOpeningSection { start, len };
+        start += len;
+        section
+    };
+    let equality = next(equality_len);
+    let folded_public_input = next(folded_public_input_len);
+    let folded_commitment = next(folded_commitment_len);
+    let folded_evaluation = next(folded_evaluation_len);
+    let poseidon_r1cs = next(poseidon_r1cs_len);
+    let ajtai_opening = next(ajtai_opening_len);
+    let original_r1cs = next(original_r1cs_len);
+
+    Some(WhirBatchedCpPrivateOpeningProfile {
+        equality,
+        folded_public_input,
+        folded_commitment,
+        folded_evaluation,
+        poseidon_r1cs,
+        ajtai_opening,
+        original_r1cs,
+        total_len: start,
+    })
+}
+
+/// Compute the private-opening layout for a SYMBT2C columnar batched CP proof.
+///
+/// This is a debug/development API only. It mirrors the transcript-derived
+/// residual checks used by the SYMBT2C prover/verifier and is not part of the
+/// public proof envelope.
+pub fn whir_typed_batched_cp_columnar_v2_private_opening_profile(
+    seed: &[u8; 32],
+    relation: &RelationDescription,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Option<WhirBatchedCpColumnarV2OpeningProfile> {
+    let context = relation.context.as_ref()?;
+    let relation_context = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    let relation = relation_context.columnar_v2()?;
+    if &relation.semantic.shape != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return None;
+    }
+    let checks = typed_batched_cp_columnar_v2_checks(seed, relation, statement);
+    let mut total_len = 0usize;
+    let mut families: Vec<WhirBatchedCpColumnarV2FamilyOpeningProfile> = Vec::new();
+    for (residual_index, residual) in relation.columnar_layout.residuals.iter().enumerate() {
+        let residual_checks: Vec<_> = checks
+            .iter()
+            .filter(|check| check.residual_index == residual_index)
+            .collect();
+        if residual_checks.is_empty() {
+            continue;
+        }
+        let len = residual_checks
+            .iter()
+            .map(|check| check.columns.len())
+            .sum::<usize>();
+        if let Some(last) = families.last_mut() {
+            if last.family == residual.family && last.section.end() == total_len {
+                last.residual_count += 1;
+                last.sampled_check_count += residual_checks.len();
+                last.section.len += len;
+                total_len += len;
+                continue;
+            }
+        }
+        families.push(WhirBatchedCpColumnarV2FamilyOpeningProfile {
+            family: residual.family,
+            residual_count: 1,
+            sampled_check_count: residual_checks.len(),
+            subproof_index: None,
+            num_vars: None,
+            padded_row_count: None,
+            section: WhirBatchedCpPrivateOpeningSection {
+                start: total_len,
+                len,
+            },
+        });
+        total_len += len;
+    }
+    Some(WhirBatchedCpColumnarV2OpeningProfile {
+        families,
+        total_len,
+    })
+}
+
+/// Compute the private-opening layout for a SYMBT2F family-local columnar
+/// batched CP proof.
+///
+/// This is a debug/development API only. It mirrors the transcript-derived
+/// residual checks used by the SYMBT2F prover/verifier and is not part of the
+/// public proof envelope.
+pub fn whir_typed_batched_cp_family_columnar_v2_private_opening_profile(
+    seed: &[u8; 32],
+    relation: &RelationDescription,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Option<WhirBatchedCpColumnarV2OpeningProfile> {
+    let context = relation.context.as_ref()?;
+    let relation_context = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    let relation = relation_context.family_columnar_v2()?;
+    if &relation.semantic.shape != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return None;
+    }
+    let checks = typed_batched_cp_family_columnar_v2_checks(seed, relation, statement);
+    let mut total_len = 0usize;
+    let mut families = Vec::new();
+    for (table_idx, table) in relation.family_layout.tables.iter().enumerate() {
+        let table_checks: Vec<_> = checks
+            .iter()
+            .filter(|check| check.residual_index == table_idx)
+            .collect();
+        if table_checks.is_empty() {
+            continue;
+        }
+        let len = table_checks
+            .iter()
+            .map(|check| check.columns.len())
+            .sum::<usize>();
+        families.push(WhirBatchedCpColumnarV2FamilyOpeningProfile {
+            family: table.family,
+            residual_count: 1,
+            sampled_check_count: table_checks.len(),
+            subproof_index: Some(families.len()),
+            num_vars: Some(
+                (table.column_kinds.len() * table.padded_row_count)
+                    .next_power_of_two()
+                    .max(2)
+                    .trailing_zeros() as usize,
+            ),
+            padded_row_count: Some(table.padded_row_count),
+            section: WhirBatchedCpPrivateOpeningSection {
+                start: total_len,
+                len,
+            },
+        });
+        total_len += len;
+    }
+    Some(WhirBatchedCpColumnarV2OpeningProfile {
+        families,
+        total_len,
+    })
+}
+
+/// Verify a SYMBT2F proof and report verifier-infrastructure cache use.
+///
+/// This is a development/profile API only. Product public verification does
+/// not consume SYMBT2F and must not depend on these stats.
+pub fn whir_typed_batched_cp_family_columnar_v2_verify_with_cache_stats(
+    vk: &WhirVerifyingKey,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    proof: &WhirProof,
+) -> Option<(bool, WhirVerifierInfraCacheStats)> {
+    let context = vk.relation.context.as_ref()?;
+    let relation_context = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    let relation = relation_context.family_columnar_v2()?;
+    if &relation.semantic.shape != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return Some((false, WhirVerifierInfraCacheStats::default()));
+    }
+    Some(verify_typed_batched_cp_family_columnar_v2_with_stats(
+        vk, relation, statement, proof,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +734,21 @@ pub fn canonical_whir_proof_bytes(proof: &WhirProof) -> Vec<u8> {
         write_bb_array3_vec(&mut out, &check.rounds);
         write_bb(&mut out, check.z_eval);
     }
+    out.extend_from_slice(&(proof.private_opening_evals.len() as u64).to_le_bytes());
+    for value in &proof.private_opening_evals {
+        write_bb(&mut out, *value);
+    }
+
+    out.extend_from_slice(&(proof.family_columnar_subproofs.len() as u64).to_le_bytes());
+    for subproof in &proof.family_columnar_subproofs {
+        out.extend_from_slice(&(subproof.table_index as u64).to_le_bytes());
+        out.extend_from_slice(&(subproof.num_vars as u64).to_le_bytes());
+        write_bb(&mut out, subproof.z_eval);
+        let pcs_bytes =
+            serde_json::to_vec(&subproof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
+        out.extend_from_slice(&(pcs_bytes.len() as u64).to_le_bytes());
+        out.extend_from_slice(&pcs_bytes);
+    }
 
     let pcs_bytes =
         serde_json::to_vec(&proof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
@@ -404,6 +787,28 @@ pub fn whir_proof_from_canonical_bytes(bytes: &[u8]) -> Result<WhirProof, WhirPr
             z_eval: reader.read_bb()?,
         });
     }
+    let private_opening_eval_count = reader.read_len()?;
+    let mut private_opening_evals = Vec::with_capacity(private_opening_eval_count);
+    for _ in 0..private_opening_eval_count {
+        private_opening_evals.push(reader.read_bb()?);
+    }
+
+    let family_subproof_count = reader.read_len()?;
+    let mut family_columnar_subproofs = Vec::with_capacity(family_subproof_count);
+    for _ in 0..family_subproof_count {
+        let table_index = reader.read_len()?;
+        let num_vars = reader.read_len()?;
+        let z_eval = reader.read_bb()?;
+        let pcs_bytes = reader.read_bytes()?;
+        let whir_pcs_proof = serde_json::from_slice(pcs_bytes)
+            .map_err(|_| WhirProofPayloadError::MalformedPcsProof)?;
+        family_columnar_subproofs.push(WhirFamilyColumnarSubproof {
+            table_index,
+            num_vars,
+            z_eval,
+            whir_pcs_proof,
+        });
+    }
 
     let pcs_bytes = reader.read_bytes()?;
     let whir_pcs_proof =
@@ -419,6 +824,8 @@ pub fn whir_proof_from_canonical_bytes(bytes: &[u8]) -> Result<WhirProof, WhirPr
         whir_pcs_proof,
         z_eval,
         linear_checks,
+        private_opening_evals,
+        family_columnar_subproofs,
         num_vars,
         is_output,
     })
@@ -854,6 +1261,402 @@ impl BackendSnark for WhirSnark {
         Some(verify_cp_r1cs(vk, &cp_instance, proof, &ctx))
     }
 
+    fn typed_batched_cp_relation_description(
+        shape: &crate::batched_cp::BatchedCpStatementShape,
+    ) -> Option<crate::snark::RelationDescription> {
+        Some(
+            shape
+                .structured_relation_description()
+                .to_relation_description(),
+        )
+    }
+
+    fn prove_typed_batched_cp(
+        pk: &Self::ProvingKey,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+        witness: &crate::batched_cp::BatchedCpWitnessBundle,
+    ) -> Option<Self::Proof> {
+        let context = pk.relation.context.as_ref()?;
+        let relation = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+        if relation.shape() != &statement.shape
+            || relation.public_statement_bytes() != statement.canonical_bytes().len()
+        {
+            return None;
+        }
+        let bucket = crate::batched_cp::BatchedCpBucket::new(
+            witness.items.clone(),
+            statement.whir_parameter_digest,
+        )
+        .ok()?;
+        if bucket.shape != statement.shape || bucket.public_statement() != *statement {
+            return None;
+        }
+        let expected_witness = bucket.witness_bundle();
+        if expected_witness.witness_oracle_rows != witness.witness_oracle_rows
+            || expected_witness.round_message_oracles != witness.round_message_oracles
+        {
+            return None;
+        }
+        if let Some(columnar_relation) = relation.columnar_v2() {
+            return prove_typed_batched_cp_columnar_v2(pk, columnar_relation, statement, witness);
+        }
+        if let Some(family_relation) = relation.family_columnar_v2() {
+            return prove_typed_batched_cp_family_columnar_v2(
+                pk,
+                family_relation,
+                statement,
+                witness,
+            );
+        }
+        let mut table = bytes_to_babybear(
+            &witness
+                .canonical_product_oracle_bytes(&statement.shape)
+                .ok()?,
+            0,
+        );
+        pad_to_power_of_two(&mut table);
+        if table.len() < 2 {
+            table.resize(2, BabyBear::ZERO);
+        }
+        let num_vars = table.len().trailing_zeros() as usize;
+        let point = typed_batched_cp_opening_point(&pk.seed, &relation, statement, num_vars);
+        let z_eval = mle_eval_bb(&table, &point);
+        let (known_points, known_evals) =
+            typed_batched_cp_public_oracle_claims(&statement.shape, statement, num_vars)?;
+        let (semantic_value_points, semantic_value_evals) =
+            typed_batched_cp_semantic_packed_value_claims(&relation, statement, num_vars)?;
+        let equality_pairs =
+            typed_batched_cp_sampled_equalities(&pk.seed, &relation, statement, 64);
+        let equality_points = typed_batched_cp_equality_opening_points(&equality_pairs, num_vars)?;
+        let linear_constraints = typed_batched_cp_sampled_folded_public_input_linear_constraints(
+            &pk.seed, &relation, statement, 8,
+        );
+        let linear_points = typed_batched_cp_linear_opening_points(&linear_constraints, num_vars)?;
+        let ring_mul_constraints = typed_batched_cp_sampled_folded_commitment_ring_mul_constraints(
+            &pk.seed, &relation, statement, 2,
+        );
+        let ring_mul_points =
+            typed_batched_cp_ring_mul_opening_points(&ring_mul_constraints, num_vars)?;
+        let eval_ring_mul_constraints =
+            typed_batched_cp_sampled_folded_evaluation_ring_mul_constraints(
+                &pk.seed, &relation, statement, 2,
+            );
+        let eval_ring_mul_points =
+            typed_batched_cp_eval_ring_mul_opening_points(&eval_ring_mul_constraints, num_vars)?;
+        let poseidon_r1cs_constraints =
+            typed_batched_cp_sampled_poseidon_r1cs_constraints(&pk.seed, &relation, statement, 8);
+        let poseidon_r1cs_points =
+            typed_batched_cp_poseidon_r1cs_opening_points(&poseidon_r1cs_constraints, num_vars)?;
+        let ajtai_constraints =
+            typed_batched_cp_sampled_ajtai_opening_constraints(&pk.seed, &relation, statement, 2);
+        let ajtai_points = typed_batched_cp_ajtai_opening_points(&ajtai_constraints, num_vars)?;
+        let original_r1cs_constraints =
+            typed_batched_cp_sampled_original_r1cs_constraints(&pk.seed, &relation, statement, 2);
+        let original_r1cs_points =
+            typed_batched_cp_original_r1cs_opening_points(&original_r1cs_constraints, num_vars)?;
+        let linear_eval_count = linear_points.len();
+        let ring_mul_eval_count = ring_mul_points.len();
+        let eval_ring_mul_eval_count = eval_ring_mul_points.len();
+        let poseidon_r1cs_eval_count = poseidon_r1cs_points.len();
+        let ajtai_eval_count = ajtai_points.len();
+        let original_r1cs_eval_count = original_r1cs_points.len();
+        let mut opening_points = Vec::with_capacity(
+            1 + known_points.len()
+                + semantic_value_points.len()
+                + equality_points.len()
+                + linear_points.len()
+                + ring_mul_points.len()
+                + eval_ring_mul_points.len()
+                + poseidon_r1cs_points.len()
+                + ajtai_points.len()
+                + original_r1cs_points.len(),
+        );
+        opening_points.push(point);
+        opening_points.extend(known_points);
+        opening_points.extend(semantic_value_points);
+        opening_points.extend(equality_points);
+        opening_points.extend(linear_points);
+        opening_points.extend(ring_mul_points);
+        opening_points.extend(eval_ring_mul_points);
+        opening_points.extend(poseidon_r1cs_points);
+        opening_points.extend(ajtai_points);
+        opening_points.extend(original_r1cs_points);
+        let mut expected_evals =
+            Vec::with_capacity(1 + known_evals.len() + semantic_value_evals.len());
+        expected_evals.push(z_eval);
+        expected_evals.extend(known_evals);
+        expected_evals.extend(semantic_value_evals);
+        let (whir_pcs_proof, evals) =
+            whir_commit_and_prove_multi(&pk.seed, num_vars, &table, &opening_points);
+        if evals.len() != opening_points.len() || evals[..expected_evals.len()] != expected_evals {
+            return None;
+        }
+        let private_opening_evals = evals[expected_evals.len()..].to_vec();
+        let equality_eval_count = equality_pairs.len() * 2;
+        if private_opening_evals.len() < equality_eval_count {
+            return None;
+        }
+        let (equality_evals, remaining_evals) = private_opening_evals.split_at(equality_eval_count);
+        if remaining_evals.len() < linear_eval_count {
+            return None;
+        }
+        let (linear_evals, remaining_evals) = remaining_evals.split_at(linear_eval_count);
+        if remaining_evals.len() < ring_mul_eval_count {
+            return None;
+        }
+        let (ring_mul_evals, remaining_evals) = remaining_evals.split_at(ring_mul_eval_count);
+        if remaining_evals.len() < eval_ring_mul_eval_count {
+            return None;
+        }
+        let (eval_ring_mul_evals, remaining_evals) =
+            remaining_evals.split_at(eval_ring_mul_eval_count);
+        if remaining_evals.len() < poseidon_r1cs_eval_count {
+            return None;
+        }
+        let (poseidon_r1cs_evals, remaining_evals) =
+            remaining_evals.split_at(poseidon_r1cs_eval_count);
+        if poseidon_r1cs_evals.len() != poseidon_r1cs_eval_count {
+            return None;
+        }
+        if remaining_evals.len() < ajtai_eval_count {
+            return None;
+        }
+        let (ajtai_evals, original_r1cs_evals) = remaining_evals.split_at(ajtai_eval_count);
+        if ajtai_evals.len() != ajtai_eval_count {
+            return None;
+        }
+        if original_r1cs_evals.len() != original_r1cs_eval_count {
+            return None;
+        }
+        if !typed_batched_cp_equality_evals_match(&equality_pairs, equality_evals)
+            || !typed_batched_cp_folded_public_input_linear_evals_match(
+                &linear_constraints,
+                linear_evals,
+            )
+            || !typed_batched_cp_folded_commitment_ring_mul_evals_match(
+                &ring_mul_constraints,
+                ring_mul_evals,
+            )
+            || !typed_batched_cp_folded_evaluation_ring_mul_evals_match(
+                &eval_ring_mul_constraints,
+                eval_ring_mul_evals,
+            )
+            || !typed_batched_cp_poseidon_r1cs_evals_match(
+                &poseidon_r1cs_constraints,
+                poseidon_r1cs_evals,
+            )
+            || !typed_batched_cp_ajtai_opening_evals_match(&ajtai_constraints, ajtai_evals)
+            || !typed_batched_cp_original_r1cs_evals_match(
+                &original_r1cs_constraints,
+                original_r1cs_evals,
+            )
+        {
+            return None;
+        }
+        Some(WhirProof {
+            sumcheck_rounds_3: Vec::new(),
+            sumcheck_rounds_4: Vec::new(),
+            evaluations: [z_eval, BabyBear::ZERO, BabyBear::ZERO],
+            whir_pcs_proof,
+            z_eval,
+            linear_checks: Vec::new(),
+            private_opening_evals,
+            family_columnar_subproofs: Vec::new(),
+            num_vars,
+            is_output: false,
+        })
+    }
+
+    fn verify_typed_batched_cp(
+        vk: &Self::VerifyingKey,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        let context = vk.relation.context.as_ref()?;
+        let relation = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+        if relation.shape() != &statement.shape
+            || relation.public_statement_bytes() != statement.canonical_bytes().len()
+        {
+            return Some(false);
+        }
+        if proof.is_output
+            || !proof.sumcheck_rounds_3.is_empty()
+            || !proof.sumcheck_rounds_4.is_empty()
+            || !proof.linear_checks.is_empty()
+            || proof.evaluations[0] != proof.z_eval
+            || proof.evaluations[1] != BabyBear::ZERO
+            || proof.evaluations[2] != BabyBear::ZERO
+        {
+            return Some(false);
+        }
+        if let Some(columnar_relation) = relation.columnar_v2() {
+            return Some(verify_typed_batched_cp_columnar_v2(
+                vk,
+                columnar_relation,
+                statement,
+                proof,
+            ));
+        }
+        if let Some(family_relation) = relation.family_columnar_v2() {
+            return Some(verify_typed_batched_cp_family_columnar_v2(
+                vk,
+                family_relation,
+                statement,
+                proof,
+            ));
+        }
+        if !proof.family_columnar_subproofs.is_empty() {
+            return Some(false);
+        }
+        let expected_num_vars = typed_batched_cp_oracle_num_vars(relation.shape());
+        if proof.num_vars != expected_num_vars {
+            return Some(false);
+        }
+        let point =
+            typed_batched_cp_opening_point(&vk.seed, &relation, statement, expected_num_vars);
+        let Some((known_points, known_evals)) =
+            typed_batched_cp_public_oracle_claims(&statement.shape, statement, expected_num_vars)
+        else {
+            return Some(false);
+        };
+        let Some((semantic_value_points, semantic_value_evals)) =
+            typed_batched_cp_semantic_packed_value_claims(&relation, statement, expected_num_vars)
+        else {
+            return Some(false);
+        };
+        let equality_pairs =
+            typed_batched_cp_sampled_equalities(&vk.seed, &relation, statement, 64);
+        let Some(equality_points) =
+            typed_batched_cp_equality_opening_points(&equality_pairs, expected_num_vars)
+        else {
+            return Some(false);
+        };
+        let linear_constraints = typed_batched_cp_sampled_folded_public_input_linear_constraints(
+            &vk.seed, &relation, statement, 8,
+        );
+        let Some(linear_points) =
+            typed_batched_cp_linear_opening_points(&linear_constraints, expected_num_vars)
+        else {
+            return Some(false);
+        };
+        let ring_mul_constraints = typed_batched_cp_sampled_folded_commitment_ring_mul_constraints(
+            &vk.seed, &relation, statement, 2,
+        );
+        let Some(ring_mul_points) =
+            typed_batched_cp_ring_mul_opening_points(&ring_mul_constraints, expected_num_vars)
+        else {
+            return Some(false);
+        };
+        let eval_ring_mul_constraints =
+            typed_batched_cp_sampled_folded_evaluation_ring_mul_constraints(
+                &vk.seed, &relation, statement, 2,
+            );
+        let Some(eval_ring_mul_points) = typed_batched_cp_eval_ring_mul_opening_points(
+            &eval_ring_mul_constraints,
+            expected_num_vars,
+        ) else {
+            return Some(false);
+        };
+        let poseidon_r1cs_constraints =
+            typed_batched_cp_sampled_poseidon_r1cs_constraints(&vk.seed, &relation, statement, 8);
+        let Some(poseidon_r1cs_points) = typed_batched_cp_poseidon_r1cs_opening_points(
+            &poseidon_r1cs_constraints,
+            expected_num_vars,
+        ) else {
+            return Some(false);
+        };
+        let ajtai_constraints =
+            typed_batched_cp_sampled_ajtai_opening_constraints(&vk.seed, &relation, statement, 2);
+        let Some(ajtai_points) =
+            typed_batched_cp_ajtai_opening_points(&ajtai_constraints, expected_num_vars)
+        else {
+            return Some(false);
+        };
+        let original_r1cs_constraints =
+            typed_batched_cp_sampled_original_r1cs_constraints(&vk.seed, &relation, statement, 2);
+        let Some(original_r1cs_points) = typed_batched_cp_original_r1cs_opening_points(
+            &original_r1cs_constraints,
+            expected_num_vars,
+        ) else {
+            return Some(false);
+        };
+        if proof.private_opening_evals.len()
+            != equality_points.len()
+                + linear_points.len()
+                + ring_mul_points.len()
+                + eval_ring_mul_points.len()
+                + poseidon_r1cs_points.len()
+                + ajtai_points.len()
+                + original_r1cs_points.len()
+        {
+            return Some(false);
+        }
+        let (equality_evals, remaining_evals) =
+            proof.private_opening_evals.split_at(equality_points.len());
+        let (linear_evals, remaining_evals) = remaining_evals.split_at(linear_points.len());
+        let (ring_mul_evals, remaining_evals) = remaining_evals.split_at(ring_mul_points.len());
+        let (eval_ring_mul_evals, remaining_evals) =
+            remaining_evals.split_at(eval_ring_mul_points.len());
+        let (poseidon_r1cs_evals, ajtai_evals) =
+            remaining_evals.split_at(poseidon_r1cs_points.len());
+        let (ajtai_evals, original_r1cs_evals) = ajtai_evals.split_at(ajtai_points.len());
+        if !typed_batched_cp_equality_evals_match(&equality_pairs, equality_evals)
+            || !typed_batched_cp_folded_public_input_linear_evals_match(
+                &linear_constraints,
+                linear_evals,
+            )
+            || !typed_batched_cp_folded_commitment_ring_mul_evals_match(
+                &ring_mul_constraints,
+                ring_mul_evals,
+            )
+            || !typed_batched_cp_folded_evaluation_ring_mul_evals_match(
+                &eval_ring_mul_constraints,
+                eval_ring_mul_evals,
+            )
+            || !typed_batched_cp_poseidon_r1cs_evals_match(
+                &poseidon_r1cs_constraints,
+                poseidon_r1cs_evals,
+            )
+            || !typed_batched_cp_ajtai_opening_evals_match(&ajtai_constraints, ajtai_evals)
+            || !typed_batched_cp_original_r1cs_evals_match(
+                &original_r1cs_constraints,
+                original_r1cs_evals,
+            )
+        {
+            return Some(false);
+        }
+        let mut opening_points = Vec::with_capacity(
+            1 + known_points.len()
+                + semantic_value_points.len()
+                + equality_points.len()
+                + linear_points.len(),
+        );
+        opening_points.push(point);
+        opening_points.extend(known_points);
+        opening_points.extend(semantic_value_points);
+        opening_points.extend(equality_points);
+        opening_points.extend(linear_points);
+        opening_points.extend(ring_mul_points);
+        opening_points.extend(eval_ring_mul_points);
+        opening_points.extend(poseidon_r1cs_points);
+        opening_points.extend(ajtai_points);
+        opening_points.extend(original_r1cs_points);
+        let mut opening_evals = Vec::with_capacity(
+            1 + known_evals.len() + semantic_value_evals.len() + proof.private_opening_evals.len(),
+        );
+        opening_evals.push(proof.z_eval);
+        opening_evals.extend(known_evals);
+        opening_evals.extend(semantic_value_evals);
+        opening_evals.extend(proof.private_opening_evals.iter().copied());
+        Some(whir_verify_opening_multi(
+            &vk.seed,
+            expected_num_vars,
+            &proof.whir_pcs_proof,
+            &opening_points,
+            &opening_evals,
+        ))
+    }
+
     fn prove_typed_output(
         pk: &Self::ProvingKey,
         instance: &FoldedOutputInstance,
@@ -1232,6 +2035,8 @@ fn prove_output_with_transcript_instance(
         whir_pcs_proof,
         z_eval,
         linear_checks,
+        private_opening_evals: Vec::new(),
+        family_columnar_subproofs: Vec::new(),
         num_vars,
         is_output: true,
     }
@@ -1264,6 +2069,2380 @@ fn typed_output_binding_instance() -> [u8; 8] {
     1i64.to_le_bytes()
 }
 
+fn typed_batched_cp_oracle_num_vars(shape: &crate::batched_cp::BatchedCpStatementShape) -> usize {
+    let field_len = shape
+        .canonical_product_oracle_byte_len()
+        .div_ceil(field::BYTES_PER_ELEMENT)
+        + 1;
+    field_len.next_power_of_two().max(2).trailing_zeros() as usize
+}
+
+enum WhirBatchedCpRelationContext {
+    ProductOracle(crate::batched_cp::BatchedCpStructuredRelationDescription),
+    Semantic(crate::batched_cp::BatchedCpSemanticRelationDescription),
+    SemanticV2(crate::batched_cp::BatchedCpSemanticRelationV2Description),
+    ColumnarV2(crate::batched_cp::BatchedCpSemanticColumnarV2Description),
+    FamilyColumnarV2(crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description),
+}
+
+impl WhirBatchedCpRelationContext {
+    fn from_context_bytes(bytes: &[u8]) -> Option<Self> {
+        if let Ok(family_columnar_v2) =
+            crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description::from_context_bytes(
+                bytes,
+            )
+        {
+            return Some(Self::FamilyColumnarV2(family_columnar_v2));
+        }
+        if let Ok(columnar_v2) =
+            crate::batched_cp::BatchedCpSemanticColumnarV2Description::from_context_bytes(bytes)
+        {
+            return Some(Self::ColumnarV2(columnar_v2));
+        }
+        if let Ok(semantic_v2) =
+            crate::batched_cp::BatchedCpSemanticRelationV2Description::from_context_bytes(bytes)
+        {
+            return Some(Self::SemanticV2(semantic_v2));
+        }
+        if let Ok(semantic) =
+            crate::batched_cp::BatchedCpSemanticRelationDescription::from_context_bytes(bytes)
+        {
+            return Some(Self::Semantic(semantic));
+        }
+        crate::batched_cp::BatchedCpStructuredRelationDescription::from_context_bytes(bytes)
+            .ok()
+            .map(Self::ProductOracle)
+    }
+
+    fn shape(&self) -> &crate::batched_cp::BatchedCpStatementShape {
+        match self {
+            Self::ProductOracle(relation) => &relation.shape,
+            Self::Semantic(relation) => &relation.shape,
+            Self::SemanticV2(relation) => &relation.semantic.shape,
+            Self::ColumnarV2(relation) => &relation.semantic.shape,
+            Self::FamilyColumnarV2(relation) => &relation.semantic.shape,
+        }
+    }
+
+    fn public_statement_bytes(&self) -> usize {
+        match self {
+            Self::ProductOracle(relation) => relation.public_statement_bytes,
+            Self::Semantic(relation) => relation.public_statement_bytes(),
+            Self::SemanticV2(relation) => relation.public_statement_bytes(),
+            Self::ColumnarV2(relation) => relation.public_statement_bytes(),
+            Self::FamilyColumnarV2(relation) => relation.public_statement_bytes(),
+        }
+    }
+
+    fn relation_id(&self) -> crate::digest_core::Digest32 {
+        match self {
+            Self::ProductOracle(relation) => relation.relation_id(),
+            Self::Semantic(relation) => relation.semantic_relation_id(),
+            Self::SemanticV2(relation) => relation.semantic_relation_id(),
+            Self::ColumnarV2(relation) => relation.semantic_relation_id(),
+            Self::FamilyColumnarV2(relation) => relation.semantic_relation_id(),
+        }
+    }
+
+    fn enforces_full_semantic_blocks(&self) -> bool {
+        matches!(self, Self::SemanticV2(_))
+    }
+
+    fn columnar_v2(&self) -> Option<&crate::batched_cp::BatchedCpSemanticColumnarV2Description> {
+        match self {
+            Self::ColumnarV2(relation) => Some(relation),
+            Self::ProductOracle(_)
+            | Self::Semantic(_)
+            | Self::SemanticV2(_)
+            | Self::FamilyColumnarV2(_) => None,
+        }
+    }
+
+    fn family_columnar_v2(
+        &self,
+    ) -> Option<&crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description> {
+        match self {
+            Self::FamilyColumnarV2(relation) => Some(relation),
+            Self::ProductOracle(_)
+            | Self::Semantic(_)
+            | Self::SemanticV2(_)
+            | Self::ColumnarV2(_) => None,
+        }
+    }
+
+    fn semantic_constraint_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<crate::batched_cp::BatchedCpSemanticConstraintBlock> {
+        match self {
+            Self::ProductOracle(_) => Vec::new(),
+            Self::Semantic(relation) => {
+                relation.supported_constraint_blocks_for_statement(Some(statement))
+            }
+            Self::SemanticV2(relation) => {
+                relation.supported_constraint_blocks_for_statement(Some(statement))
+            }
+            Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+        }
+    }
+
+    fn byte_equality_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpByteEqualityBlock> {
+        match self {
+            Self::ProductOracle(relation) => vec![WhirBatchedCpByteEqualityBlock {
+                family: crate::batched_cp::BatchedCpSemanticConstraintFamily::RoundMessageBinding,
+                label: "legacy-product-oracle-round-message-binding",
+                equalities: relation.shape.structured_oracle_byte_equalities(),
+            }],
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let equalities: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| {
+                            match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(
+                                equality,
+                            ) => Some(equality),
+                            crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(_) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                _,
+                            ) => None,
+                        }
+                        })
+                        .collect();
+                    (!equalities.is_empty()).then_some(WhirBatchedCpByteEqualityBlock {
+                        family: block.family,
+                        label: block.label,
+                        equalities,
+                    })
+                })
+                .collect(),
+            Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+        }
+    }
+
+    fn packed_value_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpPackedValueBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let values: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| {
+                            match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(value) => {
+                                Some(value)
+                            }
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(_) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                _,
+                            ) => None,
+                            crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                _,
+                            ) => None,
+                        }
+                        })
+                        .collect();
+                    (!values.is_empty()).then_some(WhirBatchedCpPackedValueBlock { values })
+                })
+                .collect(),
+        }
+    }
+
+    fn folded_public_input_linear_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpFoldedPublicInputLinearBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let constraints: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| {
+                            match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                constraint,
+                            ) => Some(constraint),
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                _,
+                            ) => None,
+                        }
+                        })
+                        .collect();
+                    (!constraints.is_empty()).then_some(WhirBatchedCpFoldedPublicInputLinearBlock {
+                        family: block.family,
+                        label: block.label,
+                        constraints,
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    fn folded_commitment_ring_mul_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpFoldedCommitmentRingMulBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let constraints: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                constraint,
+                            ) => Some(constraint),
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                _,
+                            ) => None,
+                        })
+                        .collect();
+                    (!constraints.is_empty()).then_some(
+                        WhirBatchedCpFoldedCommitmentRingMulBlock {
+                            family: block.family,
+                            label: block.label,
+                            constraints,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn folded_evaluation_ring_mul_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpFoldedEvaluationRingMulBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let constraints: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                constraint,
+                            ) => Some(constraint),
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                _,
+                            ) => None,
+                        })
+                        .collect();
+                    (!constraints.is_empty()).then_some(
+                        WhirBatchedCpFoldedEvaluationRingMulBlock {
+                            family: block.family,
+                            label: block.label,
+                            constraints,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn poseidon_r1cs_blocks(
+        &self,
+        _statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpPoseidonR1csBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(relation) => {
+                if !relation.constraint_families.contains(
+                    &crate::batched_cp::BatchedCpSemanticConstraintFamily::PoseidonDigestCorrectness,
+                ) {
+                    return Vec::new();
+                }
+                let surfaces = relation.shape.poseidon_fs_commitment_r1cs_surfaces();
+                (!surfaces.is_empty())
+                    .then_some(WhirBatchedCpPoseidonR1csBlock {
+                        family: crate::batched_cp::BatchedCpSemanticConstraintFamily::PoseidonDigestCorrectness,
+                        label: "fs-commitment-full-poseidon-r1cs-row-domain",
+                        surfaces,
+                    })
+                    .into_iter()
+                    .collect()
+            }
+            Self::SemanticV2(relation) => {
+                if !relation.semantic.constraint_families.contains(
+                    &crate::batched_cp::BatchedCpSemanticConstraintFamily::PoseidonDigestCorrectness,
+                ) {
+                    return Vec::new();
+                }
+                let surfaces = relation
+                    .semantic
+                    .shape
+                    .poseidon_fs_commitment_r1cs_surfaces();
+                (!surfaces.is_empty())
+                    .then_some(WhirBatchedCpPoseidonR1csBlock {
+                        family: crate::batched_cp::BatchedCpSemanticConstraintFamily::PoseidonDigestCorrectness,
+                        label: "fs-commitment-full-poseidon-r1cs-row-domain-v2",
+                        surfaces,
+                    })
+                    .into_iter()
+                    .collect()
+            }
+        }
+    }
+
+    fn ajtai_opening_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpAjtaiOpeningBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let constraints: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                constraint,
+                            ) => Some(constraint),
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                _,
+                            ) => None,
+                        })
+                        .collect();
+                    (!constraints.is_empty()).then_some(WhirBatchedCpAjtaiOpeningBlock {
+                        family: block.family,
+                        label: block.label,
+                        constraints,
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    fn original_r1cs_blocks(
+        &self,
+        statement: &crate::batched_cp::BatchedCpPublicStatement,
+    ) -> Vec<WhirBatchedCpOriginalR1csBlock> {
+        match self {
+            Self::ProductOracle(_) | Self::ColumnarV2(_) | Self::FamilyColumnarV2(_) => Vec::new(),
+            Self::Semantic(_) | Self::SemanticV2(_) => self
+                .semantic_constraint_blocks(statement)
+                .into_iter()
+                .filter_map(|block| {
+                    let constraints: Vec<_> = block
+                        .constraints
+                        .into_iter()
+                        .filter_map(|constraint| match constraint {
+                            crate::batched_cp::BatchedCpSemanticConstraint::OriginalR1cs(
+                                constraint,
+                            ) => Some(constraint),
+                            crate::batched_cp::BatchedCpSemanticConstraint::ByteEquality(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PackedValue(_)
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedPublicInputLinear(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedCommitmentRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::FoldedEvaluationRingMul(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::PoseidonR1csRow(
+                                _,
+                            )
+                            | crate::batched_cp::BatchedCpSemanticConstraint::AjtaiOpeningLinear(
+                                _,
+                            ) => None,
+                        })
+                        .collect();
+                    (!constraints.is_empty()).then_some(WhirBatchedCpOriginalR1csBlock {
+                        family: block.family,
+                        label: block.label,
+                        constraints,
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
+struct WhirBatchedCpByteEqualityBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    equalities: Vec<crate::batched_cp::BatchedCpOracleByteEquality>,
+}
+
+struct WhirBatchedCpPackedValueBlock {
+    values: Vec<crate::batched_cp::BatchedCpOraclePackedValue>,
+}
+
+struct WhirBatchedCpFoldedPublicInputLinearBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    constraints: Vec<crate::batched_cp::BatchedCpFoldedPublicInputLinearConstraint>,
+}
+
+struct WhirBatchedCpFoldedCommitmentRingMulBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    constraints: Vec<crate::batched_cp::BatchedCpFoldedCommitmentRingMulConstraint>,
+}
+
+struct WhirBatchedCpFoldedEvaluationRingMulBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    constraints: Vec<crate::batched_cp::BatchedCpFoldedEvaluationRingMulConstraint>,
+}
+
+struct WhirBatchedCpPoseidonR1csBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    surfaces: Vec<crate::batched_cp::BatchedCpPoseidonR1csSurface>,
+}
+
+struct WhirBatchedCpAjtaiOpeningBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    constraints: Vec<crate::batched_cp::BatchedCpAjtaiOpeningLinearConstraint>,
+}
+
+struct WhirBatchedCpOriginalR1csBlock {
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    label: &'static str,
+    constraints: Vec<crate::batched_cp::BatchedCpOriginalR1csConstraint>,
+}
+
+#[derive(Debug, Clone)]
+struct WhirBatchedCpColumnarV2Check {
+    residual_index: usize,
+    row: usize,
+    kind: crate::batched_cp::BatchedCpSemanticResidualV2Kind,
+    columns: Vec<usize>,
+}
+
+const COLUMNAR_V2_CHECKS_PER_RESIDUAL: usize = 4;
+
+fn prove_typed_batched_cp_columnar_v2(
+    pk: &WhirProvingKey,
+    relation: &crate::batched_cp::BatchedCpSemanticColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    witness: &crate::batched_cp::BatchedCpWitnessBundle,
+) -> Option<WhirProof> {
+    let trace =
+        crate::batched_cp::BatchedCpSemanticTraceV2::encode(relation, statement, witness).ok()?;
+    if !trace.all_residuals_satisfied() {
+        return None;
+    }
+    let mut table: Vec<BabyBear> = trace
+        .flattened_values()
+        .into_iter()
+        .map(BabyBear::from_u32)
+        .collect();
+    pad_to_power_of_two(&mut table);
+    if table.len() < 2 {
+        table.resize(2, BabyBear::ZERO);
+    }
+    let num_vars = table.len().trailing_zeros() as usize;
+    let relation_context = WhirBatchedCpRelationContext::ColumnarV2(relation.clone());
+    let point = typed_batched_cp_opening_point(&pk.seed, &relation_context, statement, num_vars);
+    let z_eval = mle_eval_bb(&table, &point);
+    let checks = typed_batched_cp_columnar_v2_checks(&pk.seed, relation, statement);
+    let opening_points = typed_batched_cp_columnar_v2_opening_points(&trace, &checks, num_vars)?;
+    let mut all_points = Vec::with_capacity(1 + opening_points.len());
+    all_points.push(point);
+    all_points.extend(opening_points);
+    let (whir_pcs_proof, evals) =
+        whir_commit_and_prove_multi(&pk.seed, num_vars, &table, &all_points);
+    let private_eval_count: usize = checks.iter().map(|check| check.columns.len()).sum();
+    if evals.first().copied() != Some(z_eval) || evals.len() != 1 + private_eval_count {
+        return None;
+    }
+    let private_opening_evals = evals[1..].to_vec();
+    if !typed_batched_cp_columnar_v2_evals_match(&checks, &private_opening_evals) {
+        return None;
+    }
+    Some(WhirProof {
+        sumcheck_rounds_3: Vec::new(),
+        sumcheck_rounds_4: Vec::new(),
+        evaluations: [z_eval, BabyBear::ZERO, BabyBear::ZERO],
+        whir_pcs_proof,
+        z_eval,
+        linear_checks: Vec::new(),
+        private_opening_evals,
+        family_columnar_subproofs: Vec::new(),
+        num_vars,
+        is_output: false,
+    })
+}
+
+fn verify_typed_batched_cp_columnar_v2(
+    vk: &WhirVerifyingKey,
+    relation: &crate::batched_cp::BatchedCpSemanticColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    proof: &WhirProof,
+) -> bool {
+    if !proof.family_columnar_subproofs.is_empty() {
+        return false;
+    }
+    let expected_len =
+        relation.columnar_layout.columns.len() * relation.columnar_layout.column_row_count;
+    let expected_num_vars = expected_len.next_power_of_two().max(2).trailing_zeros() as usize;
+    if proof.num_vars != expected_num_vars {
+        return false;
+    }
+    let checks = typed_batched_cp_columnar_v2_checks(&vk.seed, relation, statement);
+    let Some(opening_points) = typed_batched_cp_columnar_v2_opening_points_from_layout(
+        &relation.columnar_layout,
+        &checks,
+        expected_num_vars,
+    ) else {
+        return false;
+    };
+    let private_eval_count: usize = checks.iter().map(|check| check.columns.len()).sum();
+    if proof.private_opening_evals.len() != private_eval_count
+        || !typed_batched_cp_columnar_v2_evals_match(&checks, &proof.private_opening_evals)
+    {
+        return false;
+    }
+    let relation_context = WhirBatchedCpRelationContext::ColumnarV2(relation.clone());
+    let point =
+        typed_batched_cp_opening_point(&vk.seed, &relation_context, statement, expected_num_vars);
+    let mut all_points = Vec::with_capacity(1 + opening_points.len());
+    all_points.push(point);
+    all_points.extend(opening_points);
+    let mut all_evals = Vec::with_capacity(1 + proof.private_opening_evals.len());
+    all_evals.push(proof.z_eval);
+    all_evals.extend(proof.private_opening_evals.iter().copied());
+    whir_verify_opening_multi(
+        &vk.seed,
+        expected_num_vars,
+        &proof.whir_pcs_proof,
+        &all_points,
+        &all_evals,
+    )
+}
+
+fn prove_typed_batched_cp_family_columnar_v2(
+    pk: &WhirProvingKey,
+    relation: &crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    witness: &crate::batched_cp::BatchedCpWitnessBundle,
+) -> Option<WhirProof> {
+    let trace =
+        crate::batched_cp::BatchedCpSemanticFamilyTraceV2::encode(relation, statement, witness)
+            .ok()?;
+    if !trace.all_residuals_satisfied() {
+        return None;
+    }
+    let checks = typed_batched_cp_family_columnar_v2_checks(&pk.seed, relation, statement);
+    let mut private_opening_evals = Vec::new();
+    let mut family_columnar_subproofs = Vec::new();
+    let mut max_num_vars = 0usize;
+    for (table_idx, table_layout) in trace.layout.tables.iter().enumerate() {
+        let table_checks = checks
+            .iter()
+            .filter(|check| check.residual_index == table_idx)
+            .cloned()
+            .collect::<Vec<_>>();
+        if table_checks.is_empty() {
+            continue;
+        }
+        let mut table = typed_batched_cp_family_columnar_v2_table_values(&trace, table_idx)?;
+        if table.len() < 2 {
+            table.resize(2, BabyBear::ZERO);
+        }
+        let num_vars = table.len().trailing_zeros() as usize;
+        debug_assert_eq!(table.len(), 1usize << num_vars);
+        max_num_vars = max_num_vars.max(num_vars);
+        let point = typed_batched_cp_family_columnar_v2_table_point(
+            &pk.seed, relation, statement, table_idx, num_vars,
+        );
+        let z_eval = mle_eval_bb_fast(&table, &point);
+        let opening_points = typed_batched_cp_family_columnar_v2_opening_points_for_table(
+            table_layout,
+            &table_checks,
+            num_vars,
+        )?;
+        let mut all_points = Vec::with_capacity(1 + opening_points.len());
+        all_points.push(point);
+        all_points.extend(opening_points);
+        let (whir_pcs_proof, evals) =
+            whir_commit_and_prove_multi(&pk.seed, num_vars, &table, &all_points);
+        let private_eval_count: usize = table_checks.iter().map(|check| check.columns.len()).sum();
+        if evals.first().copied() != Some(z_eval) || evals.len() != 1 + private_eval_count {
+            return None;
+        }
+        private_opening_evals.extend_from_slice(&evals[1..]);
+        family_columnar_subproofs.push(WhirFamilyColumnarSubproof {
+            table_index: table_idx,
+            num_vars,
+            z_eval,
+            whir_pcs_proof,
+        });
+    }
+    if !typed_batched_cp_columnar_v2_evals_match(&checks, &private_opening_evals) {
+        return None;
+    }
+    Some(WhirProof {
+        sumcheck_rounds_3: Vec::new(),
+        sumcheck_rounds_4: Vec::new(),
+        evaluations: [BabyBear::ZERO, BabyBear::ZERO, BabyBear::ZERO],
+        whir_pcs_proof: WhirPcsProof::<F, EF, WhirMmcs>::default(),
+        z_eval: BabyBear::ZERO,
+        linear_checks: Vec::new(),
+        private_opening_evals,
+        family_columnar_subproofs,
+        num_vars: max_num_vars,
+        is_output: false,
+    })
+}
+
+fn verify_typed_batched_cp_family_columnar_v2(
+    vk: &WhirVerifyingKey,
+    relation: &crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    proof: &WhirProof,
+) -> bool {
+    verify_typed_batched_cp_family_columnar_v2_with_stats(vk, relation, statement, proof).0
+}
+
+fn verify_typed_batched_cp_family_columnar_v2_with_stats(
+    vk: &WhirVerifyingKey,
+    relation: &crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    proof: &WhirProof,
+) -> (bool, WhirVerifierInfraCacheStats) {
+    if proof.family_columnar_subproofs.is_empty() {
+        return (false, WhirVerifierInfraCacheStats::default());
+    }
+    let checks = typed_batched_cp_family_columnar_v2_checks(&vk.seed, relation, statement);
+    let private_eval_count: usize = checks.iter().map(|check| check.columns.len()).sum();
+    if proof.private_opening_evals.len() != private_eval_count
+        || !typed_batched_cp_columnar_v2_evals_match(&checks, &proof.private_opening_evals)
+    {
+        return (false, WhirVerifierInfraCacheStats::default());
+    }
+    let expected_subproof_count = relation
+        .family_layout
+        .tables
+        .iter()
+        .enumerate()
+        .filter(|(table_idx, _)| {
+            checks
+                .iter()
+                .any(|check| check.residual_index == *table_idx)
+        })
+        .count();
+    if proof.family_columnar_subproofs.len() != expected_subproof_count {
+        return (false, WhirVerifierInfraCacheStats::default());
+    }
+    let mut cache = WhirVerifierInfraCache::default();
+    let mut eval_offset = 0usize;
+    let mut subproof_offset = 0usize;
+    let mut max_num_vars = 0usize;
+    for (table_idx, table) in relation.family_layout.tables.iter().enumerate() {
+        let table_checks = checks
+            .iter()
+            .filter(|check| check.residual_index == table_idx)
+            .cloned()
+            .collect::<Vec<_>>();
+        if table_checks.is_empty() {
+            continue;
+        }
+        let Some(subproof) = proof.family_columnar_subproofs.get(subproof_offset) else {
+            return (false, cache.stats());
+        };
+        if subproof.table_index != table_idx {
+            return (false, cache.stats());
+        }
+        let expected_len = (table.column_kinds.len() * table.padded_row_count)
+            .next_power_of_two()
+            .max(2);
+        let expected_num_vars = expected_len.trailing_zeros() as usize;
+        if subproof.num_vars != expected_num_vars {
+            return (false, cache.stats());
+        }
+        max_num_vars = max_num_vars.max(expected_num_vars);
+        let Some(opening_points) = typed_batched_cp_family_columnar_v2_opening_points_for_table(
+            table,
+            &table_checks,
+            expected_num_vars,
+        ) else {
+            return (false, cache.stats());
+        };
+        let private_eval_len = table_checks
+            .iter()
+            .map(|check| check.columns.len())
+            .sum::<usize>();
+        let Some(private_evals) = proof
+            .private_opening_evals
+            .get(eval_offset..eval_offset + private_eval_len)
+        else {
+            return (false, cache.stats());
+        };
+        let point = typed_batched_cp_family_columnar_v2_table_point(
+            &vk.seed,
+            relation,
+            statement,
+            table_idx,
+            expected_num_vars,
+        );
+        let mut all_points = Vec::with_capacity(1 + opening_points.len());
+        all_points.push(point);
+        all_points.extend(opening_points);
+        let mut all_evals = Vec::with_capacity(1 + private_evals.len());
+        all_evals.push(subproof.z_eval);
+        all_evals.extend(private_evals.iter().copied());
+        if !cache.verify_opening_multi(
+            &vk.seed,
+            expected_num_vars,
+            &subproof.whir_pcs_proof,
+            &all_points,
+            &all_evals,
+        ) {
+            return (false, cache.stats());
+        }
+        eval_offset += private_eval_len;
+        subproof_offset += 1;
+    }
+    (
+        eval_offset == proof.private_opening_evals.len()
+            && subproof_offset == proof.family_columnar_subproofs.len()
+            && proof.num_vars == max_num_vars,
+        cache.stats(),
+    )
+}
+
+fn typed_batched_cp_columnar_v2_checks(
+    seed: &[u8; 32],
+    relation: &crate::batched_cp::BatchedCpSemanticColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Vec<WhirBatchedCpColumnarV2Check> {
+    let relation_id = relation.semantic_relation_id();
+    let statement_bytes = statement.canonical_bytes();
+    let mut checks = Vec::new();
+    for (residual_index, residual) in relation.columnar_layout.residuals.iter().enumerate() {
+        if residual.row_count == 0 {
+            continue;
+        }
+        let target_checks = COLUMNAR_V2_CHECKS_PER_RESIDUAL.min(residual.row_count);
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(b"whir-typed-batched-cp-columnar-v2-residual-v1");
+        transcript.extend_from_slice(seed);
+        transcript.extend_from_slice(&relation_id);
+        transcript.extend_from_slice(&(residual_index as u64).to_le_bytes());
+        transcript.push(typed_batched_cp_semantic_family_code(residual.family));
+        transcript.extend_from_slice(&(residual.label.len() as u64).to_le_bytes());
+        transcript.extend_from_slice(residual.label.as_bytes());
+        transcript.extend_from_slice(&(residual.transcript_label.len() as u64).to_le_bytes());
+        transcript.extend_from_slice(&residual.transcript_label);
+        transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+        transcript.extend_from_slice(&statement_bytes);
+        transcript.extend_from_slice(&(residual.row_count as u64).to_le_bytes());
+        transcript.extend_from_slice(&(target_checks as u64).to_le_bytes());
+        let mut seen = std::collections::BTreeSet::new();
+        let mut counter = 0usize;
+        while seen.len() < target_checks {
+            let challenge = derive_challenge(&transcript, counter, b"columnar-residual-row")
+                .as_canonical_u32() as usize;
+            seen.insert(challenge % residual.row_count);
+            counter += 1;
+        }
+        let mut columns = vec![residual.left_column];
+        columns.extend(residual.aux_columns.iter().copied());
+        columns.push(residual.right_column);
+        checks.extend(seen.into_iter().map(|row| WhirBatchedCpColumnarV2Check {
+            residual_index,
+            row,
+            kind: residual.kind,
+            columns: columns.clone(),
+        }));
+    }
+    checks.sort_by_key(|check| (check.residual_index, check.row));
+    checks
+}
+
+fn typed_batched_cp_family_columnar_v2_checks(
+    seed: &[u8; 32],
+    relation: &crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Vec<WhirBatchedCpColumnarV2Check> {
+    let relation_id = relation.semantic_relation_id();
+    let statement_bytes = statement.canonical_bytes();
+    let mut checks = Vec::new();
+    for (table_idx, table) in relation.family_layout.tables.iter().enumerate() {
+        if table.row_count == 0 {
+            continue;
+        }
+        let target_checks = COLUMNAR_V2_CHECKS_PER_RESIDUAL.min(table.row_count);
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(b"whir-typed-batched-cp-family-columnar-v2-residual-v1");
+        transcript.extend_from_slice(seed);
+        transcript.extend_from_slice(&relation_id);
+        transcript.extend_from_slice(&(table_idx as u64).to_le_bytes());
+        transcript.push(typed_batched_cp_semantic_family_code(table.family));
+        transcript.extend_from_slice(&(table.label.len() as u64).to_le_bytes());
+        transcript.extend_from_slice(table.label.as_bytes());
+        transcript.extend_from_slice(&(table.transcript_label.len() as u64).to_le_bytes());
+        transcript.extend_from_slice(&table.transcript_label);
+        transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+        transcript.extend_from_slice(&statement_bytes);
+        transcript.extend_from_slice(&(table.row_count as u64).to_le_bytes());
+        transcript.extend_from_slice(&(table.padded_row_count as u64).to_le_bytes());
+        transcript.extend_from_slice(&(target_checks as u64).to_le_bytes());
+        let mut seen = std::collections::BTreeSet::new();
+        let mut counter = 0usize;
+        while seen.len() < target_checks {
+            let challenge = derive_challenge(&transcript, counter, b"family-columnar-residual-row")
+                .as_canonical_u32() as usize;
+            seen.insert(challenge % table.row_count);
+            counter += 1;
+        }
+        let columns = (0..table.column_kinds.len()).collect::<Vec<_>>();
+        checks.extend(seen.into_iter().map(|row| WhirBatchedCpColumnarV2Check {
+            residual_index: table_idx,
+            row,
+            kind: table.kind,
+            columns: columns.clone(),
+        }));
+    }
+    checks.sort_by_key(|check| (check.residual_index, check.row));
+    checks
+}
+
+fn typed_batched_cp_columnar_v2_opening_points(
+    trace: &crate::batched_cp::BatchedCpSemanticTraceV2,
+    checks: &[WhirBatchedCpColumnarV2Check],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    typed_batched_cp_columnar_v2_opening_points_from_layout(&trace.layout, checks, num_vars)
+}
+
+fn typed_batched_cp_family_columnar_v2_table_values(
+    trace: &crate::batched_cp::BatchedCpSemanticFamilyTraceV2,
+    table_idx: usize,
+) -> Option<Vec<BabyBear>> {
+    let table = trace.layout.tables.get(table_idx)?;
+    let columns = trace.tables.get(table_idx)?;
+    if columns.len() != table.column_kinds.len() {
+        return None;
+    }
+    let len = (table.column_kinds.len() * table.padded_row_count)
+        .next_power_of_two()
+        .max(2);
+    let mut values = vec![BabyBear::ZERO; len];
+    for (column_idx, column) in columns.iter().enumerate() {
+        if column.len() != table.padded_row_count {
+            return None;
+        }
+        let start = column_idx * table.padded_row_count;
+        for (row, value) in column.iter().enumerate() {
+            values[start + row] = BabyBear::from_u32(*value);
+        }
+    }
+    Some(values)
+}
+
+fn typed_batched_cp_family_columnar_v2_table_point(
+    seed: &[u8; 32],
+    relation: &crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Description,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    table_idx: usize,
+    num_vars: usize,
+) -> Vec<BabyBear> {
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-family-columnar-v2-table-point-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(&relation.semantic_relation_id());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(table_idx as u64).to_le_bytes());
+    transcript.extend_from_slice(&(num_vars as u64).to_le_bytes());
+    (0..num_vars)
+        .map(|idx| derive_challenge(&transcript, idx, b"table-point"))
+        .collect()
+}
+
+fn typed_batched_cp_columnar_v2_opening_points_from_layout(
+    layout: &crate::batched_cp::BatchedCpSemanticColumnarV2Layout,
+    checks: &[WhirBatchedCpColumnarV2Check],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::with_capacity(checks.iter().map(|check| check.columns.len()).sum());
+    for check in checks {
+        if check.row >= layout.column_row_count {
+            return None;
+        }
+        for &column in &check.columns {
+            if column >= layout.columns.len() {
+                return None;
+            }
+            let index = column
+                .checked_mul(layout.column_row_count)?
+                .checked_add(check.row)?;
+            if index >= max_index {
+                return None;
+            }
+            points.push(boolean_point_for_index(index, num_vars));
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_family_columnar_v2_opening_points_for_table(
+    table: &crate::batched_cp::BatchedCpSemanticFamilyColumnarV2Table,
+    checks: &[WhirBatchedCpColumnarV2Check],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::with_capacity(checks.iter().map(|check| check.columns.len()).sum());
+    for check in checks {
+        if check.row >= table.row_count {
+            return None;
+        }
+        for &column in &check.columns {
+            if column >= table.column_kinds.len() {
+                return None;
+            }
+            let index = column
+                .checked_mul(table.padded_row_count)?
+                .checked_add(check.row)?;
+            if index >= max_index {
+                return None;
+            }
+            points.push(boolean_point_for_index(index, num_vars));
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_columnar_v2_evals_match(
+    checks: &[WhirBatchedCpColumnarV2Check],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for check in checks {
+        match check.kind {
+            crate::batched_cp::BatchedCpSemanticResidualV2Kind::Equality => {
+                if check.columns.len() != 2 {
+                    return false;
+                }
+                let Some(left) = evals.get(pos).copied() else {
+                    return false;
+                };
+                let Some(right) = evals.get(pos + 1).copied() else {
+                    return false;
+                };
+                pos += 2;
+                if left != right {
+                    return false;
+                }
+            }
+            crate::batched_cp::BatchedCpSemanticResidualV2Kind::Product => {
+                if check.columns.len() != 3 {
+                    return false;
+                }
+                let Some(left) = evals.get(pos).copied() else {
+                    return false;
+                };
+                let Some(aux) = evals.get(pos + 1).copied() else {
+                    return false;
+                };
+                let Some(right) = evals.get(pos + 2).copied() else {
+                    return false;
+                };
+                pos += 3;
+                if left * aux != right {
+                    return false;
+                }
+            }
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_public_oracle_claims(
+    shape: &crate::batched_cp::BatchedCpStatementShape,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    num_vars: usize,
+) -> Option<(Vec<Vec<BabyBear>>, Vec<BabyBear>)> {
+    let (bytes, known) =
+        shape.canonical_product_oracle_public_byte_template_for_statement(statement)?;
+    if bytes.len() != known.len() {
+        return None;
+    }
+    let mut points = Vec::new();
+    let mut evals = Vec::new();
+    for (chunk_index, chunk) in bytes.chunks(field::BYTES_PER_ELEMENT).enumerate() {
+        let start = chunk_index * field::BYTES_PER_ELEMENT;
+        let end = start + chunk.len();
+        if known[start..end].iter().all(|&value| value) {
+            let mut value = 0u32;
+            for (i, &byte) in chunk.iter().enumerate() {
+                value |= (byte as u32) << (8 * i);
+            }
+            points.push(boolean_point_for_index(chunk_index, num_vars));
+            evals.push(BabyBear::from_u32(value));
+        }
+    }
+    let sentinel_index = bytes.len().div_ceil(field::BYTES_PER_ELEMENT);
+    points.push(boolean_point_for_index(sentinel_index, num_vars));
+    evals.push(BabyBear::from_u32(bytes.len() as u32));
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    if sentinel_index >= max_index {
+        return None;
+    }
+    Some((points, evals))
+}
+
+fn typed_batched_cp_semantic_packed_value_claims(
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    num_vars: usize,
+) -> Option<(Vec<Vec<BabyBear>>, Vec<BabyBear>)> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    let mut evals = Vec::new();
+    for block in relation.packed_value_blocks(statement) {
+        for value in block.values {
+            if value.packed_index >= max_index {
+                return None;
+            }
+            points.push(boolean_point_for_index(value.packed_index, num_vars));
+            evals.push(BabyBear::from_u32(value.value));
+        }
+    }
+    Some((points, evals))
+}
+
+fn typed_batched_cp_equality_opening_points(
+    equalities: &[crate::batched_cp::BatchedCpOracleByteEquality],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::with_capacity(equalities.len() * 2);
+    for equality in equalities {
+        let left_index = equality.left_offset / field::BYTES_PER_ELEMENT;
+        let right_index = equality.right_offset / field::BYTES_PER_ELEMENT;
+        if left_index >= max_index || right_index >= max_index {
+            return None;
+        }
+        points.push(boolean_point_for_index(left_index, num_vars));
+        points.push(boolean_point_for_index(right_index, num_vars));
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_linear_opening_points(
+    constraints: &[crate::batched_cp::BatchedCpFoldedPublicInputLinearConstraint],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    for constraint in constraints {
+        for &offset in constraint
+            .beta_coeff_offsets
+            .iter()
+            .chain(constraint.input_scalar_offsets.iter())
+            .chain(std::iter::once(&constraint.output_coeff_offset))
+        {
+            for byte_offset in offset..offset + 8 {
+                let packed_index = byte_offset / field::BYTES_PER_ELEMENT;
+                if packed_index >= max_index {
+                    return None;
+                }
+                points.push(boolean_point_for_index(packed_index, num_vars));
+            }
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_ring_mul_opening_points(
+    constraints: &[crate::batched_cp::BatchedCpFoldedCommitmentRingMulConstraint],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    for constraint in constraints {
+        for offset in constraint
+            .beta_coeff_offsets
+            .iter()
+            .flatten()
+            .chain(constraint.commitment_coeff_offsets.iter().flatten())
+            .chain(std::iter::once(&constraint.output_coeff_offset))
+        {
+            for byte_offset in *offset..*offset + 8 {
+                let packed_index = byte_offset / field::BYTES_PER_ELEMENT;
+                if packed_index >= max_index {
+                    return None;
+                }
+                points.push(boolean_point_for_index(packed_index, num_vars));
+            }
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_eval_ring_mul_opening_points(
+    constraints: &[crate::batched_cp::BatchedCpFoldedEvaluationRingMulConstraint],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    for constraint in constraints {
+        for offset in constraint
+            .beta_coeff_offsets
+            .iter()
+            .flatten()
+            .chain(constraint.evaluation_coeff_offsets.iter().flatten())
+            .chain(std::iter::once(&constraint.output_coeff_offset))
+        {
+            for byte_offset in *offset..*offset + 8 {
+                let packed_index = byte_offset / field::BYTES_PER_ELEMENT;
+                if packed_index >= max_index {
+                    return None;
+                }
+                points.push(boolean_point_for_index(packed_index, num_vars));
+            }
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_poseidon_r1cs_opening_points(
+    constraints: &[crate::batched_cp::BatchedCpPoseidonR1csRowConstraint],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    for constraint in constraints {
+        for byte_offset in typed_batched_cp_poseidon_r1cs_byte_offsets(constraint)? {
+            let packed_index = byte_offset / field::BYTES_PER_ELEMENT;
+            if packed_index >= max_index {
+                return None;
+            }
+            points.push(boolean_point_for_index(packed_index, num_vars));
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_sampled_equalities(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpOracleByteEquality> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .byte_equality_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            selected.extend(block.equalities);
+        } else {
+            selected.extend(typed_batched_cp_sampled_block_equalities(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|equality| (equality.left_offset, equality.right_offset));
+    selected
+}
+
+fn typed_batched_cp_sampled_folded_public_input_linear_constraints(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpFoldedPublicInputLinearConstraint> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .folded_public_input_linear_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            selected.extend(block.constraints);
+        } else {
+            selected.extend(typed_batched_cp_sampled_folded_public_input_linear_block(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.output_coeff_offset,
+            constraint.input_scalar_offsets.clone(),
+            constraint.beta_coeff_offsets.clone(),
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_folded_commitment_ring_mul_constraints(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpFoldedCommitmentRingMulConstraint> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .folded_commitment_ring_mul_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            selected.extend(block.constraints);
+        } else {
+            selected.extend(typed_batched_cp_sampled_folded_commitment_ring_mul_block(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.output_coeff_offset,
+            constraint.output_coeff_index,
+            constraint.commitment_coeff_offsets.clone(),
+            constraint.beta_coeff_offsets.clone(),
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_folded_evaluation_ring_mul_constraints(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpFoldedEvaluationRingMulConstraint> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .folded_evaluation_ring_mul_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            selected.extend(block.constraints);
+        } else {
+            selected.extend(typed_batched_cp_sampled_folded_evaluation_ring_mul_block(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.output_coeff_offset,
+            constraint.output_coeff_index,
+            constraint.evaluation_coeff_offsets.clone(),
+            constraint.beta_coeff_offsets.clone(),
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_poseidon_r1cs_constraints(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpPoseidonR1csRowConstraint> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .poseidon_r1cs_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            for surface in block.surfaces {
+                selected
+                    .extend((0..surface.num_rows).filter_map(|row| surface.row_constraint(row)));
+            }
+        } else {
+            selected.extend(typed_batched_cp_sampled_poseidon_r1cs_block(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|constraint| (constraint.round, constraint.item, constraint.row));
+    selected
+}
+
+fn typed_batched_cp_sampled_poseidon_r1cs_block(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpPoseidonR1csBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpPoseidonR1csRowConstraint> {
+    let total_rows: usize = block.surfaces.iter().map(|surface| surface.num_rows).sum();
+    if total_rows == 0 || max_checks == 0 {
+        return Vec::new();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-poseidon-r1cs-full-domain-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(block.surfaces.len() as u64).to_le_bytes());
+    for surface in &block.surfaces {
+        transcript.extend_from_slice(&(surface.round as u64).to_le_bytes());
+        transcript.extend_from_slice(&(surface.item as u64).to_le_bytes());
+        transcript.extend_from_slice(&(surface.input_len as u64).to_le_bytes());
+        transcript.extend_from_slice(&(surface.num_rows as u64).to_le_bytes());
+    }
+    transcript.extend_from_slice(&(total_rows as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let target_checks = max_checks.min(total_rows);
+    let mut selected = Vec::with_capacity(target_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < target_checks {
+        let challenge = derive_challenge(&transcript, counter, b"poseidon-r1cs-row-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % total_rows;
+        if seen.insert(idx) {
+            let mut local = idx;
+            for surface in &block.surfaces {
+                if local < surface.num_rows {
+                    if let Some(constraint) = surface.row_constraint(local) {
+                        selected.push(constraint);
+                    }
+                    break;
+                }
+                local -= surface.num_rows;
+            }
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|constraint| (constraint.round, constraint.item, constraint.row));
+    selected
+}
+
+fn typed_batched_cp_ajtai_opening_points(
+    constraints: &[crate::batched_cp::BatchedCpAjtaiOpeningLinearConstraint],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    for constraint in constraints {
+        for offset in constraint
+            .public_input_offsets
+            .iter()
+            .chain(constraint.witness_coeff_offsets.iter().flatten())
+            .chain(std::iter::once(&constraint.commitment_coeff_offset))
+        {
+            for byte_offset in *offset..*offset + 8 {
+                let packed_index = byte_offset / field::BYTES_PER_ELEMENT;
+                if packed_index >= max_index {
+                    return None;
+                }
+                points.push(boolean_point_for_index(packed_index, num_vars));
+            }
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_original_r1cs_opening_points(
+    constraints: &[crate::batched_cp::BatchedCpOriginalR1csConstraint],
+    num_vars: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    let max_index = 1usize.checked_shl(num_vars as u32)?;
+    let mut points = Vec::new();
+    for constraint in constraints {
+        for offset in constraint
+            .a_terms
+            .iter()
+            .chain(constraint.b_terms.iter())
+            .chain(constraint.c_terms.iter())
+            .map(|(_, offset)| *offset)
+        {
+            for byte_offset in offset..offset + 8 {
+                let packed_index = byte_offset / field::BYTES_PER_ELEMENT;
+                if packed_index >= max_index {
+                    return None;
+                }
+                points.push(boolean_point_for_index(packed_index, num_vars));
+            }
+        }
+    }
+    Some(points)
+}
+
+fn typed_batched_cp_sampled_ajtai_opening_constraints(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpAjtaiOpeningLinearConstraint> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .ajtai_opening_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            selected.extend(block.constraints);
+        } else {
+            selected.extend(typed_batched_cp_sampled_ajtai_opening_block(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.item,
+            constraint.round,
+            constraint.row,
+            constraint.coeff,
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_original_r1cs_constraints(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpOriginalR1csConstraint> {
+    let relation_id = relation.relation_id();
+    let mut selected = Vec::new();
+    for (block_index, block) in relation
+        .original_r1cs_blocks(statement)
+        .into_iter()
+        .enumerate()
+    {
+        if relation.enforces_full_semantic_blocks() {
+            selected.extend(block.constraints);
+        } else {
+            selected.extend(typed_batched_cp_sampled_original_r1cs_block(
+                seed,
+                &relation_id,
+                statement,
+                block_index,
+                &block,
+                max_checks,
+            ));
+        }
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.item,
+            constraint.original_index,
+            constraint.row,
+            constraint.coeff,
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_original_r1cs_block(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpOriginalR1csBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpOriginalR1csConstraint> {
+    let all = &block.constraints;
+    if all.len() <= max_checks {
+        return all.clone();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-original-r1cs-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(all.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let mut selected = Vec::with_capacity(max_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < max_checks {
+        let challenge = derive_challenge(&transcript, counter, b"original-r1cs-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % all.len();
+        if seen.insert(idx) {
+            selected.push(all[idx].clone());
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.item,
+            constraint.original_index,
+            constraint.row,
+            constraint.coeff,
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_ajtai_opening_block(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpAjtaiOpeningBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpAjtaiOpeningLinearConstraint> {
+    let all = &block.constraints;
+    if all.len() <= max_checks {
+        return all.clone();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-ajtai-opening-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(all.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let mut selected = Vec::with_capacity(max_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < max_checks {
+        let challenge = derive_challenge(&transcript, counter, b"ajtai-opening-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % all.len();
+        if seen.insert(idx) {
+            selected.push(all[idx].clone());
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.item,
+            constraint.round,
+            constraint.row,
+            constraint.coeff,
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_folded_public_input_linear_block(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpFoldedPublicInputLinearBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpFoldedPublicInputLinearConstraint> {
+    let all = &block.constraints;
+    if all.len() <= max_checks {
+        return all.clone();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-folded-public-input-linear-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(all.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let mut selected = Vec::with_capacity(max_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < max_checks {
+        let challenge = derive_challenge(&transcript, counter, b"folded-public-input-linear-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % all.len();
+        if seen.insert(idx) {
+            selected.push(all[idx].clone());
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.output_coeff_offset,
+            constraint.input_scalar_offsets.clone(),
+            constraint.beta_coeff_offsets.clone(),
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_folded_commitment_ring_mul_block(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpFoldedCommitmentRingMulBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpFoldedCommitmentRingMulConstraint> {
+    let all = &block.constraints;
+    if all.len() <= max_checks {
+        return all.clone();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-folded-commitment-ring-mul-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(all.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let mut selected = Vec::with_capacity(max_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < max_checks {
+        let challenge = derive_challenge(&transcript, counter, b"folded-commitment-ring-mul-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % all.len();
+        if seen.insert(idx) {
+            selected.push(all[idx].clone());
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.output_coeff_offset,
+            constraint.output_coeff_index,
+            constraint.commitment_coeff_offsets.clone(),
+            constraint.beta_coeff_offsets.clone(),
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_folded_evaluation_ring_mul_block(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpFoldedEvaluationRingMulBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpFoldedEvaluationRingMulConstraint> {
+    let all = &block.constraints;
+    if all.len() <= max_checks {
+        return all.clone();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-folded-evaluation-ring-mul-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(all.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let mut selected = Vec::with_capacity(max_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < max_checks {
+        let challenge = derive_challenge(&transcript, counter, b"folded-evaluation-ring-mul-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % all.len();
+        if seen.insert(idx) {
+            selected.push(all[idx].clone());
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|constraint| {
+        (
+            constraint.output_coeff_offset,
+            constraint.output_coeff_index,
+            constraint.evaluation_coeff_offsets.clone(),
+            constraint.beta_coeff_offsets.clone(),
+        )
+    });
+    selected
+}
+
+fn typed_batched_cp_sampled_block_equalities(
+    seed: &[u8; 32],
+    relation_id: &crate::digest_core::Digest32,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    block_index: usize,
+    block: &WhirBatchedCpByteEqualityBlock,
+    max_checks: usize,
+) -> Vec<crate::batched_cp::BatchedCpOracleByteEquality> {
+    let all = &block.equalities;
+    if all.len() <= max_checks {
+        return all.clone();
+    }
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-semantic-byte-equality-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(relation_id);
+    transcript.extend_from_slice(&(block_index as u64).to_le_bytes());
+    transcript.push(typed_batched_cp_semantic_family_code(block.family));
+    transcript.extend_from_slice(&(block.label.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(block.label.as_bytes());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(all.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&(max_checks as u64).to_le_bytes());
+
+    let mut selected = Vec::with_capacity(max_checks);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut counter = 0usize;
+    while selected.len() < max_checks {
+        let challenge = derive_challenge(&transcript, counter, b"byte-equality-index")
+            .as_canonical_u32() as usize;
+        let idx = challenge % all.len();
+        if seen.insert(idx) {
+            selected.push(all[idx]);
+        }
+        counter += 1;
+    }
+    selected.sort_by_key(|equality| (equality.left_offset, equality.right_offset));
+    selected
+}
+
+fn typed_batched_cp_semantic_family_code(
+    family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+) -> u8 {
+    match family {
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::PoseidonDigestCorrectness => 1,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::ManifestMembership => 2,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::RoundMessageBinding => 3,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::ChallengeDerivation => 4,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::ChallengeToBetaBinding => 5,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::FoldedOutputDerivation => 6,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::AjtaiOpeningValidity => 7,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::OriginalR1csValidity => 8,
+        crate::batched_cp::BatchedCpSemanticConstraintFamily::ActiveOrDummyPolicy => 9,
+    }
+}
+
+fn typed_batched_cp_equality_evals_match(
+    equalities: &[crate::batched_cp::BatchedCpOracleByteEquality],
+    evals: &[BabyBear],
+) -> bool {
+    if evals.len() != equalities.len() * 2 {
+        return false;
+    }
+    for (idx, equality) in equalities.iter().enumerate() {
+        let Some(left) = byte_from_packed_oracle_eval(evals[2 * idx], equality.left_offset) else {
+            return false;
+        };
+        let Some(right) = byte_from_packed_oracle_eval(evals[2 * idx + 1], equality.right_offset)
+        else {
+            return false;
+        };
+        if left != right {
+            return false;
+        }
+    }
+    true
+}
+
+fn typed_batched_cp_folded_public_input_linear_evals_match(
+    constraints: &[crate::batched_cp::BatchedCpFoldedPublicInputLinearConstraint],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for constraint in constraints {
+        if constraint.beta_coeff_offsets.len() != constraint.input_scalar_offsets.len() {
+            return false;
+        }
+        let mut acc = BabyBear::ZERO;
+        for (&beta_offset, &input_offset) in constraint
+            .beta_coeff_offsets
+            .iter()
+            .zip(constraint.input_scalar_offsets.iter())
+        {
+            let Some(beta_coeff) = read_i64_from_packed_oracle_evals(evals, &mut pos, beta_offset)
+            else {
+                return false;
+            };
+            let Some(input_scalar) =
+                read_i64_from_packed_oracle_evals(evals, &mut pos, input_offset)
+            else {
+                return false;
+            };
+            acc +=
+                babybear_from_i64_canonical(beta_coeff) * babybear_from_i64_canonical(input_scalar);
+        }
+        let Some(output_coeff) =
+            read_i64_from_packed_oracle_evals(evals, &mut pos, constraint.output_coeff_offset)
+        else {
+            return false;
+        };
+        if acc != babybear_from_i64_canonical(output_coeff) {
+            return false;
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_folded_commitment_ring_mul_evals_match(
+    constraints: &[crate::batched_cp::BatchedCpFoldedCommitmentRingMulConstraint],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for constraint in constraints {
+        if constraint.beta_coeff_offsets.len() != constraint.commitment_coeff_offsets.len() {
+            return false;
+        }
+        let mut acc = BabyBear::ZERO;
+        for (beta_offsets, commitment_offsets) in constraint
+            .beta_coeff_offsets
+            .iter()
+            .zip(constraint.commitment_coeff_offsets.iter())
+        {
+            let Some(beta) =
+                read_babybear_ring_from_packed_oracle_evals(evals, &mut pos, beta_offsets)
+            else {
+                return false;
+            };
+            let Some(commitment) =
+                read_babybear_ring_from_packed_oracle_evals(evals, &mut pos, commitment_offsets)
+            else {
+                return false;
+            };
+            let product = babybear_cyclotomic_mul(&beta, &commitment);
+            if constraint.output_coeff_index >= D {
+                return false;
+            }
+            acc += product[constraint.output_coeff_index];
+        }
+        let Some(output_coeff) =
+            read_i64_from_packed_oracle_evals(evals, &mut pos, constraint.output_coeff_offset)
+        else {
+            return false;
+        };
+        if acc != babybear_from_i64_canonical(output_coeff) {
+            return false;
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_folded_evaluation_ring_mul_evals_match(
+    constraints: &[crate::batched_cp::BatchedCpFoldedEvaluationRingMulConstraint],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for constraint in constraints {
+        if constraint.beta_coeff_offsets.len() != constraint.evaluation_coeff_offsets.len() {
+            return false;
+        }
+        let mut acc = BabyBear::ZERO;
+        for (beta_offsets, evaluation_offsets) in constraint
+            .beta_coeff_offsets
+            .iter()
+            .zip(constraint.evaluation_coeff_offsets.iter())
+        {
+            let Some(beta) =
+                read_babybear_ring_from_packed_oracle_evals(evals, &mut pos, beta_offsets)
+            else {
+                return false;
+            };
+            let Some(evaluation) =
+                read_babybear_ring_from_packed_oracle_evals(evals, &mut pos, evaluation_offsets)
+            else {
+                return false;
+            };
+            let product = babybear_cyclotomic_mul(&beta, &evaluation);
+            if constraint.output_coeff_index >= D {
+                return false;
+            }
+            acc += product[constraint.output_coeff_index];
+        }
+        let Some(output_coeff) =
+            read_i64_from_packed_oracle_evals(evals, &mut pos, constraint.output_coeff_offset)
+        else {
+            return false;
+        };
+        if acc != babybear_from_i64_canonical(output_coeff) {
+            return false;
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_poseidon_r1cs_evals_match(
+    constraints: &[crate::batched_cp::BatchedCpPoseidonR1csRowConstraint],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for constraint in constraints {
+        let Some((a, b, c)) = typed_batched_cp_poseidon_r1cs_row_eval(constraint, evals, &mut pos)
+        else {
+            return false;
+        };
+        if a * b != c {
+            return false;
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_ajtai_opening_evals_match(
+    constraints: &[crate::batched_cp::BatchedCpAjtaiOpeningLinearConstraint],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for constraint in constraints {
+        if constraint.coeff >= D
+            || constraint.matrix_row.len()
+                != constraint.public_input_offsets.len() + constraint.witness_coeff_offsets.len()
+        {
+            return false;
+        }
+
+        let mut acc = BabyBear::ZERO;
+        for (matrix_elem, &public_offset) in constraint
+            .matrix_row
+            .iter()
+            .zip(constraint.public_input_offsets.iter())
+        {
+            let Some(public_scalar) =
+                read_i64_from_packed_oracle_evals(evals, &mut pos, public_offset)
+            else {
+                return false;
+            };
+            acc += babybear_from_i64_canonical(matrix_elem.coeffs[constraint.coeff])
+                * babybear_from_i64_canonical(public_scalar);
+        }
+
+        for (matrix_elem, witness_offsets) in constraint
+            .matrix_row
+            .iter()
+            .skip(constraint.public_input_offsets.len())
+            .zip(constraint.witness_coeff_offsets.iter())
+        {
+            let Some(witness) =
+                read_babybear_ring_from_packed_oracle_evals(evals, &mut pos, witness_offsets)
+            else {
+                return false;
+            };
+            let product =
+                babybear_cyclotomic_mul(&ring_element_to_babybear_array(matrix_elem), &witness);
+            acc += product[constraint.coeff];
+        }
+
+        let Some(commitment_coeff) =
+            read_i64_from_packed_oracle_evals(evals, &mut pos, constraint.commitment_coeff_offset)
+        else {
+            return false;
+        };
+        if acc != babybear_from_i64_canonical(commitment_coeff) {
+            return false;
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_original_r1cs_evals_match(
+    constraints: &[crate::batched_cp::BatchedCpOriginalR1csConstraint],
+    evals: &[BabyBear],
+) -> bool {
+    let mut pos = 0usize;
+    for constraint in constraints {
+        let Some(a) =
+            typed_batched_cp_original_r1cs_linear_eval(&constraint.a_terms, evals, &mut pos)
+        else {
+            return false;
+        };
+        let Some(b) =
+            typed_batched_cp_original_r1cs_linear_eval(&constraint.b_terms, evals, &mut pos)
+        else {
+            return false;
+        };
+        let Some(c) =
+            typed_batched_cp_original_r1cs_linear_eval(&constraint.c_terms, evals, &mut pos)
+        else {
+            return false;
+        };
+        if a * b != c {
+            return false;
+        }
+    }
+    pos == evals.len()
+}
+
+fn typed_batched_cp_original_r1cs_linear_eval(
+    terms: &[(i64, usize)],
+    evals: &[BabyBear],
+    pos: &mut usize,
+) -> Option<BabyBear> {
+    let mut acc = BabyBear::ZERO;
+    for &(matrix_coeff, value_offset) in terms {
+        let value = read_i64_from_packed_oracle_evals(evals, pos, value_offset)?;
+        acc += babybear_from_i64_canonical(matrix_coeff) * babybear_from_i64_canonical(value);
+    }
+    Some(acc)
+}
+
+fn typed_batched_cp_poseidon_r1cs_byte_offsets(
+    constraint: &crate::batched_cp::BatchedCpPoseidonR1csRowConstraint,
+) -> Option<Vec<usize>> {
+    let (r1cs, layout) = crate::snark::cp_snark::generate_poseidon2_private_digest_r1cs(
+        b"fs-commit",
+        constraint.input_len,
+    );
+    let mut offsets = Vec::new();
+    for matrix in [&r1cs.a, &r1cs.b, &r1cs.c] {
+        for &(_, col, _) in matrix
+            .entries
+            .iter()
+            .filter(|&&(row, _, _)| row == constraint.row)
+        {
+            if col == layout.off_one {
+                continue;
+            }
+            let offset = typed_batched_cp_poseidon_var_offset(constraint, &layout, col)?;
+            offsets.extend(offset..offset + 4);
+        }
+    }
+    Some(offsets)
+}
+
+fn typed_batched_cp_poseidon_r1cs_row_eval(
+    constraint: &crate::batched_cp::BatchedCpPoseidonR1csRowConstraint,
+    evals: &[BabyBear],
+    pos: &mut usize,
+) -> Option<(BabyBear, BabyBear, BabyBear)> {
+    let (r1cs, layout) = crate::snark::cp_snark::generate_poseidon2_private_digest_r1cs(
+        b"fs-commit",
+        constraint.input_len,
+    );
+    if constraint.row >= r1cs.num_constraints {
+        return None;
+    }
+    let a = typed_batched_cp_poseidon_lc_eval(&r1cs.a, constraint, &layout, evals, pos)?;
+    let b = typed_batched_cp_poseidon_lc_eval(&r1cs.b, constraint, &layout, evals, pos)?;
+    let c = typed_batched_cp_poseidon_lc_eval(&r1cs.c, constraint, &layout, evals, pos)?;
+    Some((a, b, c))
+}
+
+fn typed_batched_cp_poseidon_lc_eval(
+    matrix: &crate::r1cs::SparseMatrix,
+    constraint: &crate::batched_cp::BatchedCpPoseidonR1csRowConstraint,
+    layout: &crate::snark::cp_snark::Poseidon2PrivateDigestR1csLayout,
+    evals: &[BabyBear],
+    pos: &mut usize,
+) -> Option<BabyBear> {
+    let mut acc = BabyBear::ZERO;
+    for &(_, col, coeff) in matrix
+        .entries
+        .iter()
+        .filter(|&&(row, _, _)| row == constraint.row)
+    {
+        let value = if col == layout.off_one {
+            BabyBear::ONE
+        } else {
+            let offset = typed_batched_cp_poseidon_var_offset(constraint, layout, col)?;
+            read_u32_from_packed_oracle_evals(evals, pos, offset).map(BabyBear::from_u32)?
+        };
+        acc += babybear_from_i64_canonical(coeff) * value;
+    }
+    Some(acc)
+}
+
+fn typed_batched_cp_poseidon_var_offset(
+    constraint: &crate::batched_cp::BatchedCpPoseidonR1csRowConstraint,
+    layout: &crate::snark::cp_snark::Poseidon2PrivateDigestR1csLayout,
+    col: usize,
+) -> Option<usize> {
+    if (layout.off_output..layout.off_output + 8).contains(&col) {
+        return constraint
+            .output_offsets
+            .get(col - layout.off_output)
+            .copied();
+    }
+    if (layout.off_input..layout.off_input + layout.input_len).contains(&col) {
+        return constraint
+            .input_offsets
+            .get(col - layout.off_input)
+            .copied();
+    }
+    let aux_start = layout.off_input + layout.input_len;
+    if (aux_start..layout.num_variables).contains(&col) {
+        return constraint.aux_offsets.get(col - aux_start).copied();
+    }
+    None
+}
+
+fn read_babybear_ring_from_packed_oracle_evals(
+    evals: &[BabyBear],
+    pos: &mut usize,
+    coeff_offsets: &[usize],
+) -> Option<[BabyBear; D]> {
+    if coeff_offsets.len() != D {
+        return None;
+    }
+    let mut coeffs = [BabyBear::ZERO; D];
+    for (idx, out) in coeffs.iter_mut().enumerate() {
+        let coeff = read_i64_from_packed_oracle_evals(evals, pos, coeff_offsets[idx])?;
+        *out = babybear_from_i64_canonical(coeff);
+    }
+    Some(coeffs)
+}
+
+fn babybear_from_i64_canonical(value: i64) -> BabyBear {
+    const BABYBEAR_MODULUS: i128 = 2_013_265_921;
+    BabyBear::from_u32((value as i128).rem_euclid(BABYBEAR_MODULUS) as u32)
+}
+
+fn ring_element_to_babybear_array(value: &RingElement) -> [BabyBear; D] {
+    let mut out = [BabyBear::ZERO; D];
+    for (idx, coeff) in value.coeffs.iter().enumerate() {
+        out[idx] = babybear_from_i64_canonical(*coeff);
+    }
+    out
+}
+
+fn babybear_cyclotomic_mul(a: &[BabyBear; D], b: &[BabyBear; D]) -> [BabyBear; D] {
+    let mut acc = [BabyBear::ZERO; D];
+    for (i, &a_i) in a.iter().enumerate() {
+        for (j, &b_j) in b.iter().enumerate() {
+            let prod = a_i * b_j;
+            let idx = i + j;
+            if idx < D {
+                acc[idx] += prod;
+            } else {
+                acc[idx - D] -= prod;
+            }
+        }
+    }
+    acc
+}
+
+fn read_i64_from_packed_oracle_evals(
+    evals: &[BabyBear],
+    pos: &mut usize,
+    byte_offset: usize,
+) -> Option<i64> {
+    let mut bytes = [0u8; 8];
+    for (idx, out) in bytes.iter_mut().enumerate() {
+        let eval = *evals.get(*pos)?;
+        *pos += 1;
+        *out = byte_from_packed_oracle_eval(eval, byte_offset + idx)?;
+    }
+    Some(i64::from_le_bytes(bytes))
+}
+
+fn read_u32_from_packed_oracle_evals(
+    evals: &[BabyBear],
+    pos: &mut usize,
+    byte_offset: usize,
+) -> Option<u32> {
+    let mut bytes = [0u8; 4];
+    for (idx, out) in bytes.iter_mut().enumerate() {
+        let eval = *evals.get(*pos)?;
+        *pos += 1;
+        *out = byte_from_packed_oracle_eval(eval, byte_offset + idx)?;
+    }
+    Some(u32::from_le_bytes(bytes))
+}
+
+fn byte_from_packed_oracle_eval(eval: BabyBear, byte_offset: usize) -> Option<u8> {
+    let shift = (byte_offset % field::BYTES_PER_ELEMENT) * 8;
+    let value = eval.as_canonical_u32();
+    if value >= (1u32 << (8 * field::BYTES_PER_ELEMENT)) {
+        return None;
+    }
+    Some(((value >> shift) & 0xff) as u8)
+}
+
+fn typed_batched_cp_opening_point(
+    seed: &[u8; 32],
+    relation: &WhirBatchedCpRelationContext,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+    num_vars: usize,
+) -> Vec<BabyBear> {
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"whir-typed-batched-cp-product-domain-v1");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(&relation.relation_id());
+    let statement_bytes = statement.canonical_bytes();
+    transcript.extend_from_slice(&(statement_bytes.len() as u64).to_le_bytes());
+    transcript.extend_from_slice(&statement_bytes);
+    transcript.extend_from_slice(&(num_vars as u64).to_le_bytes());
+    (0..num_vars)
+        .map(|idx| derive_challenge(&transcript, idx, b"oracle-point"))
+        .collect()
+}
+
 fn verify_output_with_transcript_instance(
     vk: &WhirVerifyingKey,
     r1cs_instance: &[u8],
@@ -1272,6 +4451,12 @@ fn verify_output_with_transcript_instance(
     ctx: &WhirContext,
 ) -> bool {
     if !proof.is_output {
+        return false;
+    }
+    if !proof.private_opening_evals.is_empty() {
+        return false;
+    }
+    if !proof.family_columnar_subproofs.is_empty() {
         return false;
     }
 
@@ -1480,6 +4665,8 @@ fn prove_cp_r1cs(
         whir_pcs_proof,
         z_eval,
         linear_checks,
+        private_opening_evals: Vec::new(),
+        family_columnar_subproofs: Vec::new(),
         num_vars,
         is_output: false,
     }
@@ -1493,6 +4680,12 @@ fn verify_cp_r1cs(
 ) -> bool {
     // Must not be marked as output
     if proof.is_output {
+        return false;
+    }
+    if !proof.private_opening_evals.is_empty() {
+        return false;
+    }
+    if !proof.family_columnar_subproofs.is_empty() {
         return false;
     }
     if instance.is_empty() {
@@ -1631,6 +4824,8 @@ fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
         whir_pcs_proof,
         z_eval: w_eval,
         linear_checks: Vec::new(),
+        private_opening_evals: Vec::new(),
+        family_columnar_subproofs: Vec::new(),
         num_vars,
         is_output: false,
     }
@@ -1640,7 +4835,10 @@ fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool 
     if proof.is_output {
         return false;
     }
-    if !proof.linear_checks.is_empty() {
+    if !proof.linear_checks.is_empty()
+        || !proof.private_opening_evals.is_empty()
+        || !proof.family_columnar_subproofs.is_empty()
+    {
         return false;
     }
 
@@ -1821,7 +5019,7 @@ fn whir_commit_and_prove_multi(
         let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
         let ml_point = MultilinearPoint::new(ef_point);
         let _whir_eval = statement.evaluate(&ml_point);
-        claimed_evals.push(mle_eval_bb(evaluations, point));
+        claimed_evals.push(mle_eval_bb_fast(evaluations, point));
     }
 
     // Normalize for verifier
@@ -1868,6 +5066,19 @@ fn whir_verify_opening_multi(
     points: &[Vec<BabyBear>],
     claimed_evals: &[BabyBear],
 ) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        whir_verify_opening_multi_inner(seed, num_variables, proof, points, claimed_evals)
+    }))
+    .unwrap_or(false)
+}
+
+fn whir_verify_opening_multi_inner(
+    seed: &[u8; 32],
+    num_variables: usize,
+    proof: &WhirPcsProof<F, EF, WhirMmcs>,
+    points: &[Vec<BabyBear>],
+    claimed_evals: &[BabyBear],
+) -> bool {
     if points.len() != claimed_evals.len() {
         return false;
     }
@@ -1876,15 +5087,29 @@ fn whir_verify_opening_multi(
     }
 
     let infra = build_whir_infra(seed, num_variables);
+    let entry = WhirVerifierInfraEntry {
+        num_variables,
+        infra,
+    };
+    whir_verify_opening_multi_with_entry(&entry, proof, points, claimed_evals)
+}
 
+fn whir_verify_opening_multi_with_entry(
+    entry: &WhirVerifierInfraEntry,
+    proof: &WhirPcsProof<F, EF, WhirMmcs>,
+    points: &[Vec<BabyBear>],
+    claimed_evals: &[BabyBear],
+) -> bool {
+    let num_variables = entry.num_variables;
     // Create verifier challenger (must match prover's)
-    let mut verifier_challenger = make_challenger(&infra.perm);
-    infra
+    let mut verifier_challenger = make_challenger(&entry.infra.perm);
+    entry
+        .infra
         .domainsep
         .observe_domain_separator(&mut verifier_challenger);
 
     // Parse commitment
-    let commitment_reader = CommitmentReader::new(&infra.params);
+    let commitment_reader = CommitmentReader::new(&entry.infra.params);
     let parsed_commitment =
         commitment_reader.parse_commitment::<F, DIGEST_ELEMS>(proof, &mut verifier_challenger);
 
@@ -1899,7 +5124,7 @@ fn whir_verify_opening_multi(
         verifier_statement.add_evaluated_constraint(ml_point, EF::from(claimed_eval));
     }
 
-    let verifier = WhirVerifier::new(&infra.params);
+    let verifier = WhirVerifier::new(&entry.infra.params);
     verifier
         .verify(
             proof,
@@ -2303,6 +5528,28 @@ fn mle_eval_bb(table: &[BabyBear], point: &[BabyBear]) -> BabyBear {
         current = next;
     }
     current[0]
+}
+
+fn mle_eval_bb_fast(table: &[BabyBear], point: &[BabyBear]) -> BabyBear {
+    if let Some(index) = boolean_index_from_point(point) {
+        return table.get(index).copied().unwrap_or(BabyBear::ZERO);
+    }
+    mle_eval_bb(table, point)
+}
+
+fn boolean_index_from_point(point: &[BabyBear]) -> Option<usize> {
+    if point.len() > usize::BITS as usize {
+        return None;
+    }
+    let mut index = 0usize;
+    for (bit, &value) in point.iter().enumerate() {
+        if value == BabyBear::ONE {
+            index |= 1usize << bit;
+        } else if value != BabyBear::ZERO {
+            return None;
+        }
+    }
+    Some(index)
 }
 
 /// Evaluate eq(a, b) = prod_i (a_i * b_i + (1-a_i)*(1-b_i)) in O(n) field ops.
@@ -3270,6 +6517,8 @@ mod tests {
                 ]],
                 z_eval: BabyBear::from_u32(15),
             }],
+            private_opening_evals: vec![BabyBear::from_u32(16), BabyBear::from_u32(17)],
+            family_columnar_subproofs: Vec::new(),
             num_vars: 3,
             is_output: true,
         };
@@ -3347,6 +6596,8 @@ mod tests {
                 ]],
                 z_eval: BabyBear::from_u32(15),
             }],
+            private_opening_evals: vec![BabyBear::from_u32(16), BabyBear::from_u32(17)],
+            family_columnar_subproofs: Vec::new(),
             num_vars: 3,
             is_output,
         }
@@ -3446,6 +6697,27 @@ mod tests {
         assert_eq!(val, BabyBear::from_u32(1));
         let val = mle_eval_bb(&table, &[BabyBear::ONE, BabyBear::ONE]);
         assert_eq!(val, BabyBear::from_u32(4));
+    }
+
+    #[test]
+    fn mle_eval_fast_matches_boolean_table_points() {
+        let table = (0..8)
+            .map(|idx| BabyBear::from_u32(idx + 10))
+            .collect::<Vec<_>>();
+        for idx in 0..table.len() {
+            let point = boolean_point_for_index(idx, 3);
+            assert_eq!(mle_eval_bb_fast(&table, &point), table[idx]);
+            assert_eq!(
+                mle_eval_bb_fast(&table, &point),
+                mle_eval_bb(&table, &point)
+            );
+        }
+
+        let non_boolean = [BabyBear::from_u32(2), BabyBear::ZERO, BabyBear::ONE];
+        assert_eq!(
+            mle_eval_bb_fast(&table, &non_boolean),
+            mle_eval_bb(&table, &non_boolean)
+        );
     }
 
     #[test]
