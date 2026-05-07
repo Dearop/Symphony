@@ -197,6 +197,36 @@ pub trait BackendSnark {
         None
     }
 
+    /// Optional SYMBT3 CP-aware batched typed-CP relation description.
+    ///
+    /// This is a development hook for the next WHIR CP architecture. Returning
+    /// `Some` here must not affect product public routing until the SYMBT3 path
+    /// has equivalent negative coverage and is explicitly promoted.
+    fn symbt3_relation_description(
+        _descriptor: &crate::batched_cp::BatchedCpSymbt3SetupDescriptor,
+    ) -> Option<RelationDescription> {
+        None
+    }
+
+    /// Optional SYMBT3 proving path. Initial foundation implementations may
+    /// return `None` until algebraic CP blocks are enforced.
+    fn prove_symbt3_batched_cp(
+        _pk: &Self::ProvingKey,
+        _statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        _witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+    ) -> Option<Self::Proof> {
+        None
+    }
+
+    /// Optional SYMBT3 verification path.
+    fn verify_symbt3_batched_cp(
+        _vk: &Self::VerifyingKey,
+        _statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        _proof: &Self::Proof,
+    ) -> Option<bool> {
+        None
+    }
+
     /// Optional typed folded-output proving path.
     fn prove_typed_output(
         _pk: &Self::ProvingKey,

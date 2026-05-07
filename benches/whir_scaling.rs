@@ -51,7 +51,8 @@ use std::time::Duration;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use symphony::batched_cp::{
     BatchedCpBucket, BatchedCpEvaluator, BatchedCpItem, BatchedCpSemanticConstraintFamily,
-    BatchedCpSemanticFamilyColumnarV2Table,
+    BatchedCpSemanticFamilyColumnarV2Table, BatchedCpSymbt3RelationDescription,
+    BatchedCpSymbt3SetupDescriptor,
 };
 use symphony::commitment::{AjtaiParams, Commitment};
 use symphony::cp_backend_api::CpBackend;
@@ -2162,6 +2163,136 @@ fn bench_batched_cp_semantic_family_columnar_poseidon_v2_vs_k(c: &mut Criterion)
     group.finish();
 }
 
+fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
+    let group_name = format!("whir_scaling/{profile}_vs_k");
+    if !criterion_filter_allows(&group_name) {
+        return;
+    }
+    let mut group = c.benchmark_group(group_name);
+    let ks = public_verify_ks();
+    let base_fixture = public_whir_fixture(1);
+
+    for &k in &ks {
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+            bucket.shape.clone(),
+            &base_fixture.ajtai,
+            &base_fixture.r1cs,
+            base_fixture.input_bound,
+        );
+        let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+            .unwrap_or_else(|| panic!("WHIR exposes {profile} relation"));
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+            relation.context.as_ref().expect("SYMBT3 context"),
+        )
+        .unwrap_or_else(|_| panic!("{profile} context decodes"));
+        let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+        let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+        let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
+            .unwrap_or_else(|| panic!("{profile} proof"));
+        let verify_ok = <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof)
+            .unwrap_or(false);
+        assert!(verify_ok, "{profile} proof must verify for k={k}");
+        let source_r1cs_claims = public.source_assignment_roots.len()
+            * decoded_relation.r1cs_evaluator_layout.num_constraints
+            * D;
+        let folded_gr1cs_claims = decoded_relation
+            .gr1cs_residual_layout
+            .folded_evaluation_coordinate_count;
+        let folded_gr1cs_product_claims = decoded_relation
+            .gr1cs_residual_layout
+            .folded_evaluation_coordinate_count
+            / 3;
+        eprintln!(
+            "[{profile}_vs_k k={k}] verify={} top_level_whir_proof_count=1 \
+             family_columnar_subproof_count={} proof_bytes={} public_statement_bytes={} \
+             backend_table_count=1 opened_field_elements={} whir_num_vars={} sumcheck_rounds={} \
+             transcript_squeezes={} \
+             pcs_merkle_opening_proxy={} ajtai_linear_form_claims={} product_law={:?} \
+             beta_action={:?} ring_degree={} ajtai_matrix_vector_evaluator={:?} \
+             kappa={} opening_len={} projection_mode={:?} range_mode={:?} bound_b={} \
+             projection_output_len={} monomial_embedding_enabled=false",
+            verify_ok,
+            proof.family_columnar_subproofs.len(),
+            canonical_whir_proof_bytes(&proof).len(),
+            public.canonical_bytes().len(),
+            proof.private_opening_evals.len(),
+            proof.num_vars,
+            proof.sumcheck_rounds_4.len(),
+            proof.private_opening_evals.len(),
+            proof.private_opening_evals.len(),
+            decoded_relation
+                .ring_module_layout
+                .commitment_module_dimension
+                * D,
+            decoded_relation.algebra_law.product_law,
+            decoded_relation.algebra_law.beta_action,
+            decoded_relation.algebra_law.ring_degree,
+            decoded_relation
+                .ajtai_linear_algebra_layout
+                .matrix_vector_evaluator,
+            decoded_relation.ajtai_linear_algebra_layout.kappa,
+            decoded_relation.ajtai_linear_algebra_layout.opening_len,
+            decoded_relation
+                .ajtai_norm_range_layout
+                .projection_layout
+                .projection_mode,
+            decoded_relation.ajtai_norm_range_layout.range_mode,
+            decoded_relation.ajtai_norm_range_layout.norm_bound,
+            decoded_relation
+                .ajtai_norm_range_layout
+                .projection_layout
+                .output_len,
+        );
+        eprintln!(
+            "[{profile}_vs_k k={k}] source_r1cs_residual_claims={} \
+             folded_gr1cs_boundary_claims={} folded_gr1cs_product_claims={}",
+            source_r1cs_claims, folded_gr1cs_claims, folded_gr1cs_product_claims,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new(format!("prove_{profile}"), k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::prove_symbt3_batched_cp(
+                        black_box(&pk),
+                        black_box(&public),
+                        black_box(&witness),
+                    )
+                    .unwrap_or_else(|| panic!("{profile} proof")),
+                );
+            });
+        });
+        group.bench_function(BenchmarkId::new(format!("verify_{profile}"), k), |b| {
+            b.iter(|| {
+                black_box(
+                    <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+                        black_box(&vk),
+                        black_box(&public),
+                        black_box(&proof),
+                    )
+                    .unwrap_or(false),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_e_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_e");
+}
+
+fn bench_symbt3_f_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_f");
+}
+
+fn bench_symbt3_g_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_g");
+}
+
 fn hex_digest(digest: &[u8; 32]) -> String {
     digest
         .iter()
@@ -2190,6 +2321,9 @@ criterion_group!(
     bench_batched_cp_semantic_columnar_poseidon_v2_vs_k,
     bench_batched_cp_semantic_family_columnar_v2_vs_k,
     bench_batched_cp_semantic_family_columnar_poseidon_v2_vs_k,
+    bench_symbt3_e_vs_k,
+    bench_symbt3_f_vs_k,
+    bench_symbt3_g_vs_k,
     bench_public_proof_batched_cp_size_vs_k,
 );
 criterion_main!(benches);

@@ -568,6 +568,106 @@ subproof count, so the next P4 performance lever is shared family-level WHIR
 verification or multi-proof aggregation, not more blind table splitting. This
 is still a development-only, non-authoritative path. Product public
 verification still uses the authoritative monolithic typed CP route.
+
+`SYMBT3` is the CP-aware WHIR oracle relation target. It is not a byte/table
+proof path: CP round messages `M_i(T,U_i)` are modeled as first-class
+committed message oracles, their roots are public CP commitments, and
+Fiat-Shamir challenges are derived outside the proven relation. `SYMBT3-G`
+extends the first algebraic blocks with a versioned `Symbt3AlgebraLawV1`,
+`RqNegacyclicConvolutionV1` product law, `RingCoefficientActionV1` beta
+action, a versioned `Symbt3AjtaiLinearAlgebraLayoutV1`, folded Ajtai opening
+algebra, source-R1CS residual columns, folded-GR1CS boundary residual columns,
+and a direct folded GR1CS product-residual zero-check over public folded `L/R/O`
+ring-coordinate chunks. It also adds `Symbt3AjtaiNormRangeLayoutV1` with a
+direct development projection/range predicate over the folded Ajtai opening.
+`relation_id` binds stable relation metadata plus the
+`Symbt3RingModuleLayout`, `AjtaiCommitLayoutV1`,
+`Symbt3R1csEvaluatorLayoutV1`, `Symbt3Gr1csResidualLayoutV1`,
+`Symbt3AlgebraLawV1`, `Symbt3AjtaiLinearAlgebraLayoutV1`, and
+`Symbt3AjtaiNormRangeLayoutV1`, and
+`Symbt3FoldedGr1csProductResidualLayoutV1`;
+`folding_transcript_digest` binds the input/public boundary, source assignment
+roots, source Ajtai opening roots, source commitment boundary, message oracle
+roots, WHIR parameter digest, batch size, and active count before beta is
+sampled. Folded/output fields are bound later through
+`proof_public_statement_digest`, so they do not change beta.
+
+The WHIR development hook still produces one top-level proof object with no
+family-columnar subproofs. It checks q-wrapped ring/module folded commitment
+and opening identities plus the sampled folded Ajtai residual
+`A * o_fold - c_fold = 0` over the indexed Ajtai evaluator embedded in the
+development relation context. It also checks source-R1CS residual columns
+computed from setup-bound sparse evaluator metadata and folded-GR1CS boundary
+residual columns. `SYMBT3-F` additionally exposes folded GR1CS product columns
+under the declared algebra law and checks the Boolean-domain residual
+`sum_g eq(g, rho) * sel(g) * (ProductLaw(L,R)(g) - O(g)) = 0` with a degree-3
+sumcheck plus final WHIR/PCS openings. The default development profile uses
+`RqNegacyclicConvolutionV1` over `R_F = F[X]/(X^D + 1)` in the WHIR check
+field. This is a semantic upgrade from D2's field-coordinate product scaffold,
+but authority over integer/lattice `R_q` semantics still requires explicit
+modulus, range, reduction, zero-knowledge, and soundness treatment.
+
+`SYMBT3-F` proves the Ajtai commitment/opening linear algebra currently
+enforced by the single SYMBT3 table: folded openings and folded commitments are
+ring-beta linear combinations of the source opening/commitment columns, and
+the folded Ajtai map residual `A * f_fold - c_fold = 0` is checked through the
+direct development matrix-vector evaluator. `SourceAjtaiMapConsistency` remains
+deferred as a separate optional source-opening authority block.
+
+`SYMBT3-G` adds development low-norm/range evidence for the folded Ajtai
+opening. The first profile uses `DirectDevDenseProjectionV1`, which projects
+`flatten(f_fold)` by the identity development evaluator, and
+`DirectSignedRangeDevV1`, which checks the projected coefficients against the
+declared signed bound inside the same single SYMBT3 table. Monomial embedding
+range authority is not enabled yet.
+
+`SYMBT3-G` proves only development algebraic consistency and a development
+check-field range predicate: it does not prove full integer/mod-q lattice range
+authority, manifest membership, CP message semantic validity, hash-byte
+construction, FS openings, message digest byte equality, canonical
+message-section reconstruction, zero knowledge, or final production WHIR/Σ-IOP
+soundness.
+
+`SYMBT3-G` is explicitly `NonAuthoritativeDevelopment` and `NonZkDevelopment`.
+Product public verification still uses the authoritative monolithic typed CP
+route until `SYMBT3` has all CP algebraic blocks, negative coverage, a
+zero-knowledge story, and benchmark data. The first `symbt3_c_vs_k`
+architecture benchmark, recorded on 2026-05-06 for `k=1,2`, confirmed the
+guard that the development proof has one top-level WHIR proof and zero
+family-columnar subproofs. It measured `k=1` at 340,749 proof bytes,
+3.6701 ms prove mean, and 4.4679 ms verify mean; `k=2` at 419,997 proof
+bytes, 5.5698 ms prove mean, and 6.1235 ms verify mean. These are
+development-path architecture numbers, not product public-verifier
+performance claims. The first `symbt3_d_vs_k` architecture benchmark, recorded
+on 2026-05-07 for `k=1,2`, preserved the same proof-shape guard:
+`top_level_whir_proof_count=1` and `family_columnar_subproof_count=0`. It
+measured `k=1` at 330,836 proof bytes, 4.7096 ms prove mean, and 5.3228 ms
+verify mean; `k=2` at 404,215 proof bytes, 7.0489 ms prove mean, and
+7.0847 ms verify mean.
+The first `symbt3_d2_vs_k` benchmark preserved the same proof-shape guard while
+adding the direct folded GR1CS product-residual sumcheck: `k=1` measured
+394,767 proof bytes, 6.2087 ms prove mean, and 6.4224 ms verify mean; `k=2`
+measured 401,147 proof bytes, 7.4955 ms prove mean, and 7.2242 ms verify mean.
+The first `symbt3_e_vs_k` benchmark preserved the one-proof guard while
+switching the default product law to `RqNegacyclicConvolutionV1` and beta action
+to `RingCoefficientActionV1`: `k=1` measured 395,418 proof bytes, 6.4393 ms
+prove mean, and 7.1004 ms verify mean; `k=2` measured 406,431 proof bytes,
+8.2783 ms prove mean, and 7.4959 ms verify mean. These are still
+development-path architecture numbers, not product public-verifier performance
+claims.
+The first `symbt3_f_vs_k` benchmark adds the explicit Ajtai algebra layout while
+preserving the one-proof guard: `k=1` measured 407,284 proof bytes, 7.1685 ms
+prove mean, and 6.7837 ms verify mean; `k=2` measured 422,389 proof bytes,
+8.0666 ms prove mean, and 7.7776 ms verify mean. These are still
+development-path architecture numbers, not product public-verifier performance
+claims.
+The first `symbt3_g_vs_k` benchmark adds the folded Ajtai projection/range
+layout while preserving the one-proof guard: `k=1` measured 412,101 proof
+bytes, 7.3181 ms prove mean, and 7.1763 ms verify mean; `k=2` measured 416,389
+proof bytes, 8.6389 ms prove mean, and 8.0182 ms verify mean. The projection
+mode is `DirectDevDenseProjectionV1`, range mode is `DirectSignedRangeDevV1`,
+and monomial embedding is disabled. These remain development-path architecture
+numbers, not product public-verifier performance claims.
 WHIR can now prove and verify a `SYMBTC1` product-domain oracle proof for this
 context: one WHIR commitment to the canonical batch oracle and one
 transcript-bound opening, plus openings for all verifier-known packed oracle

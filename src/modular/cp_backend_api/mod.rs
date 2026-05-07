@@ -64,6 +64,22 @@ pub trait CpBackend {
         statement: &crate::batched_cp::BatchedCpPublicStatement,
         proof: &Self::Proof,
     ) -> Option<bool>;
+    fn symbt3_relation_description(
+        descriptor: &crate::batched_cp::BatchedCpSymbt3SetupDescriptor,
+    ) -> Option<RelationDescription> {
+        let _ = descriptor;
+        None
+    }
+    fn prove_symbt3_batched_cp(
+        pk: &Self::ProvingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+    ) -> Option<Self::Proof>;
+    fn verify_symbt3_batched_cp(
+        vk: &Self::VerifyingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        proof: &Self::Proof,
+    ) -> Option<bool>;
 }
 
 impl<T: BackendSnark> CpBackend for T {
@@ -143,5 +159,27 @@ impl<T: BackendSnark> CpBackend for T {
         proof: &Self::Proof,
     ) -> Option<bool> {
         T::verify_typed_batched_cp(vk, statement, proof)
+    }
+
+    fn symbt3_relation_description(
+        descriptor: &crate::batched_cp::BatchedCpSymbt3SetupDescriptor,
+    ) -> Option<RelationDescription> {
+        T::symbt3_relation_description(descriptor)
+    }
+
+    fn prove_symbt3_batched_cp(
+        pk: &Self::ProvingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+    ) -> Option<Self::Proof> {
+        T::prove_symbt3_batched_cp(pk, statement, witness)
+    }
+
+    fn verify_symbt3_batched_cp(
+        vk: &Self::VerifyingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        proof: &Self::Proof,
+    ) -> Option<bool> {
+        T::verify_symbt3_batched_cp(vk, statement, proof)
     }
 }

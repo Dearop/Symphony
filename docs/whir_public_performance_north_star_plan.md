@@ -36,6 +36,40 @@ The performance north star is not "make the current R1CS faster." It is to make
 the public verifier see a compressed CP statement and verify a proof whose
 outer cost is near-constant or logarithmic in the number of folded statements.
 
+## Recalibrated Diagnosis
+
+The `SYMBT2F` message-section measurements changed the north star. The problem
+is not that the mathematical CP statement is over-constrained. The problem is
+that the implementation is over-materializing CP semantics at the byte,
+serialization, table, and proof-object layer.
+
+Symphony's CP-SNARK boundary should look like one CP proof over committed
+folding-message oracles. The CP proof should establish the folding algebra from
+the input accumulator to the folded output accumulator. It should not embed a
+large Fiat-Shamir circuit, a hash-transcript circuit, or a forest of
+commitment-opening byte-equality proofs. Fiat-Shamir challenge derivation and
+message commitment binding belong in the proof-system/transcript layer; the
+proven CP relation should consume the committed message oracles and prove the
+algebraic folding relation over them.
+
+The current authoritative monolithic typed CP path is sound, but its audit
+profile shows the cost inversion clearly: for `k = 2`, exact-byte Poseidon
+gadgets and byte constraints dominate the actual folding algebra by orders of
+magnitude. The `SYMBT2F` development path then repeats the same mistake at a
+different layer: it turns canonical bytes into section tables and proves many
+local table predicates with 82-88 independent WHIR subproofs. That is useful as
+a diagnostic harness, but it is not the Symphony CP-SNARK architecture.
+
+The new implementation rule is:
+
+```text
+If a check only proves that byte encodings, transcript bodies, or hash inputs
+were formed correctly, do not assume it belongs inside pi_cp.
+```
+
+The next architecture target is therefore `SYMBT3`: a CP-aware WHIR oracle
+relation, not more `SYMBT2F` table splitting.
+
 ## North Star Target
 
 The target public verifier should have:
@@ -44,6 +78,16 @@ The target public verifier should have:
 - no public vector of per-statement FS commitments;
 - no public replay of per-statement transcript or fold inputs;
 - constant number of backend verifier calls;
+- one CP proof object per same-shape CP bucket, not dozens of local WHIR
+  subproofs;
+- CP message oracles `M_i(T, U_i)` committed directly as proof-system oracles;
+- Fiat-Shamir challenges derived outside the proven CP relation from shape,
+  public boundary, message-oracle roots, and WHIR parameters;
+- no in-CP exact-byte proof of transcript formatting, digest-body construction,
+  or commitment-opening byte equality unless a versioned design explicitly
+  needs it;
+- algebraic columns for folding, beta binding, Ajtai linear combinations,
+  GR1CS/R1CS residuals, and folded-output derivation;
 - typed CP verification time that grows much slower than linearly in `k`;
 - typed output verification remaining near-constant and small.
 
@@ -456,8 +500,25 @@ So the immediate diagnostic supports the aggregation direction. The remaining
 `num_vars = 16` tables are visible, but they account for only two subproofs.
 The verifier regression is primarily caused by dozens of section/chunk
 subproofs, their independent transcript/PCS payloads, and their Merkle-opening
-work. The next P4 milestone should therefore design shared family-level WHIR
-verification or multi-proof aggregation before doing more local table splits.
+work. This does not make `SYMBT2F` a security issue, because it remains
+development-only and non-authoritative. It does make `SYMBT2F` the wrong final
+architecture.
+
+`SYMBT2F` is now calibrated as:
+
+```text
+development-only diagnostic path
+oracle layout sanity checker
+negative-test harness
+byte/table over-materialization warning system
+```
+
+It should not be treated as the route to the production CP proof. Further
+splitting of `ManifestMembership`, folded-output contribution binding, or
+message sections is useful only when it improves diagnostics. The next
+production-oriented P4/P5 work should pivot to a CP-aware WHIR relation where
+message oracles are committed objects queried directly by the proof system and
+the proven constraints are the folding algebra itself.
 
 Initial `SYMBTC1` product-oracle measurements:
 
@@ -475,26 +536,254 @@ round-message, manifest, and challenge digest-body frames. The public-known
 opening strategy is deliberately simple and will need compression before this
 becomes the production fast path.
 
-## Milestone P5 - Replace Exact-Byte In-Circuit Hashing Where Versioned
+## Milestone P5 - SYMBT3 CP-Aware WHIR Oracle Relation
 
-Goal: reduce the largest constant factors only after the compressed architecture
-is clear.
+Goal: replace byte/table emulation of CP with one CP-aware WHIR proof object per
+same-shape bucket.
 
 Implementation requirements:
 
-- Keep the existing exact-byte Poseidon2/BabyBear path as version 1.
-- Define a version 2 field-native transcript body that avoids byte/bit packing
-  where values are already BabyBear field elements.
-- Keep canonical digest domain separation and serialization documented.
-- Rebuild typed CP leaf/accumulator gadgets over field-native bodies.
+- Treat each CP round message `M_i(T, U_i)` as a committed WHIR/BCS oracle, not
+  as bytes that must be re-proved through separate equality tables.
+- Bind the message-oracle roots directly as the CP public commitments
+  `c_fs,i`.
+- Derive Fiat-Shamir challenges outside the proven relation from the shape id,
+  public boundary, message-oracle roots, WHIR parameter digest, and batch
+  dimensions.
+- Expose algebraic semantic columns/traces for beta values, folded commitments,
+  folded public inputs, folded evaluations, Ajtai linear combinations,
+  GR1CS/R1CS residuals, and active-row policy.
+- Enforce the necessary CP semantics:
+  - folded output derivation;
+  - challenge-to-beta binding at the algebraic level;
+  - Ajtai linear-combination/opening algebra;
+  - GR1CS/R1CS validity of the folded/source relation;
+  - shape and public-boundary binding.
+- Do not embed exact-byte transcript reconstruction, Poseidon digest-body
+  correctness, public chunk equality tables, round-message digest byte equality,
+  or fold-input byte reconstruction inside the CP relation unless a separate
+  versioned argument justifies it.
+- Produce one WHIR-backed CP proof object per same-shape bucket.
+- Keep product public routing on the authoritative monolithic typed CP proof
+  until `SYMBT3` has equivalent negative coverage and benchmark data.
+
+Current submilestone:
+
+- `SYMBT3-G` extends the non-authoritative algebraic blocks with a versioned
+  Ajtai norm/range layout. The default development profile uses
+  `RqNegacyclicConvolutionV1` for folded GR1CS product residuals,
+  `RingCoefficientActionV1` for ring/module beta action, and
+  `DirectDevMatrixVectorV1` for the folded Ajtai map check. It adds
+  `DirectDevDenseProjectionV1` and `DirectSignedRangeDevV1` as development
+  projection/range evidence for the folded Ajtai opening.
+- `relation_id` is stable relation metadata only; message roots and folded
+  public output values are instance data.
+- `relation_id` binds `Symbt3RingModuleLayout` and `AjtaiCommitLayoutV1`,
+  including ring degree, modulus, basis/sign convention, action side, module
+  dimensions, beta encoding, Ajtai indexed evaluator id, and commit layout
+  version. It also binds `Symbt3R1csEvaluatorLayoutV1` and
+  `Symbt3Gr1csResidualLayoutV1`, `Symbt3AlgebraLawV1`,
+  `Symbt3AjtaiLinearAlgebraLayoutV1`, and
+  `Symbt3AjtaiNormRangeLayoutV1`, and
+  `Symbt3FoldedGr1csProductResidualLayoutV1`, including matrix/evaluator
+  digest, public/witness wire layout, sparse term encoding, Ajtai matrix-vector
+  evaluator id, projection/range evaluator ids, coordinate grouping, product
+  law, beta action, selector layout, padding policy, and version.
+- `folding_transcript_digest` binds `relation_id`, the input/public-boundary
+  digest, source assignment roots, source Ajtai opening roots, source
+  commitment boundary, message-oracle roots, WHIR parameter digest, batch size,
+  and active count.
+- `proof_public_statement_digest` additionally binds folded public-input,
+  commitment, evaluation, declared algebraic accumulator, folded Ajtai
+  opening/commitment boundary, folded-GR1CS boundary digest, and output-bound
+  public data.
+- Beta is derived from `H("SYMBT3-A-BETA", folding_transcript_digest)` and
+  therefore does not depend on folded output or folded Ajtai output data.
+- The development proof enforces ring/module beta action for ring-shaped
+  commitment/opening coordinates and checks the folded Ajtai residual
+  `A * o_fold - c_fold = 0`, with q-wrap terms for centered modulo-q
+  arithmetic inside BabyBear evaluation claims.
+- `SYMBT3-F` makes this Ajtai block explicit: folded openings and folded
+  commitments are beta-linear combinations of source opening/commitment
+  columns, and folded Ajtai map consistency is checked as
+  `A * f_fold = c_fold` under the declared algebra law. Source item map
+  consistency `A * f_T = c_T` is deferred as an optional heavier source-opening
+  authority block.
+- `SYMBT3-G` adds folded Ajtai norm/range evidence. The first development
+  profile projects `flatten(f_fold)` with `DirectDevDenseProjectionV1` and
+  checks the projected coefficients with `DirectSignedRangeDevV1` under a
+  relation-bound bound. This is development check-field range evidence, not
+  full integer/mod-q lattice range authority.
+- The development proof also commits to source-R1CS residual columns computed
+  from setup-bound sparse evaluator metadata and source assignment roots, and
+  folded-GR1CS boundary residual columns.
+- `FoldedGr1csProductResidualZeroCheck` exposes folded GR1CS product columns
+  under the declared `Symbt3AlgebraLawV1` and checks the Boolean-domain
+  residual
+  `sum_g eq(g, rho) * sel(g) * (ProductLaw(L,R)(g) - O(g)) = 0` with a
+  degree-3 sumcheck plus final WHIR/PCS openings. This is deliberately not the
+  invalid shortcut `L_hat(z) * R_hat(z) - O_hat(z) = 0`.
+- The E folded evaluation boundary is product-closed for the output slice under
+  `RqNegacyclicConvolutionV1` in the WHIR check field. Authority over
+  integer/lattice `R_q` semantics still requires explicit modulus, range,
+  reduction, and soundness treatment.
+- Cryptographic roots/digests are public-boundary data and are not folded as
+  linear algebraic coordinates.
+- `SYMBT3-G` remains non-authoritative and non-ZK; full monomial embedding
+  range authority, manifest membership, CP message semantic validity,
+  production integer/lattice `R_q` reduction semantics, and final WHIR/Σ-IOP
+  soundness analysis are future SYMBT3 blocks.
+
+Architecture benchmark baseline, recorded on 2026-05-06 with:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_c_vs_k"
+```
+
+These numbers are an architecture benchmark for the development path, not a
+final performance claim or product verifier benchmark. The primary regression
+guard is the proof shape: one top-level WHIR proof object and zero
+family-columnar subproofs for every tested `k`.
+
+| k | top-level WHIR proofs | family-columnar subproofs | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | transcript squeezes | max oracle `num_vars` | Ajtai linear-form claims |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 340,749 | 3.6701 ms | 4.4679 ms | 12 | 12 | 12 | 12 | 128 |
+| 2 | 1 | 0 | 419,997 | 5.5698 ms | 6.1235 ms | 18 | 18 | 18 | 13 | 128 |
+
+Criterion history should still be interpreted carefully; reset
+`target/criterion/whir_scaling` when comparing fresh before/after numbers.
+
+SYMBT3-D architecture benchmark baseline, recorded on 2026-05-07 with:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_d_vs_k"
+```
+
+| k | top-level WHIR proofs | family-columnar subproofs | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | transcript squeezes | max oracle `num_vars` | source R1CS residual claims | folded GR1CS residual claims |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 330,836 | 4.7096 ms | 5.3228 ms | 14 | 14 | 14 | 12 | 64 | 384 |
+| 2 | 1 | 0 | 404,215 | 7.0489 ms | 7.0847 ms | 20 | 20 | 20 | 13 | 128 | 384 |
+
+SYMBT3-D2 added the direct folded product residual benchmark target:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_d2_vs_k"
+```
+
+The required structural benchmark guard remains:
+
+```text
+top_level_whir_proof_count = 1
+family_columnar_subproof_count = 0
+backend_table_count = 1
+```
+
+SYMBT3-D2 architecture benchmark, recorded on 2026-05-07 with the command
+above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | source R1CS residual claims | folded GR1CS boundary claims | folded GR1CS product claims |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 1 | 394,767 | 6.2087 ms | 6.4224 ms | 20 | 20 | 8 | 13 | 64 | 384 | 128 |
+| 2 | 1 | 0 | 1 | 401,147 | 7.4955 ms | 7.2242 ms | 26 | 26 | 8 | 13 | 128 | 384 | 128 |
+
+These are architecture/proof-shape numbers for a non-authoritative
+development path, not product public-verifier performance claims.
+
+SYMBT3-E replaces the default product law with ring negacyclic convolution and
+adds the algebra-law profile benchmark:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_e_vs_k"
+```
+
+SYMBT3-E architecture benchmark, recorded on 2026-05-07 with the command
+above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | product law | beta action | ring degree |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---:|
+| 1 | 1 | 0 | 1 | 395,418 | 6.4393 ms | 7.1004 ms | 22 | 22 | 8 | 13 | `RqNegacyclicConvolutionV1` | `RingCoefficientActionV1` | 64 |
+| 2 | 1 | 0 | 1 | 406,431 | 8.2783 ms | 7.4959 ms | 28 | 28 | 8 | 13 | `RqNegacyclicConvolutionV1` | `RingCoefficientActionV1` | 64 |
+
+These numbers remain architecture/proof-shape measurements for a
+non-authoritative development path, not product public-verifier performance
+claims.
+
+SYMBT3-F adds the explicit Ajtai commitment/opening linear-algebra layout and
+profile benchmark:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_f_vs_k"
+```
+
+SYMBT3-F architecture benchmark, recorded on 2026-05-07 with the command
+above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | Ajtai evaluator | product law | beta action | ring degree |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|
+| 1 | 1 | 0 | 1 | 407,284 | 7.1685 ms | 6.7837 ms | 22 | 22 | 8 | 13 | `DirectDevMatrixVectorV1` | `RqNegacyclicConvolutionV1` | `RingCoefficientActionV1` | 64 |
+| 2 | 1 | 0 | 1 | 422,389 | 8.0666 ms | 7.7776 ms | 28 | 28 | 8 | 13 | `DirectDevMatrixVectorV1` | `RqNegacyclicConvolutionV1` | `RingCoefficientActionV1` | 64 |
+
+These numbers remain architecture/proof-shape measurements for a
+non-authoritative development path, not product public-verifier performance
+claims.
+
+SYMBT3-G adds the folded Ajtai projection/range development layout and profile
+benchmark:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_g_vs_k"
+```
+
+SYMBT3-G architecture benchmark, recorded on 2026-05-07 with the command
+above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | projection mode | range mode | bound B | projection output length | monomial embedding |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---|
+| 1 | 1 | 0 | 1 | 412,101 | 7.3181 ms | 7.1763 ms | 25 | 25 | 8 | 13 | `DirectDevDenseProjectionV1` | `DirectSignedRangeDevV1` | 131,072 | 192 | disabled |
+| 2 | 1 | 0 | 1 | 416,389 | 8.6389 ms | 8.0182 ms | 31 | 31 | 8 | 13 | `DirectDevDenseProjectionV1` | `DirectSignedRangeDevV1` | 262,144 | 192 | disabled |
+
+These numbers remain architecture/proof-shape measurements for a
+non-authoritative development path, not product public-verifier performance
+claims.
 
 Acceptance criteria:
 
-- `PoseidonDigestGadgets` and `ByteConstraints` row counts drop materially.
-- Public proof versioning makes v1/v2 semantics unambiguous.
-- v1 compatibility tests remain green or are explicitly scoped as legacy.
+- `SYMBT3` verifies honest `k = 1, 2, 4` same-shape batches with one CP proof
+  object per bucket.
+- The verifier does not call witness-side `CpFieldRelation::check`.
+- The verifier does not receive or open full private messages, openings,
+  original witnesses, or folded witnesses.
+- Independent `SYMBT2F`, `SYMBT2C`, monolithic typed CP, or per-table WHIR
+  proofs are not accepted as a `SYMBT3` proof.
+- Negative tests cover shape mismatch, public-boundary mismatch, message-oracle
+  root tampering, challenge tampering, beta tampering, folded-output tampering,
+  Ajtai algebra tampering, and R1CS/GR1CS residual tampering.
+- Benchmark output shows a small constant number of WHIR proof objects and a
+  proof size/verifier time trajectory consistent with the CP-SNARK north star.
 
-## Milestone P6 - Benchmark Against the North Star
+## Milestone P6 - Versioned Field-Native Transcript Cleanup
+
+Goal: reduce constant factors only after the CP-aware architecture is in place.
+
+Implementation requirements:
+
+- Keep the existing exact-byte Poseidon2/BabyBear path as compatibility and
+  diagnostic version 1.
+- Define a versioned field-native public transcript body for `SYMBT3` where
+  values that are already BabyBear field elements are absorbed as field
+  elements, not re-encoded as byte tables.
+- Keep domain separation, root serialization, and proof-envelope versioning
+  documented.
+- Do not prove SHA-256 or legacy exact-byte transcript machinery inside WHIR.
+
+Acceptance criteria:
+
+- `SYMBT3` keeps the same security boundary while reducing byte/packing
+  overhead.
+- Public proof versioning makes v1/v2 semantics unambiguous.
+- Compatibility tests remain green or are explicitly scoped as legacy.
+
+## Milestone P7 - Benchmark Against the North Star
 
 Goal: prove the cost model has changed, not just the implementation.
 
@@ -538,10 +827,12 @@ sampled opening per instantiated family, and the benchmarks print residual
 counts, sampled checks, and private eval counts by family. This profiling data
 is intentionally not part of the public proof format.
 The `batched_cp_semantic_family_columnar_*` groups measure the `SYMBT2F`
-family-local variant and print per-family row counts, local table sizes,
-subproof indices, local domain sizes, total internal subproof count, and proof
-bytes so they can be compared directly against the rectangular `SYMBT2C`
-baseline.
+family-local diagnostic path. They print per-family row counts, local table
+sizes, subproof indices, local domain sizes, total internal subproof count,
+proof bytes, and `family_attribution` data. These groups are retained to catch
+over-materialization and to support negative tests; they are not the production
+performance target. The production comparison point for the next architecture
+is the future `SYMBT3` CP-aware WHIR oracle relation.
 
 Acceptance criteria:
 
@@ -561,11 +852,19 @@ Acceptance criteria:
 
 ## Immediate Next Step
 
-Continue P4. The next step is replacing the heavy SYMBTC2 full-selection
-enumeration with a genuine typed-column/product-domain proximity relation:
-Poseidon traces, manifest rows, challenge/beta columns, folded-output columns,
-Ajtai columns, and original-R1CS columns should be committed as semantic
-oracles with low-degree residual checks rather than opened exhaustively. The
-implementation must continue to use the structured relation/evaluator
-interface, avoid lowering the batch into an appended typed CP R1CS, and must
+Stop treating `SYMBT2F` table splitting as the production route. Keep it as a
+diagnostic and negative-test harness, but pivot implementation planning to
+`SYMBT3`: a CP-aware WHIR oracle relation.
+
+The next concrete step is a design/implementation plan for `SYMBT3` with:
+
+- CP round messages `M_i(T, U_i)` as first-class committed WHIR/BCS oracles;
+- public `c_fs,i` roots bound directly to those message oracles;
+- Fiat-Shamir challenges derived outside the proven relation;
+- algebraic folding/Ajtai/GR1CS constraints over committed field/ring columns;
+- one WHIR-backed CP proof object per same-shape bucket;
+- no exact-byte transcript/hash/opening proof machinery inside `pi_cp`;
+- no product-route promotion until negative coverage and benchmarks are green.
+
+The implementation must still avoid appended typed CP R1CS lowering and must
 not open private oracle bytes to run `CpFieldRelation::check` in the verifier.

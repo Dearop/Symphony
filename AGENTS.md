@@ -66,14 +66,25 @@ explicitly redirects.
 
 ## Next Implementation Target
 
-The next target is production hardening of the authoritative WHIR public
-verifier path. Follow the production milestones in
-`docs/whir_typed_cp_authority_plan.md`.
+The next performance target is `SYMBT3`, the CP-aware WHIR oracle relation
+described in `docs/whir_public_performance_north_star_plan.md`. Do not treat
+additional `SYMBT2F` table splitting as the production route. `SYMBT2F` remains
+a development-only diagnostic and negative-test harness for over-materialized
+byte/table semantics.
 
 Required implementation behavior:
 
-- Start with Production Milestone H unless the user names a different
-  milestone.
+- Build one CP-aware WHIR proof object per same-shape CP bucket.
+- Treat CP round messages `M_i(T,U_i)` as first-class committed proof-system
+  oracles.
+- Keep Fiat-Shamir challenge derivation outside the proven CP relation. Folding
+  beta must derive from input-side transcript data and message-oracle roots,
+  not from folded output values.
+- Prove folding, beta, Ajtai, GR1CS/R1CS, and folded-output algebra over
+  field/ring columns instead of proving exact transcript bytes.
+- Do not embed SHA, Poseidon digest-body reconstruction, FS opening bytes,
+  canonical message-section bytes, or round-message byte-equality tables inside
+  `pi_cp` unless a versioned design explicitly justifies it.
 - Keep `ProofBundleV2` / `PublicProofBundle` public-only: public inputs
   out-of-band plus public FS commitments, digests/roots, folded output instance,
   CP proof, and output proof, with no private CP witness data.

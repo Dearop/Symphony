@@ -21,7 +21,20 @@ const SEMANTIC_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBTCS1";
 const SEMANTIC_V2_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBTC2\0";
 const SEMANTIC_COLUMNAR_V2_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBT2C\0";
 const SEMANTIC_FAMILY_COLUMNAR_V2_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBT2F\0";
+const SYMBT3_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBT3\0\0";
 const SEMANTIC_COLUMNAR_V2_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_LAYOUT_VERSION: u64 = 4;
+const SYMBT3_CHALLENGE_SCHEDULE_VERSION: u64 = 2;
+const SYMBT3_RING_ACTION_VERSION: u64 = 1;
+const SYMBT3_AJTAI_COMMIT_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_R1CS_EVALUATOR_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_GR1CS_RESIDUAL_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_FOLDED_GR1CS_PRODUCT_RESIDUAL_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_ALGEBRA_LAW_VERSION: u64 = 1;
+const SYMBT3_AJTAI_LINEAR_ALGEBRA_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_AJTAI_NORM_RANGE_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_PROJECTION_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_RANGE_LAYOUT_VERSION: u64 = 1;
 const SYMBT2F_MAX_SECTION_EQUALITY_ROWS: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +314,359 @@ pub struct BatchedCpSemanticFamilyColumnarV2Description {
     pub semantic: BatchedCpSemanticRelationDescription,
     pub v2_layout: BatchedCpSemanticOracleV2Layout,
     pub family_layout: BatchedCpSemanticFamilyColumnarV2Layout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchedCpSymbt3AlgebraicColumnKind {
+    ActiveMask,
+    BetaCoefficient,
+    FoldedPublicInput,
+    FoldedCommitment,
+    FoldedEvaluation,
+    AjtaiLinearCombination,
+    OriginalR1csResidual,
+    Gr1csResidual,
+    FoldedGr1csProductLeft,
+    FoldedGr1csProductRight,
+    FoldedGr1csProductOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BatchedCpSymbt3ConstraintFamily {
+    ChallengeToBeta,
+    FoldedPublicInputLinearIdentity,
+    FoldedCommitmentLinearIdentity,
+    FoldedEvaluationLinearIdentity,
+    FoldedAccumulatorBoundaryIdentity,
+    RingBetaAction,
+    FoldedAjtaiOpeningIdentity,
+    FoldedAjtaiCommitmentIdentity,
+    AjtaiFoldedResidualZero,
+    FoldedAjtaiOpeningLinearIdentity,
+    FoldedAjtaiCommitmentLinearIdentity,
+    FoldedAjtaiMapConsistency,
+    FoldedAjtaiProjectionConsistency,
+    FoldedAjtaiProjectedRangeBound,
+    FoldedAjtaiMonomialEmbeddingConsistency,
+    CommittedSourceR1csResidualValidity,
+    FoldedGr1csResidualValidity,
+    FoldedGr1csProductResidualZeroCheck,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3RingActionSide {
+    Left,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3RingModuleLayout {
+    pub ring_degree: usize,
+    pub modulus: u64,
+    pub basis_order: &'static str,
+    pub negacyclic_sign_convention: &'static str,
+    pub action_side: Symbt3RingActionSide,
+    pub opening_module_dimension: usize,
+    pub commitment_module_dimension: usize,
+    pub coordinate_encoding: &'static str,
+    pub beta_encoding: &'static str,
+    pub ring_action_version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AjtaiCommitLayout {
+    pub layout_version: u64,
+    pub commitment_module_dimension: usize,
+    pub opening_module_dimension: usize,
+    pub ring_degree: usize,
+    pub modulus: u64,
+    pub indexed_evaluator_id: Digest32,
+    pub separated_message_randomness: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3AjtaiOpeningMode {
+    StrictAfEqualsC,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3AjtaiMatrixVectorEvaluatorId {
+    DirectDevMatrixVectorV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AjtaiLinearAlgebraLayout {
+    pub version_marker: &'static [u8; 8],
+    pub layout_version: u64,
+    pub algebra_law_digest: Digest32,
+    pub ajtai_matrix_digest: Digest32,
+    pub ajtai_commit_layout_digest: Digest32,
+    pub kappa: usize,
+    pub opening_len: usize,
+    pub ring_degree: usize,
+    pub source_opening_column: usize,
+    pub source_commitment_column: usize,
+    pub folded_opening_column: usize,
+    pub folded_commitment_column: usize,
+    pub beta_action: Symbt3BetaActionId,
+    pub product_law: Symbt3ProductLawId,
+    pub matrix_vector_evaluator: Symbt3AjtaiMatrixVectorEvaluatorId,
+    pub padding_policy: &'static str,
+    pub selector_evaluator: &'static str,
+    pub opening_mode: Symbt3AjtaiOpeningMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3ProjectionMode {
+    DirectDevDenseProjectionV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3ProjectionSeedPolicy {
+    ProofBoundDeterministicV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3RangeMode {
+    DirectSignedRangeDevV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3SignedEncoding {
+    CheckFieldSignedRepresentativeV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3CoefficientEncoding {
+    CenteredI64LeV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3ProjectionLayout {
+    pub layout_version: u64,
+    pub projection_mode: Symbt3ProjectionMode,
+    pub projection_seed_policy: Symbt3ProjectionSeedPolicy,
+    pub projection_matrix_digest: Digest32,
+    pub input_len: usize,
+    pub output_len: usize,
+    pub block_len: usize,
+    pub rows_per_block: usize,
+    pub coefficient_domain: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3RangeLayout {
+    pub layout_version: u64,
+    pub range_mode: Symbt3RangeMode,
+    pub bound_b: i64,
+    pub signed_encoding: Symbt3SignedEncoding,
+    pub table_digest: Option<Digest32>,
+    pub monomial_embedding_layout_digest: Option<Digest32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AjtaiNormRangeLayout {
+    pub version_marker: &'static [u8; 8],
+    pub layout_version: u64,
+    pub algebra_law_digest: Digest32,
+    pub ajtai_linear_algebra_layout_digest: Digest32,
+    pub folded_opening_column: usize,
+    pub projected_opening_column: usize,
+    pub projection_layout: Symbt3ProjectionLayout,
+    pub range_layout: Symbt3RangeLayout,
+    pub norm_bound: i64,
+    pub coefficient_encoding: Symbt3CoefficientEncoding,
+    pub reduction_policy: &'static str,
+    pub selector_evaluator: &'static str,
+    pub padding_policy: &'static str,
+    pub range_mode: Symbt3RangeMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3R1csEvaluatorLayout {
+    pub layout_version: u64,
+    pub field_id: &'static str,
+    pub modulus: u64,
+    pub num_constraints: usize,
+    pub num_variables: usize,
+    pub num_public: usize,
+    pub num_witness: usize,
+    pub constant_one_wire_index: Option<usize>,
+    pub public_input_wire_layout: &'static str,
+    pub witness_wire_layout: &'static str,
+    pub sparse_encoding_format: &'static str,
+    pub row_ordering: &'static str,
+    pub column_ordering: &'static str,
+    pub padding_policy: &'static str,
+    pub coefficient_encoding: &'static str,
+    pub term_encoding: &'static str,
+    pub evaluator_algorithm_id: Digest32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3Gr1csResidualLayout {
+    pub layout_version: u64,
+    pub folded_evaluation_coordinate_count: usize,
+    pub tensor_rows: usize,
+    pub ring_degree: usize,
+    pub grouping: &'static str,
+    pub coordinate_ordering: &'static str,
+    pub padding_policy: &'static str,
+    pub component_kind_tags: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3ProductLawId {
+    FieldCoordinateMulV1,
+    RqNegacyclicConvolutionV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3BetaActionId {
+    ScalarFieldCoordinateV1,
+    RingCoefficientActionV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AlgebraLaw {
+    pub version_marker: &'static [u8; 8],
+    pub law_version: u64,
+    pub check_field_id: &'static str,
+    pub coefficient_domain: &'static str,
+    pub ring_degree: usize,
+    pub ring_relation: &'static str,
+    pub coefficient_basis: &'static str,
+    pub coefficient_order: &'static str,
+    pub reduction_policy: &'static str,
+    pub beta_action: Symbt3BetaActionId,
+    pub product_law: Symbt3ProductLawId,
+    pub module_layout: &'static str,
+    pub soundness_profile: &'static str,
+    pub zk_profile: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3FoldedGr1csProductResidualLayout {
+    pub layout_version: u64,
+    pub product_domain_log_size: usize,
+    pub equation_kind_axis: &'static str,
+    pub row_axis: &'static str,
+    pub l_fold_column: usize,
+    pub r_fold_column: usize,
+    pub o_fold_column: usize,
+    pub selector_evaluator: &'static str,
+    pub product_law: Symbt3ProductLawId,
+    pub beta_action: Symbt3BetaActionId,
+    pub padding_policy: &'static str,
+    pub check_field: &'static str,
+    pub soundness_profile: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3MessageOracleLayout {
+    pub round: usize,
+    pub row_count: usize,
+    pub message_len: usize,
+    pub packed_field_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3AlgebraicColumn {
+    pub id: usize,
+    pub kind: BatchedCpSymbt3AlgebraicColumnKind,
+    pub row_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3OracleLayout {
+    pub layout_version: u64,
+    pub challenge_schedule_version: u64,
+    pub batch_capacity: usize,
+    pub active_count: usize,
+    pub message_oracles: Vec<BatchedCpSymbt3MessageOracleLayout>,
+    pub algebraic_columns: Vec<BatchedCpSymbt3AlgebraicColumn>,
+    pub constraint_families: Vec<BatchedCpSymbt3ConstraintFamily>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3RelationDescription {
+    pub shape: BatchedCpStatementShape,
+    pub oracle_layout: BatchedCpSymbt3OracleLayout,
+    pub ring_module_layout: Symbt3RingModuleLayout,
+    pub ajtai_commit_layout: Symbt3AjtaiCommitLayout,
+    pub r1cs_evaluator_layout: Symbt3R1csEvaluatorLayout,
+    pub gr1cs_residual_layout: Symbt3Gr1csResidualLayout,
+    pub algebra_law: Symbt3AlgebraLaw,
+    pub ajtai_linear_algebra_layout: Symbt3AjtaiLinearAlgebraLayout,
+    pub ajtai_norm_range_layout: Symbt3AjtaiNormRangeLayout,
+    pub folded_gr1cs_product_residual_layout: Symbt3FoldedGr1csProductResidualLayout,
+    pub ajtai_matrix: Vec<Vec<RingElement>>,
+    pub r1cs_matrices: R1CSMatrices,
+    pub ajtai_params_digest: Digest32,
+    pub r1cs_matrices_digest: Digest32,
+    pub input_bound: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3SetupDescriptor {
+    pub shape: BatchedCpStatementShape,
+    pub ring_module_layout: Symbt3RingModuleLayout,
+    pub ajtai_commit_layout: Symbt3AjtaiCommitLayout,
+    pub r1cs_evaluator_layout: Symbt3R1csEvaluatorLayout,
+    pub gr1cs_residual_layout: Symbt3Gr1csResidualLayout,
+    pub algebra_law: Symbt3AlgebraLaw,
+    pub ajtai_linear_algebra_layout: Symbt3AjtaiLinearAlgebraLayout,
+    pub ajtai_norm_range_layout: Symbt3AjtaiNormRangeLayout,
+    pub folded_gr1cs_product_residual_layout: Symbt3FoldedGr1csProductResidualLayout,
+    pub ajtai_matrix: Vec<Vec<RingElement>>,
+    pub r1cs_matrices: R1CSMatrices,
+    pub ajtai_params_digest: Digest32,
+    pub r1cs_matrices_digest: Digest32,
+    pub input_bound: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3PublicStatement {
+    pub shape_id: Digest32,
+    pub batch_capacity: usize,
+    pub active_count: usize,
+    pub input_public_boundary_digest: Digest32,
+    pub input_public_values: Vec<Vec<i64>>,
+    pub input_commitment_values: Vec<Vec<i64>>,
+    pub input_evaluation_values: Vec<Vec<i64>>,
+    pub input_accumulator_values: Vec<Vec<i64>>,
+    pub source_assignment_roots: Vec<Digest32>,
+    pub source_assignment_boundary_digest: Digest32,
+    pub source_ajtai_opening_roots: Vec<Digest32>,
+    pub source_ajtai_commitment_boundary_digest: Digest32,
+    pub message_oracle_roots: Vec<Digest32>,
+    pub folded_public_input: Vec<i64>,
+    pub folded_commitment: Vec<i64>,
+    pub folded_evaluation: Vec<i64>,
+    pub folded_accumulator_coordinates: Vec<i64>,
+    pub folded_ajtai_opening_root: Digest32,
+    pub folded_ajtai_commitment: Vec<i64>,
+    pub folded_gr1cs_boundary_digest: Digest32,
+    pub ring_module_layout_digest: Digest32,
+    pub ajtai_commit_layout_digest: Digest32,
+    pub r1cs_evaluator_layout_digest: Digest32,
+    pub gr1cs_residual_layout_digest: Digest32,
+    pub algebra_law_digest: Digest32,
+    pub ajtai_linear_algebra_layout_digest: Digest32,
+    pub ajtai_norm_range_layout_digest: Digest32,
+    pub projection_layout_digest: Digest32,
+    pub range_layout_digest: Digest32,
+    pub folded_gr1cs_product_residual_layout_digest: Digest32,
+    pub folded_output_accumulator_root: Digest32,
+    pub whir_parameter_digest: Digest32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchedCpSymbt3Witness {
+    pub message_oracles: Vec<Vec<Vec<u8>>>,
+    pub algebraic_trace_columns: Vec<Vec<u32>>,
+    pub source_ajtai_opening_values: Vec<Vec<i64>>,
+    pub folded_ajtai_opening_values: Vec<i64>,
+    pub source_r1cs_assignment_values: Vec<Vec<i64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1862,6 +2228,521 @@ impl BatchedCpStatementShape {
             semantic,
         }
     }
+
+    #[must_use]
+    pub fn symbt3_setup_descriptor(
+        &self,
+        ajtai: &AjtaiParams,
+        r1cs: &R1CSMatrices,
+        input_bound: u64,
+    ) -> BatchedCpSymbt3SetupDescriptor {
+        let ajtai_params_digest = digest_ajtai_params(self.accumulator_shape.digest_scheme, ajtai);
+        let ring_module_layout = Symbt3RingModuleLayout::from_shape_and_ajtai(self, ajtai);
+        let ajtai_commit_layout =
+            Symbt3AjtaiCommitLayout::from_shape_and_ajtai(self, ajtai, ajtai_params_digest);
+        let r1cs_matrices_digest = digest_r1cs_matrices(self.accumulator_shape.digest_scheme, r1cs);
+        let r1cs_evaluator_layout =
+            Symbt3R1csEvaluatorLayout::from_shape_and_r1cs(self, r1cs, r1cs_matrices_digest);
+        let gr1cs_residual_layout = Symbt3Gr1csResidualLayout::from_shape(self);
+        let algebra_law = Symbt3AlgebraLaw::from_shape(self);
+        let ajtai_linear_algebra_layout = Symbt3AjtaiLinearAlgebraLayout::from_shape_and_layouts(
+            self,
+            &algebra_law,
+            &ajtai_commit_layout,
+            ajtai_params_digest,
+            self.accumulator_shape.digest_scheme,
+        );
+        let ajtai_norm_range_layout = Symbt3AjtaiNormRangeLayout::from_shape_and_layouts(
+            self,
+            &algebra_law,
+            &ajtai_linear_algebra_layout,
+            input_bound,
+            self.accumulator_shape.digest_scheme,
+        );
+        let folded_gr1cs_product_residual_layout =
+            Symbt3FoldedGr1csProductResidualLayout::from_shape(self);
+        BatchedCpSymbt3SetupDescriptor {
+            shape: self.clone(),
+            ring_module_layout,
+            ajtai_commit_layout,
+            r1cs_evaluator_layout,
+            gr1cs_residual_layout,
+            algebra_law,
+            ajtai_linear_algebra_layout,
+            ajtai_norm_range_layout,
+            folded_gr1cs_product_residual_layout,
+            ajtai_matrix: ajtai.a.clone(),
+            r1cs_matrices: r1cs.clone(),
+            ajtai_params_digest,
+            r1cs_matrices_digest,
+            input_bound,
+        }
+    }
+}
+
+impl Symbt3RingModuleLayout {
+    #[must_use]
+    pub fn from_shape_and_ajtai(_shape: &BatchedCpStatementShape, ajtai: &AjtaiParams) -> Self {
+        Self {
+            ring_degree: D,
+            modulus: ajtai.q,
+            basis_order: "coefficient-ascending",
+            negacyclic_sign_convention: "x^D=-1",
+            action_side: Symbt3RingActionSide::Left,
+            opening_module_dimension: ajtai.n,
+            commitment_module_dimension: ajtai.kappa,
+            coordinate_encoding: "centered-i64-le",
+            beta_encoding: "digest-base5-ring-coefficients",
+            ring_action_version: SYMBT3_RING_ACTION_VERSION,
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        push_usize(&mut body, self.ring_degree);
+        body.extend_from_slice(&self.modulus.to_le_bytes());
+        push_bytes(&mut body, self.basis_order.as_bytes());
+        push_bytes(&mut body, self.negacyclic_sign_convention.as_bytes());
+        body.push(match self.action_side {
+            Symbt3RingActionSide::Left => 1,
+        });
+        push_usize(&mut body, self.opening_module_dimension);
+        push_usize(&mut body, self.commitment_module_dimension);
+        push_bytes(&mut body, self.coordinate_encoding.as_bytes());
+        push_bytes(&mut body, self.beta_encoding.as_bytes());
+        body.extend_from_slice(&self.ring_action_version.to_le_bytes());
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-ring-module-layout", &body)
+    }
+}
+
+impl Symbt3AjtaiCommitLayout {
+    #[must_use]
+    pub fn from_shape_and_ajtai(
+        shape: &BatchedCpStatementShape,
+        ajtai: &AjtaiParams,
+        ajtai_params_digest: Digest32,
+    ) -> Self {
+        let mut evaluator_body = Vec::new();
+        evaluator_body.extend_from_slice(&ajtai_params_digest);
+        push_usize(&mut evaluator_body, ajtai.kappa);
+        push_usize(&mut evaluator_body, ajtai.n);
+        evaluator_body.extend_from_slice(&ajtai.q.to_le_bytes());
+        let indexed_evaluator_id = digest_domain_with_scheme(
+            shape.accumulator_shape.digest_scheme,
+            b"batched-cp-symbt3-ajtai-indexed-evaluator",
+            &evaluator_body,
+        );
+        Self {
+            layout_version: SYMBT3_AJTAI_COMMIT_LAYOUT_VERSION,
+            commitment_module_dimension: ajtai.kappa,
+            opening_module_dimension: ajtai.n,
+            ring_degree: D,
+            modulus: ajtai.q,
+            indexed_evaluator_id,
+            separated_message_randomness: false,
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        body.extend_from_slice(&self.layout_version.to_le_bytes());
+        push_usize(&mut body, self.commitment_module_dimension);
+        push_usize(&mut body, self.opening_module_dimension);
+        push_usize(&mut body, self.ring_degree);
+        body.extend_from_slice(&self.modulus.to_le_bytes());
+        body.extend_from_slice(&self.indexed_evaluator_id);
+        body.push(u8::from(self.separated_message_randomness));
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-ajtai-commit-layout", &body)
+    }
+}
+
+impl Symbt3AjtaiLinearAlgebraLayout {
+    #[must_use]
+    pub fn from_shape_and_layouts(
+        _shape: &BatchedCpStatementShape,
+        algebra_law: &Symbt3AlgebraLaw,
+        ajtai_commit_layout: &Symbt3AjtaiCommitLayout,
+        ajtai_matrix_digest: Digest32,
+        scheme: PublicDigestScheme,
+    ) -> Self {
+        let algebra_law_digest = algebra_law.digest(scheme);
+        let ajtai_commit_layout_digest = ajtai_commit_layout.digest(scheme);
+        Self {
+            version_marker: b"SYMBT3F\0",
+            layout_version: SYMBT3_AJTAI_LINEAR_ALGEBRA_LAYOUT_VERSION,
+            algebra_law_digest,
+            ajtai_matrix_digest,
+            ajtai_commit_layout_digest,
+            kappa: ajtai_commit_layout.commitment_module_dimension,
+            opening_len: ajtai_commit_layout.opening_module_dimension,
+            ring_degree: D,
+            source_opening_column: 0,
+            source_commitment_column: 1,
+            folded_opening_column: 2,
+            folded_commitment_column: 3,
+            beta_action: algebra_law.beta_action,
+            product_law: algebra_law.product_law,
+            matrix_vector_evaluator: Symbt3AjtaiMatrixVectorEvaluatorId::DirectDevMatrixVectorV1,
+            padding_policy: "selector-zero-padded-tail",
+            selector_evaluator: "prefix-active-item-selector-v1",
+            opening_mode: Symbt3AjtaiOpeningMode::StrictAfEqualsC,
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_ajtai_linear_algebra_layout(&mut body, self);
+        digest_domain_with_scheme(
+            scheme,
+            b"batched-cp-symbt3-ajtai-linear-algebra-layout",
+            &body,
+        )
+    }
+}
+
+impl Symbt3ProjectionLayout {
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_projection_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-projection-layout", &body)
+    }
+}
+
+impl Symbt3RangeLayout {
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_range_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-range-layout", &body)
+    }
+}
+
+impl Symbt3AjtaiNormRangeLayout {
+    #[must_use]
+    pub fn from_shape_and_layouts(
+        shape: &BatchedCpStatementShape,
+        algebra_law: &Symbt3AlgebraLaw,
+        ajtai_linear_algebra_layout: &Symbt3AjtaiLinearAlgebraLayout,
+        input_bound: u64,
+        scheme: PublicDigestScheme,
+    ) -> Self {
+        let input_len =
+            ajtai_linear_algebra_layout.opening_len * ajtai_linear_algebra_layout.ring_degree;
+        let mut projection_body = Vec::new();
+        projection_body.extend_from_slice(&shape.shape_id);
+        projection_body.extend_from_slice(&ajtai_linear_algebra_layout.digest(scheme));
+        push_usize(&mut projection_body, input_len);
+        push_usize(&mut projection_body, input_len);
+        let projection_matrix_digest = digest_domain_with_scheme(
+            scheme,
+            b"batched-cp-symbt3-g-direct-identity-projection",
+            &projection_body,
+        );
+        let projection_layout = Symbt3ProjectionLayout {
+            layout_version: SYMBT3_PROJECTION_LAYOUT_VERSION,
+            projection_mode: Symbt3ProjectionMode::DirectDevDenseProjectionV1,
+            projection_seed_policy: Symbt3ProjectionSeedPolicy::ProofBoundDeterministicV1,
+            projection_matrix_digest,
+            input_len,
+            output_len: input_len,
+            block_len: D,
+            rows_per_block: 1,
+            coefficient_domain: "check-field-native-ring-coefficients",
+        };
+        let max_beta_coeff = 2i64;
+        let active = shape.active_count.max(1) as i128;
+        let bound = (input_bound as i128)
+            .saturating_mul(max_beta_coeff as i128)
+            .saturating_mul(D as i128)
+            .saturating_mul(active)
+            .min(i64::MAX as i128) as i64;
+        let range_layout = Symbt3RangeLayout {
+            layout_version: SYMBT3_RANGE_LAYOUT_VERSION,
+            range_mode: Symbt3RangeMode::DirectSignedRangeDevV1,
+            bound_b: bound.max(1),
+            signed_encoding: Symbt3SignedEncoding::CheckFieldSignedRepresentativeV1,
+            table_digest: None,
+            monomial_embedding_layout_digest: None,
+        };
+        Self {
+            version_marker: b"SYMBT3G\0",
+            layout_version: SYMBT3_AJTAI_NORM_RANGE_LAYOUT_VERSION,
+            algebra_law_digest: algebra_law.digest(scheme),
+            ajtai_linear_algebra_layout_digest: ajtai_linear_algebra_layout.digest(scheme),
+            folded_opening_column: 0,
+            projected_opening_column: 1,
+            projection_layout,
+            range_layout,
+            norm_bound: bound.max(1),
+            coefficient_encoding: Symbt3CoefficientEncoding::CenteredI64LeV1,
+            reduction_policy: "CheckFieldNativeV1",
+            selector_evaluator: "valid-folded-opening-coordinate-selector-v1",
+            padding_policy: "selector-zero-padded-tail",
+            range_mode: Symbt3RangeMode::DirectSignedRangeDevV1,
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_ajtai_norm_range_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-ajtai-norm-range-layout", &body)
+    }
+}
+
+impl Symbt3R1csEvaluatorLayout {
+    #[must_use]
+    pub fn from_shape_and_r1cs(
+        shape: &BatchedCpStatementShape,
+        r1cs: &R1CSMatrices,
+        r1cs_matrices_digest: Digest32,
+    ) -> Self {
+        let mut evaluator_body = Vec::new();
+        evaluator_body.extend_from_slice(&r1cs_matrices_digest);
+        push_usize(&mut evaluator_body, r1cs.num_constraints);
+        push_usize(&mut evaluator_body, r1cs.num_variables);
+        push_usize(&mut evaluator_body, r1cs.num_public);
+        let evaluator_algorithm_id = digest_domain_with_scheme(
+            shape.accumulator_shape.digest_scheme,
+            b"batched-cp-symbt3-r1cs-sparse-evaluator",
+            &evaluator_body,
+        );
+        Self {
+            layout_version: SYMBT3_R1CS_EVALUATOR_LAYOUT_VERSION,
+            field_id: "BabyBear",
+            modulus: 2_013_265_921,
+            num_constraints: r1cs.num_constraints,
+            num_variables: r1cs.num_variables,
+            num_public: r1cs.num_public,
+            num_witness: r1cs.num_variables.saturating_sub(r1cs.num_public),
+            constant_one_wire_index: None,
+            public_input_wire_layout: "public-prefix-constant-ring",
+            witness_wire_layout: "witness-suffix-ring-coefficients",
+            sparse_encoding_format: "coo-row-col-i64-v1",
+            row_ordering: "ascending-row-index",
+            column_ordering: "ascending-column-index",
+            padding_policy: "zero-pad-to-power-of-two",
+            coefficient_encoding: "centered-i64-le",
+            term_encoding: "babybear-linear-form-v1",
+            evaluator_algorithm_id,
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_r1cs_evaluator_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-r1cs-evaluator-layout", &body)
+    }
+}
+
+impl Symbt3Gr1csResidualLayout {
+    #[must_use]
+    pub fn from_shape(shape: &BatchedCpStatementShape) -> Self {
+        Self {
+            layout_version: SYMBT3_GR1CS_RESIDUAL_LAYOUT_VERSION,
+            folded_evaluation_coordinate_count: shape.accumulator_shape.folded_evaluation_count
+                * T
+                * D,
+            tensor_rows: T,
+            ring_degree: D,
+            grouping: "triples-left-right-output",
+            coordinate_ordering: "evaluation-index-tensor-row-coeff",
+            padding_policy: "ignore-incomplete-trailing-triple",
+            component_kind_tags: vec!["left", "right", "output"],
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_gr1cs_residual_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-gr1cs-residual-layout", &body)
+    }
+}
+
+impl Symbt3AlgebraLaw {
+    #[must_use]
+    pub fn from_shape(_shape: &BatchedCpStatementShape) -> Self {
+        Self {
+            version_marker: b"SYMBT3E\0",
+            law_version: SYMBT3_ALGEBRA_LAW_VERSION,
+            check_field_id: "BabyBear",
+            coefficient_domain: "check-field-native-ring",
+            ring_degree: D,
+            ring_relation: "X^D+1",
+            coefficient_basis: "coefficient-ascending",
+            coefficient_order: "little-endian",
+            reduction_policy: "CheckFieldNativeV1",
+            beta_action: Symbt3BetaActionId::RingCoefficientActionV1,
+            product_law: Symbt3ProductLawId::RqNegacyclicConvolutionV1,
+            module_layout: "coordinatewise-ring-module",
+            soundness_profile: "NonAuthoritativeDevelopmentBaseFieldSingleCheck",
+            zk_profile: "NonZkDevelopment",
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_algebra_law(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-algebra-law-v1", &body)
+    }
+}
+
+impl Symbt3FoldedGr1csProductResidualLayout {
+    #[must_use]
+    pub fn from_shape(shape: &BatchedCpStatementShape) -> Self {
+        let product_coordinate_count = shape.accumulator_shape.folded_evaluation_count * T * D / 3;
+        Self {
+            layout_version: SYMBT3_FOLDED_GR1CS_PRODUCT_RESIDUAL_LAYOUT_VERSION,
+            product_domain_log_size: product_coordinate_count
+                .max(1)
+                .next_power_of_two()
+                .trailing_zeros() as usize,
+            equation_kind_axis: "folded-gr1cs-left-right-output",
+            row_axis: "evaluation-index-tensor-row-coeff",
+            l_fold_column: 0,
+            r_fold_column: 1,
+            o_fold_column: 2,
+            selector_evaluator: "prefix-valid-coordinate-selector-v1",
+            product_law: Symbt3ProductLawId::RqNegacyclicConvolutionV1,
+            beta_action: Symbt3BetaActionId::RingCoefficientActionV1,
+            padding_policy: "selector-zero-padded-tail",
+            check_field: "BabyBear",
+            soundness_profile: "NonAuthoritativeDevelopmentBaseFieldSingleCheck",
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_folded_gr1cs_product_residual_layout(&mut body, self);
+        digest_domain_with_scheme(
+            scheme,
+            b"batched-cp-symbt3-folded-gr1cs-product-residual-layout",
+            &body,
+        )
+    }
+}
+
+impl BatchedCpSymbt3OracleLayout {
+    #[must_use]
+    pub fn from_shape(shape: &BatchedCpStatementShape) -> Self {
+        let message_oracles = shape
+            .round_message_lens
+            .iter()
+            .enumerate()
+            .map(|(round, &message_len)| BatchedCpSymbt3MessageOracleLayout {
+                round,
+                row_count: shape.batch_capacity,
+                message_len,
+                packed_field_len: message_len.div_ceil(4),
+            })
+            .collect();
+        let column_kinds = [
+            BatchedCpSymbt3AlgebraicColumnKind::ActiveMask,
+            BatchedCpSymbt3AlgebraicColumnKind::BetaCoefficient,
+            BatchedCpSymbt3AlgebraicColumnKind::FoldedPublicInput,
+            BatchedCpSymbt3AlgebraicColumnKind::FoldedCommitment,
+            BatchedCpSymbt3AlgebraicColumnKind::FoldedEvaluation,
+            BatchedCpSymbt3AlgebraicColumnKind::AjtaiLinearCombination,
+            BatchedCpSymbt3AlgebraicColumnKind::OriginalR1csResidual,
+            BatchedCpSymbt3AlgebraicColumnKind::Gr1csResidual,
+            BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductLeft,
+            BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductRight,
+            BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductOutput,
+        ];
+        let algebraic_columns = column_kinds
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(id, kind)| BatchedCpSymbt3AlgebraicColumn {
+                id,
+                kind,
+                row_count: shape.batch_capacity,
+            })
+            .collect();
+        Self {
+            layout_version: SYMBT3_LAYOUT_VERSION,
+            challenge_schedule_version: SYMBT3_CHALLENGE_SCHEDULE_VERSION,
+            batch_capacity: shape.batch_capacity,
+            active_count: shape.active_count,
+            message_oracles,
+            algebraic_columns,
+            constraint_families: vec![
+                BatchedCpSymbt3ConstraintFamily::ChallengeToBeta,
+                BatchedCpSymbt3ConstraintFamily::FoldedPublicInputLinearIdentity,
+                BatchedCpSymbt3ConstraintFamily::FoldedCommitmentLinearIdentity,
+                BatchedCpSymbt3ConstraintFamily::FoldedEvaluationLinearIdentity,
+                BatchedCpSymbt3ConstraintFamily::FoldedAccumulatorBoundaryIdentity,
+                BatchedCpSymbt3ConstraintFamily::RingBetaAction,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningIdentity,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentIdentity,
+                BatchedCpSymbt3ConstraintFamily::AjtaiFoldedResidualZero,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningLinearIdentity,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentLinearIdentity,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiMapConsistency,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectionConsistency,
+                BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectedRangeBound,
+                BatchedCpSymbt3ConstraintFamily::CommittedSourceR1csResidualValidity,
+                BatchedCpSymbt3ConstraintFamily::FoldedGr1csResidualValidity,
+                BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck,
+            ],
+        }
+    }
+
+    #[must_use]
+    pub fn total_witness_fields(&self) -> usize {
+        let message_fields = self
+            .message_oracles
+            .iter()
+            .map(|oracle| oracle.row_count * oracle.packed_field_len.max(1))
+            .sum::<usize>();
+        let algebraic_fields = self
+            .algebraic_columns
+            .iter()
+            .map(|column| column.row_count)
+            .sum::<usize>();
+        message_fields + algebraic_fields
+    }
+}
+
+impl BatchedCpSymbt3SetupDescriptor {
+    #[must_use]
+    pub fn new(
+        shape: BatchedCpStatementShape,
+        ajtai: &AjtaiParams,
+        r1cs: &R1CSMatrices,
+        input_bound: u64,
+    ) -> Self {
+        shape.symbt3_setup_descriptor(ajtai, r1cs, input_bound)
+    }
+
+    #[must_use]
+    pub fn relation_description(&self) -> BatchedCpSymbt3RelationDescription {
+        BatchedCpSymbt3RelationDescription {
+            shape: self.shape.clone(),
+            oracle_layout: BatchedCpSymbt3OracleLayout::from_shape(&self.shape),
+            ring_module_layout: self.ring_module_layout.clone(),
+            ajtai_commit_layout: self.ajtai_commit_layout.clone(),
+            r1cs_evaluator_layout: self.r1cs_evaluator_layout.clone(),
+            gr1cs_residual_layout: self.gr1cs_residual_layout.clone(),
+            algebra_law: self.algebra_law.clone(),
+            ajtai_linear_algebra_layout: self.ajtai_linear_algebra_layout.clone(),
+            ajtai_norm_range_layout: self.ajtai_norm_range_layout.clone(),
+            folded_gr1cs_product_residual_layout: self.folded_gr1cs_product_residual_layout.clone(),
+            ajtai_matrix: self.ajtai_matrix.clone(),
+            r1cs_matrices: self.r1cs_matrices.clone(),
+            ajtai_params_digest: self.ajtai_params_digest,
+            r1cs_matrices_digest: self.r1cs_matrices_digest,
+            input_bound: self.input_bound,
+        }
+    }
 }
 
 impl BatchedCpSemanticOracleV2Layout {
@@ -1971,6 +2852,540 @@ impl BatchedCpSemanticRelationV2Description {
     ) -> Vec<BatchedCpSemanticConstraintBlock> {
         self.semantic
             .supported_constraint_blocks_for_statement(statement)
+    }
+}
+
+impl BatchedCpSymbt3RelationDescription {
+    #[must_use]
+    pub fn public_statement_bytes(&self) -> usize {
+        estimate_symbt3_public_statement_bytes(&self.shape)
+    }
+
+    #[must_use]
+    pub fn symbt3_public_input_coordinate_len(&self) -> usize {
+        self.shape.accumulator_shape.local_public_input_count
+            * self.shape.accumulator_shape.r1cs_num_public
+    }
+
+    #[must_use]
+    pub fn symbt3_commitment_coordinate_len(&self) -> usize {
+        self.shape.accumulator_shape.commitment_kappa * self.shape.accumulator_shape.commitment_d
+    }
+
+    #[must_use]
+    pub fn symbt3_evaluation_coordinate_len(&self) -> usize {
+        self.shape.accumulator_shape.folded_evaluation_count * T * D
+    }
+
+    #[must_use]
+    pub fn symbt3_accumulator_coordinate_len(&self) -> usize {
+        self.symbt3_public_input_coordinate_len()
+            + self.symbt3_commitment_coordinate_len()
+            + self.symbt3_evaluation_coordinate_len()
+    }
+
+    #[must_use]
+    pub fn symbt3_folded_output_coordinate_len(&self) -> usize {
+        self.symbt3_accumulator_coordinate_len() * 2
+    }
+
+    #[must_use]
+    pub fn has_symbt3_a_families(&self) -> bool {
+        self.oracle_layout
+            .constraint_families
+            .contains(&BatchedCpSymbt3ConstraintFamily::ChallengeToBeta)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedPublicInputLinearIdentity)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_b_families(&self) -> bool {
+        self.has_symbt3_a_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedCommitmentLinearIdentity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedEvaluationLinearIdentity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAccumulatorBoundaryIdentity)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_c_families(&self) -> bool {
+        self.has_symbt3_b_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::RingBetaAction)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningIdentity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentIdentity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::AjtaiFoldedResidualZero)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_f_families(&self) -> bool {
+        self.has_symbt3_c_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningLinearIdentity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentLinearIdentity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiMapConsistency)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_d_families(&self) -> bool {
+        self.has_symbt3_f_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::CommittedSourceR1csResidualValidity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedGr1csResidualValidity)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_d2_families(&self) -> bool {
+        self.has_symbt3_d_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_g_families(&self) -> bool {
+        self.has_symbt3_d2_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectionConsistency)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectedRangeBound)
+    }
+
+    #[must_use]
+    pub fn derive_folded_public_input_boundary(
+        &self,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Vec<i64> {
+        symbt3_linear_fold_values(
+            self,
+            statement,
+            &statement.input_public_values,
+            self.symbt3_public_input_coordinate_len(),
+        )
+    }
+
+    #[must_use]
+    pub fn derive_folded_commitment_boundary(
+        &self,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Vec<i64> {
+        symbt3_linear_fold_values(
+            self,
+            statement,
+            &statement.input_commitment_values,
+            self.symbt3_commitment_coordinate_len(),
+        )
+    }
+
+    #[must_use]
+    pub fn derive_ring_folded_commitment_boundary(
+        &self,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Vec<i64> {
+        symbt3_ring_fold_values(
+            self,
+            statement,
+            &statement.input_commitment_values,
+            self.ring_module_layout.commitment_module_dimension,
+        )
+    }
+
+    #[must_use]
+    pub fn derive_ring_folded_opening_boundary(
+        &self,
+        statement: &BatchedCpSymbt3PublicStatement,
+        rows: &[Vec<i64>],
+    ) -> Vec<i64> {
+        symbt3_ring_fold_values(
+            self,
+            statement,
+            rows,
+            self.ring_module_layout.opening_module_dimension,
+        )
+    }
+
+    #[must_use]
+    pub fn derive_folded_evaluation_boundary(
+        &self,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Vec<i64> {
+        let mut folded = match self.algebra_law.beta_action {
+            Symbt3BetaActionId::ScalarFieldCoordinateV1 => symbt3_linear_fold_values(
+                self,
+                statement,
+                &statement.input_evaluation_values,
+                self.symbt3_evaluation_coordinate_len(),
+            ),
+            Symbt3BetaActionId::RingCoefficientActionV1 => symbt3_ring_fold_values(
+                self,
+                statement,
+                &statement.input_evaluation_values,
+                self.symbt3_evaluation_coordinate_len() / D,
+            ),
+        };
+        if self.has_symbt3_d2_families() {
+            let product_len = self
+                .gr1cs_residual_layout
+                .folded_evaluation_coordinate_count
+                / 3;
+            if folded.len() >= product_len * 3 {
+                match self.folded_gr1cs_product_residual_layout.product_law {
+                    Symbt3ProductLawId::FieldCoordinateMulV1 => {
+                        for idx in 0..product_len {
+                            folded[2 * product_len + idx] =
+                                folded[idx].saturating_mul(folded[product_len + idx]);
+                        }
+                    }
+                    Symbt3ProductLawId::RqNegacyclicConvolutionV1 => {
+                        for chunk_start in (0..product_len).step_by(D) {
+                            if chunk_start + D > product_len {
+                                break;
+                            }
+                            let product = symbt3_negacyclic_mul_i64(
+                                &folded[chunk_start..chunk_start + D],
+                                &folded[product_len + chunk_start..product_len + chunk_start + D],
+                                BABYBEAR_MODULUS_U64,
+                            );
+                            folded
+                                [2 * product_len + chunk_start..2 * product_len + chunk_start + D]
+                                .copy_from_slice(&product);
+                        }
+                    }
+                }
+            }
+        }
+        folded
+    }
+
+    #[must_use]
+    pub fn derive_folded_accumulator_boundary(
+        &self,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Vec<i64> {
+        symbt3_linear_fold_values(
+            self,
+            statement,
+            &statement.input_accumulator_values,
+            self.symbt3_accumulator_coordinate_len(),
+        )
+    }
+
+    #[must_use]
+    pub fn canonical_context_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(SYMBT3_RELATION_CONTEXT_MAGIC);
+        encode_statement_shape(&mut out, &self.shape);
+        push_usize(&mut out, self.oracle_layout.layout_version as usize);
+        push_usize(
+            &mut out,
+            self.oracle_layout.challenge_schedule_version as usize,
+        );
+        push_usize(&mut out, self.oracle_layout.batch_capacity);
+        push_usize(&mut out, self.oracle_layout.active_count);
+        push_usize(&mut out, self.oracle_layout.message_oracles.len());
+        for oracle in &self.oracle_layout.message_oracles {
+            push_usize(&mut out, oracle.round);
+            push_usize(&mut out, oracle.row_count);
+            push_usize(&mut out, oracle.message_len);
+            push_usize(&mut out, oracle.packed_field_len);
+        }
+        push_usize(&mut out, self.oracle_layout.algebraic_columns.len());
+        for column in &self.oracle_layout.algebraic_columns {
+            push_usize(&mut out, column.id);
+            out.push(symbt3_algebraic_column_kind_code(column.kind));
+            push_usize(&mut out, column.row_count);
+        }
+        push_usize(&mut out, self.oracle_layout.constraint_families.len());
+        for family in &self.oracle_layout.constraint_families {
+            out.push(symbt3_constraint_family_code(*family));
+        }
+        encode_symbt3_ring_module_layout(&mut out, &self.ring_module_layout);
+        encode_symbt3_ajtai_commit_layout(&mut out, &self.ajtai_commit_layout);
+        encode_symbt3_r1cs_evaluator_layout(&mut out, &self.r1cs_evaluator_layout);
+        encode_symbt3_gr1cs_residual_layout(&mut out, &self.gr1cs_residual_layout);
+        encode_symbt3_algebra_law(&mut out, &self.algebra_law);
+        encode_symbt3_ajtai_linear_algebra_layout(&mut out, &self.ajtai_linear_algebra_layout);
+        encode_symbt3_ajtai_norm_range_layout(&mut out, &self.ajtai_norm_range_layout);
+        encode_symbt3_folded_gr1cs_product_residual_layout(
+            &mut out,
+            &self.folded_gr1cs_product_residual_layout,
+        );
+        encode_ring_matrix(&mut out, &self.ajtai_matrix);
+        encode_r1cs_matrices(&mut out, &self.r1cs_matrices);
+        out.extend_from_slice(&self.ajtai_params_digest);
+        out.extend_from_slice(&self.r1cs_matrices_digest);
+        out.extend_from_slice(&self.input_bound.to_le_bytes());
+        out
+    }
+
+    #[must_use]
+    pub fn relation_id(&self) -> Digest32 {
+        digest_domain_with_scheme(
+            self.shape.accumulator_shape.digest_scheme,
+            b"batched-cp-symbt3-relation-id",
+            &self.canonical_context_bytes(),
+        )
+    }
+
+    #[must_use]
+    pub fn folding_protocol_id(&self) -> Digest32 {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"symphony-symbt3-folding-protocol-v1");
+        body.extend_from_slice(&self.shape.shape_id);
+        push_usize(&mut body, self.shape.batch_capacity);
+        push_usize(&mut body, self.shape.active_count);
+        push_usize(&mut body, self.oracle_layout.message_oracles.len());
+        for oracle in &self.oracle_layout.message_oracles {
+            push_usize(&mut body, oracle.round);
+            push_usize(&mut body, oracle.row_count);
+            push_usize(&mut body, oracle.message_len);
+            push_usize(&mut body, oracle.packed_field_len);
+        }
+        body.extend_from_slice(&self.shape.accumulator_shape.whir_parameter_digest);
+        body.extend_from_slice(&self.ajtai_params_digest);
+        body.extend_from_slice(&self.r1cs_matrices_digest);
+        body.extend_from_slice(
+            &self
+                .ring_module_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .ajtai_commit_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .r1cs_evaluator_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .gr1cs_residual_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .algebra_law
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .ajtai_linear_algebra_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .ajtai_norm_range_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(&(SYMBT3_CHALLENGE_SCHEDULE_VERSION).to_le_bytes());
+        digest_domain_with_scheme(
+            self.shape.accumulator_shape.digest_scheme,
+            b"batched-cp-symbt3-folding-protocol-id",
+            &body,
+        )
+    }
+
+    #[must_use]
+    pub fn to_relation_description(&self) -> RelationDescription {
+        RelationDescription {
+            num_instance_vars: self.public_statement_bytes(),
+            num_witness_vars: self.oracle_layout.total_witness_fields(),
+            num_constraints: 0,
+            context: Some(self.canonical_context_bytes()),
+        }
+    }
+
+    pub fn from_context_bytes(bytes: &[u8]) -> Result<Self, BatchedCpError> {
+        if bytes.len() < SYMBT3_RELATION_CONTEXT_MAGIC.len()
+            || &bytes[..SYMBT3_RELATION_CONTEXT_MAGIC.len()] != SYMBT3_RELATION_CONTEXT_MAGIC
+        {
+            return Err(BatchedCpError::InvalidSemanticRelationContext);
+        }
+        let mut pos = SYMBT3_RELATION_CONTEXT_MAGIC.len();
+        let shape = decode_statement_shape(bytes, &mut pos)?;
+        let layout_version = read_usize(bytes, &mut pos)? as u64;
+        let challenge_schedule_version = read_usize(bytes, &mut pos)? as u64;
+        let batch_capacity = read_usize(bytes, &mut pos)?;
+        let active_count = read_usize(bytes, &mut pos)?;
+        let message_count = read_usize(bytes, &mut pos)?;
+        let mut message_oracles = Vec::with_capacity(message_count);
+        for _ in 0..message_count {
+            message_oracles.push(BatchedCpSymbt3MessageOracleLayout {
+                round: read_usize(bytes, &mut pos)?,
+                row_count: read_usize(bytes, &mut pos)?,
+                message_len: read_usize(bytes, &mut pos)?,
+                packed_field_len: read_usize(bytes, &mut pos)?,
+            });
+        }
+        let column_count = read_usize(bytes, &mut pos)?;
+        let mut algebraic_columns = Vec::with_capacity(column_count);
+        for _ in 0..column_count {
+            let id = read_usize(bytes, &mut pos)?;
+            let Some(&code) = bytes.get(pos) else {
+                return Err(BatchedCpError::InvalidSemanticRelationContext);
+            };
+            pos += 1;
+            let kind = symbt3_algebraic_column_kind_from_code(code)
+                .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+            algebraic_columns.push(BatchedCpSymbt3AlgebraicColumn {
+                id,
+                kind,
+                row_count: read_usize(bytes, &mut pos)?,
+            });
+        }
+        let family_count = read_usize(bytes, &mut pos)?;
+        let mut constraint_families = Vec::with_capacity(family_count);
+        for _ in 0..family_count {
+            let Some(&code) = bytes.get(pos) else {
+                return Err(BatchedCpError::InvalidSemanticRelationContext);
+            };
+            pos += 1;
+            constraint_families.push(
+                symbt3_constraint_family_from_code(code)
+                    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+            );
+        }
+        let ring_module_layout = read_symbt3_ring_module_layout(bytes, &mut pos)?;
+        let ajtai_commit_layout = read_symbt3_ajtai_commit_layout(bytes, &mut pos)?;
+        let r1cs_evaluator_layout = read_symbt3_r1cs_evaluator_layout(bytes, &mut pos)?;
+        let gr1cs_residual_layout = read_symbt3_gr1cs_residual_layout(bytes, &mut pos)?;
+        let algebra_law = read_symbt3_algebra_law(bytes, &mut pos)?;
+        let ajtai_linear_algebra_layout = read_symbt3_ajtai_linear_algebra_layout(bytes, &mut pos)?;
+        let ajtai_norm_range_layout = read_symbt3_ajtai_norm_range_layout(bytes, &mut pos)?;
+        let folded_gr1cs_product_residual_layout =
+            read_symbt3_folded_gr1cs_product_residual_layout(bytes, &mut pos)?;
+        let ajtai_matrix = read_ring_matrix(bytes, &mut pos)?;
+        let r1cs_matrices = read_r1cs_matrices(bytes, &mut pos)?;
+        let ajtai_params_digest = read_digest(bytes, &mut pos)?;
+        let r1cs_matrices_digest = read_digest(bytes, &mut pos)?;
+        let end = pos
+            .checked_add(8)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+        let input_bound = u64::from_le_bytes(
+            bytes
+                .get(pos..end)
+                .ok_or(BatchedCpError::InvalidSemanticRelationContext)?
+                .try_into()
+                .map_err(|_| BatchedCpError::InvalidSemanticRelationContext)?,
+        );
+        pos = end;
+        let oracle_layout = BatchedCpSymbt3OracleLayout {
+            layout_version,
+            challenge_schedule_version,
+            batch_capacity,
+            active_count,
+            message_oracles,
+            algebraic_columns,
+            constraint_families,
+        };
+        if pos != bytes.len()
+            || oracle_layout != BatchedCpSymbt3OracleLayout::from_shape(&shape)
+            || layout_version != SYMBT3_LAYOUT_VERSION
+            || challenge_schedule_version != SYMBT3_CHALLENGE_SCHEDULE_VERSION
+            || ring_module_layout.ring_degree != D
+            || ring_module_layout.ring_action_version != SYMBT3_RING_ACTION_VERSION
+            || ajtai_commit_layout.layout_version != SYMBT3_AJTAI_COMMIT_LAYOUT_VERSION
+            || r1cs_evaluator_layout.layout_version != SYMBT3_R1CS_EVALUATOR_LAYOUT_VERSION
+            || gr1cs_residual_layout.layout_version != SYMBT3_GR1CS_RESIDUAL_LAYOUT_VERSION
+            || algebra_law != Symbt3AlgebraLaw::from_shape(&shape)
+            || ajtai_linear_algebra_layout.layout_version
+                != SYMBT3_AJTAI_LINEAR_ALGEBRA_LAYOUT_VERSION
+            || ajtai_norm_range_layout.layout_version != SYMBT3_AJTAI_NORM_RANGE_LAYOUT_VERSION
+            || folded_gr1cs_product_residual_layout.layout_version
+                != SYMBT3_FOLDED_GR1CS_PRODUCT_RESIDUAL_LAYOUT_VERSION
+            || ajtai_matrix.len() != ajtai_commit_layout.commitment_module_dimension
+            || ajtai_matrix
+                .iter()
+                .any(|row| row.len() != ajtai_commit_layout.opening_module_dimension)
+            || r1cs_matrices.num_constraints != shape.accumulator_shape.r1cs_num_constraints
+            || r1cs_matrices.num_variables != shape.accumulator_shape.r1cs_num_variables
+            || r1cs_matrices.num_public != shape.accumulator_shape.r1cs_num_public
+            || r1cs_evaluator_layout
+                != Symbt3R1csEvaluatorLayout::from_shape_and_r1cs(
+                    &shape,
+                    &r1cs_matrices,
+                    r1cs_matrices_digest,
+                )
+            || gr1cs_residual_layout != Symbt3Gr1csResidualLayout::from_shape(&shape)
+            || ajtai_linear_algebra_layout
+                != Symbt3AjtaiLinearAlgebraLayout::from_shape_and_layouts(
+                    &shape,
+                    &algebra_law,
+                    &ajtai_commit_layout,
+                    ajtai_params_digest,
+                    shape.accumulator_shape.digest_scheme,
+                )
+            || ajtai_norm_range_layout
+                != Symbt3AjtaiNormRangeLayout::from_shape_and_layouts(
+                    &shape,
+                    &algebra_law,
+                    &ajtai_linear_algebra_layout,
+                    input_bound,
+                    shape.accumulator_shape.digest_scheme,
+                )
+            || folded_gr1cs_product_residual_layout
+                != Symbt3FoldedGr1csProductResidualLayout::from_shape(&shape)
+        {
+            return Err(BatchedCpError::InvalidSemanticRelationContext);
+        }
+        Ok(Self {
+            shape,
+            oracle_layout,
+            ring_module_layout,
+            ajtai_commit_layout,
+            r1cs_evaluator_layout,
+            gr1cs_residual_layout,
+            algebra_law,
+            ajtai_linear_algebra_layout,
+            ajtai_norm_range_layout,
+            folded_gr1cs_product_residual_layout,
+            ajtai_matrix,
+            r1cs_matrices,
+            ajtai_params_digest,
+            r1cs_matrices_digest,
+            input_bound,
+        })
     }
 }
 
@@ -3774,6 +5189,224 @@ impl BatchedCpBucket {
     }
 
     #[must_use]
+    pub fn symbt3_public_statement_for_relation(
+        &self,
+        relation: &BatchedCpSymbt3RelationDescription,
+    ) -> BatchedCpSymbt3PublicStatement {
+        let witness = self.witness_bundle();
+        let message_oracle_roots = witness
+            .round_message_oracles
+            .iter()
+            .enumerate()
+            .map(|(round, rows)| {
+                symbt3_message_oracle_root(
+                    self.shape.accumulator_shape.digest_scheme,
+                    &self.shape,
+                    round,
+                    rows,
+                )
+            })
+            .collect();
+        let folded_output_accumulator_root = digest_domain_with_scheme(
+            self.shape.accumulator_shape.digest_scheme,
+            b"batched-cp-folded-output-accumulator-root",
+            &encode_folded_output_accumulator_body(&self.items),
+        );
+        let input_public_values = self
+            .items
+            .iter()
+            .map(|item| flatten_symbt3_public_inputs(&item.public.public_inputs))
+            .collect::<Vec<_>>();
+        let input_commitment_values = self
+            .items
+            .iter()
+            .map(|item| flatten_symbt3_commitment(&item.public.instance.x_folded.commitment))
+            .collect::<Vec<_>>();
+        let input_evaluation_values = self
+            .items
+            .iter()
+            .map(|item| {
+                flatten_symbt3_evaluations(&item.public.instance.x_folded.evaluation_values)
+            })
+            .collect::<Vec<_>>();
+        let input_accumulator_values = input_public_values
+            .iter()
+            .zip(input_commitment_values.iter())
+            .zip(input_evaluation_values.iter())
+            .map(|((public, commitment), evaluation)| {
+                let mut out = Vec::with_capacity(relation.symbt3_accumulator_coordinate_len());
+                out.extend_from_slice(public);
+                out.extend_from_slice(commitment);
+                out.extend_from_slice(evaluation);
+                out
+            })
+            .collect::<Vec<_>>();
+        let source_ajtai_opening_values = self
+            .items
+            .iter()
+            .map(flatten_symbt3_full_ajtai_opening)
+            .collect::<Vec<_>>();
+        let source_r1cs_assignment_values = self
+            .items
+            .iter()
+            .flat_map(|item| {
+                (0..relation.shape.accumulator_shape.local_public_input_count).map(
+                    move |original_index| {
+                        flatten_symbt3_source_r1cs_assignment(item, original_index, relation)
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let source_assignment_roots = source_r1cs_assignment_values
+            .iter()
+            .map(|row| {
+                symbt3_source_assignment_root(
+                    self.shape.accumulator_shape.digest_scheme,
+                    relation,
+                    row,
+                )
+            })
+            .collect::<Vec<_>>();
+        let source_ajtai_opening_roots = source_ajtai_opening_values
+            .iter()
+            .map(|row| {
+                symbt3_ajtai_opening_root(
+                    self.shape.accumulator_shape.digest_scheme,
+                    &relation.ring_module_layout,
+                    row,
+                )
+            })
+            .collect::<Vec<_>>();
+        let input_public_boundary_digest = symbt3_input_public_boundary_digest(
+            self.shape.accumulator_shape.digest_scheme,
+            &input_public_values,
+            &input_commitment_values,
+            &input_evaluation_values,
+            &input_accumulator_values,
+        );
+        let source_ajtai_commitment_boundary_digest =
+            symbt3_source_ajtai_commitment_boundary_digest(
+                self.shape.accumulator_shape.digest_scheme,
+                &input_commitment_values,
+            );
+        let source_assignment_boundary_digest = symbt3_source_assignment_boundary_digest(
+            self.shape.accumulator_shape.digest_scheme,
+            relation,
+            &source_assignment_roots,
+        );
+        let folded_gr1cs_boundary_digest = symbt3_folded_gr1cs_boundary_digest(
+            self.shape.accumulator_shape.digest_scheme,
+            relation,
+            &input_evaluation_values,
+            &vec![0; relation.symbt3_evaluation_coordinate_len()],
+        );
+        let mut public = BatchedCpSymbt3PublicStatement {
+            shape_id: self.shape.shape_id,
+            batch_capacity: self.shape.batch_capacity,
+            active_count: self.shape.active_count,
+            input_public_boundary_digest,
+            input_public_values,
+            input_commitment_values,
+            input_evaluation_values,
+            input_accumulator_values,
+            source_assignment_roots,
+            source_assignment_boundary_digest,
+            source_ajtai_opening_roots,
+            source_ajtai_commitment_boundary_digest,
+            message_oracle_roots,
+            folded_public_input: vec![0; relation.symbt3_public_input_coordinate_len()],
+            folded_commitment: vec![0; relation.symbt3_commitment_coordinate_len()],
+            folded_evaluation: vec![0; relation.symbt3_evaluation_coordinate_len()],
+            folded_accumulator_coordinates: vec![0; relation.symbt3_accumulator_coordinate_len()],
+            folded_ajtai_opening_root: [0u8; 32],
+            folded_ajtai_commitment: vec![0; relation.symbt3_commitment_coordinate_len()],
+            folded_gr1cs_boundary_digest,
+            ring_module_layout_digest: relation
+                .ring_module_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            ajtai_commit_layout_digest: relation
+                .ajtai_commit_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            r1cs_evaluator_layout_digest: relation
+                .r1cs_evaluator_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            gr1cs_residual_layout_digest: relation
+                .gr1cs_residual_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            algebra_law_digest: relation
+                .algebra_law
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            ajtai_linear_algebra_layout_digest: relation
+                .ajtai_linear_algebra_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            ajtai_norm_range_layout_digest: relation
+                .ajtai_norm_range_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            projection_layout_digest: relation
+                .ajtai_norm_range_layout
+                .projection_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            range_layout_digest: relation
+                .ajtai_norm_range_layout
+                .range_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            folded_gr1cs_product_residual_layout_digest: relation
+                .folded_gr1cs_product_residual_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            folded_output_accumulator_root,
+            whir_parameter_digest: self.shape.accumulator_shape.whir_parameter_digest,
+        };
+        public.folded_public_input = relation.derive_folded_public_input_boundary(&public);
+        public.folded_commitment = relation.derive_ring_folded_commitment_boundary(&public);
+        public.folded_evaluation = relation.derive_folded_evaluation_boundary(&public);
+        public.folded_accumulator_coordinates =
+            relation.derive_folded_accumulator_boundary(&public);
+        public.folded_gr1cs_boundary_digest = symbt3_folded_gr1cs_boundary_digest(
+            self.shape.accumulator_shape.digest_scheme,
+            relation,
+            &public.input_evaluation_values,
+            &public.folded_evaluation,
+        );
+        let folded_opening =
+            relation.derive_ring_folded_opening_boundary(&public, &source_ajtai_opening_values);
+        public.folded_ajtai_opening_root = symbt3_ajtai_opening_root(
+            self.shape.accumulator_shape.digest_scheme,
+            &relation.ring_module_layout,
+            &folded_opening,
+        );
+        public.folded_ajtai_commitment = public.folded_commitment.clone();
+        public
+    }
+
+    #[must_use]
+    pub fn symbt3_witness_for_relation(
+        &self,
+        relation: &BatchedCpSymbt3RelationDescription,
+    ) -> BatchedCpSymbt3Witness {
+        let mut witness = BatchedCpSymbt3Witness::from_batched_witness(&self.witness_bundle());
+        witness.source_ajtai_opening_values = self
+            .items
+            .iter()
+            .map(flatten_symbt3_full_ajtai_opening)
+            .collect::<Vec<_>>();
+        witness.source_r1cs_assignment_values = self
+            .items
+            .iter()
+            .flat_map(|item| {
+                (0..relation.shape.accumulator_shape.local_public_input_count).map(
+                    move |original_index| {
+                        flatten_symbt3_source_r1cs_assignment(item, original_index, relation)
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let public = self.symbt3_public_statement_for_relation(relation);
+        witness.folded_ajtai_opening_values = relation
+            .derive_ring_folded_opening_boundary(&public, &witness.source_ajtai_opening_values);
+        witness
+    }
+
+    #[must_use]
     pub fn witness_bundle(&self) -> BatchedCpWitnessBundle {
         let witness_oracle_rows = (0..self.shape.batch_capacity)
             .map(|idx| {
@@ -4942,6 +6575,350 @@ impl BatchedCpPublicStatement {
     }
 }
 
+impl BatchedCpSymbt3PublicStatement {
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"symphony-batched-cp-symbt3-public-v1");
+        out.extend_from_slice(&self.shape_id);
+        push_usize(&mut out, self.batch_capacity);
+        push_usize(&mut out, self.active_count);
+        out.extend_from_slice(&self.input_public_boundary_digest);
+        push_usize(&mut out, self.input_public_values.len());
+        for row in &self.input_public_values {
+            push_i64_vec(&mut out, row);
+        }
+        push_i64_matrix(&mut out, &self.input_commitment_values);
+        push_i64_matrix(&mut out, &self.input_evaluation_values);
+        push_i64_matrix(&mut out, &self.input_accumulator_values);
+        push_usize(&mut out, self.source_assignment_roots.len());
+        for root in &self.source_assignment_roots {
+            out.extend_from_slice(root);
+        }
+        out.extend_from_slice(&self.source_assignment_boundary_digest);
+        push_usize(&mut out, self.source_ajtai_opening_roots.len());
+        for root in &self.source_ajtai_opening_roots {
+            out.extend_from_slice(root);
+        }
+        out.extend_from_slice(&self.source_ajtai_commitment_boundary_digest);
+        push_usize(&mut out, self.message_oracle_roots.len());
+        for root in &self.message_oracle_roots {
+            out.extend_from_slice(root);
+        }
+        push_i64_vec(&mut out, &self.folded_public_input);
+        push_i64_vec(&mut out, &self.folded_commitment);
+        push_i64_vec(&mut out, &self.folded_evaluation);
+        push_i64_vec(&mut out, &self.folded_accumulator_coordinates);
+        out.extend_from_slice(&self.folded_ajtai_opening_root);
+        push_i64_vec(&mut out, &self.folded_ajtai_commitment);
+        out.extend_from_slice(&self.folded_gr1cs_boundary_digest);
+        out.extend_from_slice(&self.ring_module_layout_digest);
+        out.extend_from_slice(&self.ajtai_commit_layout_digest);
+        out.extend_from_slice(&self.r1cs_evaluator_layout_digest);
+        out.extend_from_slice(&self.gr1cs_residual_layout_digest);
+        out.extend_from_slice(&self.algebra_law_digest);
+        out.extend_from_slice(&self.ajtai_linear_algebra_layout_digest);
+        out.extend_from_slice(&self.ajtai_norm_range_layout_digest);
+        out.extend_from_slice(&self.projection_layout_digest);
+        out.extend_from_slice(&self.range_layout_digest);
+        out.extend_from_slice(&self.folded_gr1cs_product_residual_layout_digest);
+        out.extend_from_slice(&self.folded_output_accumulator_root);
+        out.extend_from_slice(&self.whir_parameter_digest);
+        out
+    }
+
+    #[must_use]
+    pub fn matches_relation(&self, relation: &BatchedCpSymbt3RelationDescription) -> bool {
+        self.shape_id == relation.shape.shape_id
+            && self.batch_capacity == relation.shape.batch_capacity
+            && self.active_count == relation.shape.active_count
+            && self.input_public_values.len() == relation.shape.active_count
+            && self
+                .input_public_values
+                .iter()
+                .all(|row| row.len() == relation.symbt3_public_input_coordinate_len())
+            && self.input_commitment_values.len() == relation.shape.active_count
+            && self
+                .input_commitment_values
+                .iter()
+                .all(|row| row.len() == relation.symbt3_commitment_coordinate_len())
+            && self.input_evaluation_values.len() == relation.shape.active_count
+            && self
+                .input_evaluation_values
+                .iter()
+                .all(|row| row.len() == relation.symbt3_evaluation_coordinate_len())
+            && self.input_accumulator_values.len() == relation.shape.active_count
+            && self
+                .input_accumulator_values
+                .iter()
+                .all(|row| row.len() == relation.symbt3_accumulator_coordinate_len())
+            && self.input_public_boundary_digest
+                == symbt3_input_public_boundary_digest(
+                    relation.shape.accumulator_shape.digest_scheme,
+                    &self.input_public_values,
+                    &self.input_commitment_values,
+                    &self.input_evaluation_values,
+                    &self.input_accumulator_values,
+                )
+            && self.source_assignment_roots.len()
+                == relation.shape.active_count
+                    * relation.shape.accumulator_shape.local_public_input_count
+            && self.source_assignment_boundary_digest
+                == symbt3_source_assignment_boundary_digest(
+                    relation.shape.accumulator_shape.digest_scheme,
+                    relation,
+                    &self.source_assignment_roots,
+                )
+            && self.source_ajtai_opening_roots.len() == relation.shape.active_count
+            && self.source_ajtai_commitment_boundary_digest
+                == symbt3_source_ajtai_commitment_boundary_digest(
+                    relation.shape.accumulator_shape.digest_scheme,
+                    &self.input_commitment_values,
+                )
+            && self.message_oracle_roots.len() == relation.shape.round_message_lens.len()
+            && self.folded_public_input.len() == relation.symbt3_public_input_coordinate_len()
+            && self.folded_commitment.len() == relation.symbt3_commitment_coordinate_len()
+            && self.folded_evaluation.len() == relation.symbt3_evaluation_coordinate_len()
+            && self.folded_accumulator_coordinates.len()
+                == relation.symbt3_accumulator_coordinate_len()
+            && self.folded_ajtai_commitment.len() == relation.symbt3_commitment_coordinate_len()
+            && self.folded_ajtai_commitment == self.folded_commitment
+            && self.folded_gr1cs_boundary_digest
+                == symbt3_folded_gr1cs_boundary_digest(
+                    relation.shape.accumulator_shape.digest_scheme,
+                    relation,
+                    &self.input_evaluation_values,
+                    &self.folded_evaluation,
+                )
+            && self.ring_module_layout_digest
+                == relation
+                    .ring_module_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.ajtai_commit_layout_digest
+                == relation
+                    .ajtai_commit_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.r1cs_evaluator_layout_digest
+                == relation
+                    .r1cs_evaluator_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.gr1cs_residual_layout_digest
+                == relation
+                    .gr1cs_residual_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.algebra_law_digest
+                == relation
+                    .algebra_law
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.ajtai_linear_algebra_layout_digest
+                == relation
+                    .ajtai_linear_algebra_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.ajtai_norm_range_layout_digest
+                == relation
+                    .ajtai_norm_range_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.projection_layout_digest
+                == relation
+                    .ajtai_norm_range_layout
+                    .projection_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.range_layout_digest
+                == relation
+                    .ajtai_norm_range_layout
+                    .range_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.folded_gr1cs_product_residual_layout_digest
+                == relation
+                    .folded_gr1cs_product_residual_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.whir_parameter_digest == relation.shape.accumulator_shape.whir_parameter_digest
+    }
+}
+
+impl BatchedCpSymbt3Witness {
+    #[must_use]
+    pub fn from_batched_witness(witness: &BatchedCpWitnessBundle) -> Self {
+        Self {
+            message_oracles: witness.round_message_oracles.clone(),
+            algebraic_trace_columns: Vec::new(),
+            source_ajtai_opening_values: Vec::new(),
+            folded_ajtai_opening_values: Vec::new(),
+            source_r1cs_assignment_values: Vec::new(),
+        }
+    }
+}
+
+#[must_use]
+pub fn derive_symbt3_batch_challenge_digest(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&relation.folding_protocol_id());
+    body.extend_from_slice(&statement.input_public_boundary_digest);
+    body.extend_from_slice(&statement.source_assignment_boundary_digest);
+    body.extend_from_slice(&statement.source_ajtai_commitment_boundary_digest);
+    body.extend_from_slice(&statement.ring_module_layout_digest);
+    body.extend_from_slice(&statement.ajtai_commit_layout_digest);
+    body.extend_from_slice(&statement.r1cs_evaluator_layout_digest);
+    body.extend_from_slice(&statement.gr1cs_residual_layout_digest);
+    body.extend_from_slice(&statement.algebra_law_digest);
+    body.extend_from_slice(&statement.ajtai_linear_algebra_layout_digest);
+    body.extend_from_slice(&statement.ajtai_norm_range_layout_digest);
+    push_usize(&mut body, statement.source_assignment_roots.len());
+    for root in &statement.source_assignment_roots {
+        body.extend_from_slice(root);
+    }
+    push_usize(&mut body, statement.source_ajtai_opening_roots.len());
+    for root in &statement.source_ajtai_opening_roots {
+        body.extend_from_slice(root);
+    }
+    push_usize(&mut body, statement.message_oracle_roots.len());
+    for root in &statement.message_oracle_roots {
+        body.extend_from_slice(root);
+    }
+    body.extend_from_slice(&statement.whir_parameter_digest);
+    push_usize(&mut body, statement.batch_capacity);
+    push_usize(&mut body, statement.active_count);
+    digest_domain_with_scheme(
+        relation.shape.accumulator_shape.digest_scheme,
+        b"SYMBT3-A-BETA",
+        &body,
+    )
+}
+
+#[must_use]
+pub fn derive_symbt3_public_statement_digest(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&derive_symbt3_batch_challenge_digest(relation, statement));
+    push_i64_vec(&mut body, &statement.folded_public_input);
+    push_i64_vec(&mut body, &statement.folded_commitment);
+    push_i64_vec(&mut body, &statement.folded_evaluation);
+    push_i64_vec(&mut body, &statement.folded_accumulator_coordinates);
+    body.extend_from_slice(&statement.folded_ajtai_opening_root);
+    push_i64_vec(&mut body, &statement.folded_ajtai_commitment);
+    body.extend_from_slice(&statement.folded_gr1cs_boundary_digest);
+    body.extend_from_slice(&statement.algebra_law_digest);
+    body.extend_from_slice(&statement.ajtai_linear_algebra_layout_digest);
+    body.extend_from_slice(&statement.ajtai_norm_range_layout_digest);
+    body.extend_from_slice(&statement.projection_layout_digest);
+    body.extend_from_slice(&statement.range_layout_digest);
+    body.extend_from_slice(&statement.folded_gr1cs_product_residual_layout_digest);
+    body.extend_from_slice(&statement.folded_output_accumulator_root);
+    digest_domain_with_scheme(
+        relation.shape.accumulator_shape.digest_scheme,
+        b"batched-cp-symbt3-proof-public-statement",
+        &body,
+    )
+}
+
+#[must_use]
+pub fn derive_symbt3_projection_seed_digest(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+    oracle_root: Digest32,
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&relation.relation_id());
+    body.extend_from_slice(&derive_symbt3_public_statement_digest(relation, statement));
+    body.extend_from_slice(&statement.folded_ajtai_opening_root);
+    body.extend_from_slice(&oracle_root);
+    body.extend_from_slice(&statement.whir_parameter_digest);
+    body.extend_from_slice(&statement.ajtai_norm_range_layout_digest);
+    body.extend_from_slice(&statement.projection_layout_digest);
+    body.extend_from_slice(&statement.range_layout_digest);
+    digest_domain_with_scheme(
+        relation.shape.accumulator_shape.digest_scheme,
+        b"SYMBT3-G-PROJECTION",
+        &body,
+    )
+}
+
+#[must_use]
+pub fn derive_symbt3_beta_coefficients(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+) -> Vec<i64> {
+    let seed = derive_symbt3_batch_challenge_digest(relation, statement);
+    let mut coeffs = Vec::with_capacity(seed.len() * 2);
+    for byte in seed {
+        let d0 = (byte % 5) as i64;
+        let d1 = ((byte / 5) % 5) as i64;
+        coeffs.push(d0 - 2);
+        coeffs.push(d1 - 2);
+    }
+    (0..statement.batch_capacity)
+        .map(|idx| coeffs[idx % coeffs.len()])
+        .collect()
+}
+
+#[must_use]
+pub fn derive_symbt3_beta_ring_elements(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+) -> Vec<RingElement> {
+    let seed = derive_symbt3_batch_challenge_digest(relation, statement);
+    let mut coeffs = Vec::with_capacity(seed.len() * 2);
+    for byte in seed {
+        let d0 = (byte % 5) as i64;
+        let d1 = ((byte / 5) % 5) as i64;
+        coeffs.push(d0 - 2);
+        coeffs.push(d1 - 2);
+    }
+    (0..statement.batch_capacity)
+        .map(|idx| {
+            let mut ring_coeffs = [0i64; D];
+            for (coeff_idx, coeff) in ring_coeffs.iter_mut().enumerate() {
+                *coeff = coeffs[(idx * D + coeff_idx) % coeffs.len()];
+            }
+            RingElement {
+                coeffs: ring_coeffs,
+            }
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn derive_symbt3_round_challenges(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+) -> Vec<Digest32> {
+    let seed = derive_symbt3_batch_challenge_digest(relation, statement);
+    (0..relation.shape.accumulator_shape.num_rounds)
+        .map(|round| {
+            let mut body = Vec::new();
+            body.extend_from_slice(&seed);
+            push_usize(&mut body, round);
+            digest_domain_with_scheme(
+                relation.shape.accumulator_shape.digest_scheme,
+                b"batched-cp-symbt3-round-challenge",
+                &body,
+            )
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn symbt3_message_oracle_root(
+    scheme: PublicDigestScheme,
+    shape: &BatchedCpStatementShape,
+    round: usize,
+    rows: &[Vec<u8>],
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&shape.shape_id);
+    push_usize(&mut body, round);
+    push_usize(&mut body, rows.len());
+    for row in rows {
+        push_bytes(&mut body, row);
+    }
+    digest_domain_with_scheme(scheme, b"batched-cp-symbt3-message-oracle-root", &body)
+}
+
 pub fn bucket_by_exact_shape(
     items: Vec<BatchedCpItem>,
     whir_parameter_digest: Digest32,
@@ -5019,6 +6996,285 @@ fn estimate_public_statement_bytes(shape: &BatchedCpStatementShape) -> usize {
     out.extend_from_slice(&[0u8; 32]);
     out.extend_from_slice(&[0u8; 32]);
     out.len()
+}
+
+fn estimate_symbt3_public_statement_bytes(shape: &BatchedCpStatementShape) -> usize {
+    let mut out = Vec::new();
+    push_bytes(&mut out, b"symphony-batched-cp-symbt3-public-v1");
+    out.extend_from_slice(&shape.shape_id);
+    push_usize(&mut out, shape.batch_capacity);
+    push_usize(&mut out, shape.active_count);
+    out.extend_from_slice(&[0u8; 32]);
+    let coord_len =
+        shape.accumulator_shape.local_public_input_count * shape.accumulator_shape.r1cs_num_public;
+    let commitment_len =
+        shape.accumulator_shape.commitment_kappa * shape.accumulator_shape.commitment_d;
+    let evaluation_len = shape.accumulator_shape.folded_evaluation_count * T * D;
+    let accumulator_len = coord_len + commitment_len + evaluation_len;
+    push_usize(&mut out, shape.active_count);
+    for _ in 0..shape.active_count {
+        push_i64_vec(&mut out, &vec![0; coord_len]);
+    }
+    let zero_matrix = |out: &mut Vec<u8>, len: usize| {
+        push_usize(out, shape.active_count);
+        for _ in 0..shape.active_count {
+            push_i64_vec(out, &vec![0; len]);
+        }
+    };
+    zero_matrix(&mut out, commitment_len);
+    zero_matrix(&mut out, evaluation_len);
+    zero_matrix(&mut out, accumulator_len);
+    push_usize(
+        &mut out,
+        shape.active_count * shape.accumulator_shape.local_public_input_count,
+    );
+    for _ in 0..shape.active_count * shape.accumulator_shape.local_public_input_count {
+        out.extend_from_slice(&[0u8; 32]);
+    }
+    out.extend_from_slice(&[0u8; 32]);
+    push_usize(&mut out, shape.active_count);
+    for _ in 0..shape.active_count {
+        out.extend_from_slice(&[0u8; 32]);
+    }
+    out.extend_from_slice(&[0u8; 32]);
+    push_usize(&mut out, shape.accumulator_shape.num_rounds);
+    for _ in 0..shape.accumulator_shape.num_rounds {
+        out.extend_from_slice(&[0u8; 32]);
+    }
+    push_i64_vec(&mut out, &vec![0; coord_len]);
+    push_i64_vec(&mut out, &vec![0; commitment_len]);
+    push_i64_vec(&mut out, &vec![0; evaluation_len]);
+    push_i64_vec(&mut out, &vec![0; accumulator_len]);
+    out.extend_from_slice(&[0u8; 32]);
+    push_i64_vec(&mut out, &vec![0; commitment_len]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.len()
+}
+
+fn flatten_symbt3_public_inputs(public_inputs: &[Vec<i64>]) -> Vec<i64> {
+    public_inputs
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .collect()
+}
+
+fn flatten_symbt3_commitment(commitment: &crate::commitment::Commitment) -> Vec<i64> {
+    commitment
+        .value
+        .elements
+        .iter()
+        .flat_map(|elem| elem.coeffs.iter().copied())
+        .collect()
+}
+
+fn flatten_symbt3_evaluations(values: &[crate::ring::tensor::TensorElement]) -> Vec<i64> {
+    values
+        .iter()
+        .flat_map(|tensor| tensor.data.iter().flat_map(|row| row.iter().copied()))
+        .collect()
+}
+
+fn flatten_symbt3_ring_vector(value: &RingVector) -> Vec<i64> {
+    value
+        .elements
+        .iter()
+        .flat_map(|elem| elem.coeffs.iter().copied())
+        .collect()
+}
+
+fn flatten_symbt3_full_ajtai_opening(item: &BatchedCpItem) -> Vec<i64> {
+    item.public
+        .instance
+        .x_folded
+        .public_input
+        .iter()
+        .chain(item.witness.folded_witness.witness.elements.iter())
+        .flat_map(|elem| elem.coeffs.iter().copied())
+        .collect()
+}
+
+fn flatten_symbt3_source_r1cs_assignment(
+    item: &BatchedCpItem,
+    original_index: usize,
+    relation: &BatchedCpSymbt3RelationDescription,
+) -> Vec<i64> {
+    let mut out = Vec::with_capacity(relation.r1cs_evaluator_layout.num_variables * D);
+    if let Some(public_inputs) = item.public.public_inputs.get(original_index) {
+        for public_idx in 0..relation.r1cs_evaluator_layout.num_public {
+            let scalar = public_inputs.get(public_idx).copied().unwrap_or_default();
+            out.extend_from_slice(&RingElement::from_constant(scalar).coeffs);
+        }
+    }
+    if let Some(witness) = item.witness.original_witnesses.get(original_index) {
+        for elem in &witness.elements {
+            out.extend_from_slice(&elem.coeffs);
+        }
+    }
+    out.resize(relation.r1cs_evaluator_layout.num_variables * D, 0);
+    out
+}
+
+fn symbt3_input_public_boundary_digest(
+    scheme: PublicDigestScheme,
+    input_public_values: &[Vec<i64>],
+    input_commitment_values: &[Vec<i64>],
+    input_evaluation_values: &[Vec<i64>],
+    input_accumulator_values: &[Vec<i64>],
+) -> Digest32 {
+    let mut body = Vec::new();
+    push_i64_matrix(&mut body, input_public_values);
+    push_i64_matrix(&mut body, input_commitment_values);
+    push_i64_matrix(&mut body, input_evaluation_values);
+    push_i64_matrix(&mut body, input_accumulator_values);
+    digest_domain_with_scheme(scheme, b"batched-cp-symbt3-input-public-boundary", &body)
+}
+
+fn symbt3_source_assignment_root(
+    scheme: PublicDigestScheme,
+    relation: &BatchedCpSymbt3RelationDescription,
+    values: &[i64],
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&relation.r1cs_evaluator_layout.digest(scheme));
+    push_i64_vec(&mut body, values);
+    digest_domain_with_scheme(scheme, b"batched-cp-symbt3-source-assignment-root", &body)
+}
+
+fn symbt3_source_assignment_boundary_digest(
+    scheme: PublicDigestScheme,
+    relation: &BatchedCpSymbt3RelationDescription,
+    roots: &[Digest32],
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&relation.r1cs_evaluator_layout.digest(scheme));
+    push_usize(&mut body, roots.len());
+    for root in roots {
+        body.extend_from_slice(root);
+    }
+    digest_domain_with_scheme(
+        scheme,
+        b"batched-cp-symbt3-source-assignment-boundary",
+        &body,
+    )
+}
+
+fn symbt3_folded_gr1cs_boundary_digest(
+    scheme: PublicDigestScheme,
+    relation: &BatchedCpSymbt3RelationDescription,
+    source_evaluations: &[Vec<i64>],
+    folded_evaluation: &[i64],
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&relation.gr1cs_residual_layout.digest(scheme));
+    push_i64_matrix(&mut body, source_evaluations);
+    push_i64_vec(&mut body, folded_evaluation);
+    digest_domain_with_scheme(scheme, b"batched-cp-symbt3-folded-gr1cs-boundary", &body)
+}
+
+fn symbt3_source_ajtai_commitment_boundary_digest(
+    scheme: PublicDigestScheme,
+    input_commitment_values: &[Vec<i64>],
+) -> Digest32 {
+    let mut body = Vec::new();
+    push_i64_matrix(&mut body, input_commitment_values);
+    digest_domain_with_scheme(
+        scheme,
+        b"batched-cp-symbt3-source-ajtai-commitment-boundary",
+        &body,
+    )
+}
+
+fn symbt3_ajtai_opening_root(
+    scheme: PublicDigestScheme,
+    layout: &Symbt3RingModuleLayout,
+    values: &[i64],
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&layout.digest(scheme));
+    push_i64_vec(&mut body, values);
+    digest_domain_with_scheme(scheme, b"batched-cp-symbt3-ajtai-opening-root", &body)
+}
+
+fn symbt3_linear_fold_values(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+    rows: &[Vec<i64>],
+    coord_len: usize,
+) -> Vec<i64> {
+    let betas = derive_symbt3_beta_coefficients(relation, statement);
+    let mut out = vec![0i64; coord_len];
+    for (row, beta) in rows.iter().take(statement.active_count).zip(betas.iter()) {
+        for (dst, &value) in out.iter_mut().zip(row.iter()) {
+            *dst = dst.saturating_add(beta.saturating_mul(value));
+        }
+    }
+    out
+}
+
+fn symbt3_ring_fold_values(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+    rows: &[Vec<i64>],
+    module_dimension: usize,
+) -> Vec<i64> {
+    let betas = derive_symbt3_beta_ring_elements(relation, statement);
+    let mut out = RingVector::zero(module_dimension);
+    for (row, beta) in rows.iter().take(statement.active_count).zip(betas.iter()) {
+        let value = ring_vector_from_flat(row, module_dimension);
+        let contribution = value.ring_scalar_mul(beta, relation.ring_module_layout.modulus);
+        for (dst, elem) in out.elements.iter_mut().zip(contribution.elements.iter()) {
+            dst.add_assign(elem, relation.ring_module_layout.modulus);
+        }
+    }
+    flatten_symbt3_ring_vector(&out)
+}
+
+fn symbt3_negacyclic_mul_i64(left: &[i64], right: &[i64], q: u64) -> [i64; D] {
+    let mut raw = [0i128; D];
+    for i in 0..D {
+        let lhs = left.get(i).copied().unwrap_or_default() as i128;
+        for j in 0..D {
+            let rhs = right.get(j).copied().unwrap_or_default() as i128;
+            let product = lhs * rhs;
+            let idx = i + j;
+            if idx < D {
+                raw[idx] += product;
+            } else {
+                raw[idx - D] -= product;
+            }
+        }
+    }
+    let mut out = [0i64; D];
+    for (dst, value) in out.iter_mut().zip(raw) {
+        *dst = crate::ring::arith::centered_mod(value, q);
+    }
+    out
+}
+
+fn ring_vector_from_flat(values: &[i64], module_dimension: usize) -> RingVector {
+    let mut elements = Vec::with_capacity(module_dimension);
+    for idx in 0..module_dimension {
+        let mut coeffs = [0i64; D];
+        let start = idx * D;
+        let end = start + D;
+        if let Some(slice) = values.get(start..end) {
+            coeffs.copy_from_slice(slice);
+        }
+        elements.push(RingElement { coeffs });
+    }
+    RingVector { elements }
 }
 
 fn manifest_body_len(shape: &BatchedCpStatementShape) -> usize {
@@ -5154,6 +7410,209 @@ fn semantic_constraint_family_from_code(code: u8) -> Option<BatchedCpSemanticCon
         7 => BatchedCpSemanticConstraintFamily::AjtaiOpeningValidity,
         8 => BatchedCpSemanticConstraintFamily::OriginalR1csValidity,
         9 => BatchedCpSemanticConstraintFamily::ActiveOrDummyPolicy,
+        _ => return None,
+    })
+}
+
+fn symbt3_algebraic_column_kind_code(kind: BatchedCpSymbt3AlgebraicColumnKind) -> u8 {
+    match kind {
+        BatchedCpSymbt3AlgebraicColumnKind::ActiveMask => 1,
+        BatchedCpSymbt3AlgebraicColumnKind::BetaCoefficient => 2,
+        BatchedCpSymbt3AlgebraicColumnKind::FoldedPublicInput => 3,
+        BatchedCpSymbt3AlgebraicColumnKind::FoldedCommitment => 4,
+        BatchedCpSymbt3AlgebraicColumnKind::FoldedEvaluation => 5,
+        BatchedCpSymbt3AlgebraicColumnKind::AjtaiLinearCombination => 6,
+        BatchedCpSymbt3AlgebraicColumnKind::OriginalR1csResidual => 7,
+        BatchedCpSymbt3AlgebraicColumnKind::Gr1csResidual => 8,
+        BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductLeft => 9,
+        BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductRight => 10,
+        BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductOutput => 11,
+    }
+}
+
+fn symbt3_algebraic_column_kind_from_code(code: u8) -> Option<BatchedCpSymbt3AlgebraicColumnKind> {
+    Some(match code {
+        1 => BatchedCpSymbt3AlgebraicColumnKind::ActiveMask,
+        2 => BatchedCpSymbt3AlgebraicColumnKind::BetaCoefficient,
+        3 => BatchedCpSymbt3AlgebraicColumnKind::FoldedPublicInput,
+        4 => BatchedCpSymbt3AlgebraicColumnKind::FoldedCommitment,
+        5 => BatchedCpSymbt3AlgebraicColumnKind::FoldedEvaluation,
+        6 => BatchedCpSymbt3AlgebraicColumnKind::AjtaiLinearCombination,
+        7 => BatchedCpSymbt3AlgebraicColumnKind::OriginalR1csResidual,
+        8 => BatchedCpSymbt3AlgebraicColumnKind::Gr1csResidual,
+        9 => BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductLeft,
+        10 => BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductRight,
+        11 => BatchedCpSymbt3AlgebraicColumnKind::FoldedGr1csProductOutput,
+        _ => return None,
+    })
+}
+
+fn symbt3_product_law_code(value: Symbt3ProductLawId) -> u8 {
+    match value {
+        Symbt3ProductLawId::FieldCoordinateMulV1 => 1,
+        Symbt3ProductLawId::RqNegacyclicConvolutionV1 => 2,
+    }
+}
+
+fn symbt3_product_law_from_code(code: u8) -> Option<Symbt3ProductLawId> {
+    Some(match code {
+        1 => Symbt3ProductLawId::FieldCoordinateMulV1,
+        2 => Symbt3ProductLawId::RqNegacyclicConvolutionV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_beta_action_code(value: Symbt3BetaActionId) -> u8 {
+    match value {
+        Symbt3BetaActionId::ScalarFieldCoordinateV1 => 1,
+        Symbt3BetaActionId::RingCoefficientActionV1 => 2,
+    }
+}
+
+fn symbt3_beta_action_from_code(code: u8) -> Option<Symbt3BetaActionId> {
+    Some(match code {
+        1 => Symbt3BetaActionId::ScalarFieldCoordinateV1,
+        2 => Symbt3BetaActionId::RingCoefficientActionV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_ajtai_opening_mode_code(value: Symbt3AjtaiOpeningMode) -> u8 {
+    match value {
+        Symbt3AjtaiOpeningMode::StrictAfEqualsC => 1,
+    }
+}
+
+fn symbt3_ajtai_opening_mode_from_code(code: u8) -> Option<Symbt3AjtaiOpeningMode> {
+    Some(match code {
+        1 => Symbt3AjtaiOpeningMode::StrictAfEqualsC,
+        _ => return None,
+    })
+}
+
+fn symbt3_ajtai_matrix_vector_evaluator_code(value: Symbt3AjtaiMatrixVectorEvaluatorId) -> u8 {
+    match value {
+        Symbt3AjtaiMatrixVectorEvaluatorId::DirectDevMatrixVectorV1 => 1,
+    }
+}
+
+fn symbt3_ajtai_matrix_vector_evaluator_from_code(
+    code: u8,
+) -> Option<Symbt3AjtaiMatrixVectorEvaluatorId> {
+    Some(match code {
+        1 => Symbt3AjtaiMatrixVectorEvaluatorId::DirectDevMatrixVectorV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_projection_mode_code(value: Symbt3ProjectionMode) -> u8 {
+    match value {
+        Symbt3ProjectionMode::DirectDevDenseProjectionV1 => 1,
+    }
+}
+
+fn symbt3_projection_mode_from_code(code: u8) -> Option<Symbt3ProjectionMode> {
+    Some(match code {
+        1 => Symbt3ProjectionMode::DirectDevDenseProjectionV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_projection_seed_policy_code(value: Symbt3ProjectionSeedPolicy) -> u8 {
+    match value {
+        Symbt3ProjectionSeedPolicy::ProofBoundDeterministicV1 => 1,
+    }
+}
+
+fn symbt3_projection_seed_policy_from_code(code: u8) -> Option<Symbt3ProjectionSeedPolicy> {
+    Some(match code {
+        1 => Symbt3ProjectionSeedPolicy::ProofBoundDeterministicV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_range_mode_code(value: Symbt3RangeMode) -> u8 {
+    match value {
+        Symbt3RangeMode::DirectSignedRangeDevV1 => 1,
+    }
+}
+
+fn symbt3_range_mode_from_code(code: u8) -> Option<Symbt3RangeMode> {
+    Some(match code {
+        1 => Symbt3RangeMode::DirectSignedRangeDevV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_signed_encoding_code(value: Symbt3SignedEncoding) -> u8 {
+    match value {
+        Symbt3SignedEncoding::CheckFieldSignedRepresentativeV1 => 1,
+    }
+}
+
+fn symbt3_signed_encoding_from_code(code: u8) -> Option<Symbt3SignedEncoding> {
+    Some(match code {
+        1 => Symbt3SignedEncoding::CheckFieldSignedRepresentativeV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_coefficient_encoding_code(value: Symbt3CoefficientEncoding) -> u8 {
+    match value {
+        Symbt3CoefficientEncoding::CenteredI64LeV1 => 1,
+    }
+}
+
+fn symbt3_coefficient_encoding_from_code(code: u8) -> Option<Symbt3CoefficientEncoding> {
+    Some(match code {
+        1 => Symbt3CoefficientEncoding::CenteredI64LeV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_constraint_family_code(family: BatchedCpSymbt3ConstraintFamily) -> u8 {
+    match family {
+        BatchedCpSymbt3ConstraintFamily::ChallengeToBeta => 1,
+        BatchedCpSymbt3ConstraintFamily::FoldedPublicInputLinearIdentity => 2,
+        BatchedCpSymbt3ConstraintFamily::FoldedCommitmentLinearIdentity => 3,
+        BatchedCpSymbt3ConstraintFamily::FoldedEvaluationLinearIdentity => 4,
+        BatchedCpSymbt3ConstraintFamily::FoldedAccumulatorBoundaryIdentity => 5,
+        BatchedCpSymbt3ConstraintFamily::RingBetaAction => 6,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningIdentity => 7,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentIdentity => 8,
+        BatchedCpSymbt3ConstraintFamily::AjtaiFoldedResidualZero => 9,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningLinearIdentity => 10,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentLinearIdentity => 11,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiMapConsistency => 12,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectionConsistency => 13,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectedRangeBound => 14,
+        BatchedCpSymbt3ConstraintFamily::FoldedAjtaiMonomialEmbeddingConsistency => 15,
+        BatchedCpSymbt3ConstraintFamily::CommittedSourceR1csResidualValidity => 16,
+        BatchedCpSymbt3ConstraintFamily::FoldedGr1csResidualValidity => 17,
+        BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck => 18,
+    }
+}
+
+fn symbt3_constraint_family_from_code(code: u8) -> Option<BatchedCpSymbt3ConstraintFamily> {
+    Some(match code {
+        1 => BatchedCpSymbt3ConstraintFamily::ChallengeToBeta,
+        2 => BatchedCpSymbt3ConstraintFamily::FoldedPublicInputLinearIdentity,
+        3 => BatchedCpSymbt3ConstraintFamily::FoldedCommitmentLinearIdentity,
+        4 => BatchedCpSymbt3ConstraintFamily::FoldedEvaluationLinearIdentity,
+        5 => BatchedCpSymbt3ConstraintFamily::FoldedAccumulatorBoundaryIdentity,
+        6 => BatchedCpSymbt3ConstraintFamily::RingBetaAction,
+        7 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningIdentity,
+        8 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentIdentity,
+        9 => BatchedCpSymbt3ConstraintFamily::AjtaiFoldedResidualZero,
+        10 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiOpeningLinearIdentity,
+        11 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiCommitmentLinearIdentity,
+        12 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiMapConsistency,
+        13 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectionConsistency,
+        14 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiProjectedRangeBound,
+        15 => BatchedCpSymbt3ConstraintFamily::FoldedAjtaiMonomialEmbeddingConsistency,
+        16 => BatchedCpSymbt3ConstraintFamily::CommittedSourceR1csResidualValidity,
+        17 => BatchedCpSymbt3ConstraintFamily::FoldedGr1csResidualValidity,
+        18 => BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck,
         _ => return None,
     })
 }
@@ -6180,6 +8639,185 @@ fn encode_ring_element(out: &mut Vec<u8>, value: &RingElement) {
     }
 }
 
+fn encode_symbt3_ring_module_layout(out: &mut Vec<u8>, value: &Symbt3RingModuleLayout) {
+    push_usize(out, value.ring_degree);
+    out.extend_from_slice(&value.modulus.to_le_bytes());
+    push_bytes(out, value.basis_order.as_bytes());
+    push_bytes(out, value.negacyclic_sign_convention.as_bytes());
+    out.push(match value.action_side {
+        Symbt3RingActionSide::Left => 1,
+    });
+    push_usize(out, value.opening_module_dimension);
+    push_usize(out, value.commitment_module_dimension);
+    push_bytes(out, value.coordinate_encoding.as_bytes());
+    push_bytes(out, value.beta_encoding.as_bytes());
+    out.extend_from_slice(&value.ring_action_version.to_le_bytes());
+}
+
+fn encode_symbt3_ajtai_commit_layout(out: &mut Vec<u8>, value: &Symbt3AjtaiCommitLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.commitment_module_dimension);
+    push_usize(out, value.opening_module_dimension);
+    push_usize(out, value.ring_degree);
+    out.extend_from_slice(&value.modulus.to_le_bytes());
+    out.extend_from_slice(&value.indexed_evaluator_id);
+    out.push(u8::from(value.separated_message_randomness));
+}
+
+fn encode_symbt3_ajtai_linear_algebra_layout(
+    out: &mut Vec<u8>,
+    value: &Symbt3AjtaiLinearAlgebraLayout,
+) {
+    out.extend_from_slice(value.version_marker.as_slice());
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    out.extend_from_slice(&value.algebra_law_digest);
+    out.extend_from_slice(&value.ajtai_matrix_digest);
+    out.extend_from_slice(&value.ajtai_commit_layout_digest);
+    push_usize(out, value.kappa);
+    push_usize(out, value.opening_len);
+    push_usize(out, value.ring_degree);
+    push_usize(out, value.source_opening_column);
+    push_usize(out, value.source_commitment_column);
+    push_usize(out, value.folded_opening_column);
+    push_usize(out, value.folded_commitment_column);
+    out.push(symbt3_beta_action_code(value.beta_action));
+    out.push(symbt3_product_law_code(value.product_law));
+    out.push(symbt3_ajtai_matrix_vector_evaluator_code(
+        value.matrix_vector_evaluator,
+    ));
+    push_bytes(out, value.padding_policy.as_bytes());
+    push_bytes(out, value.selector_evaluator.as_bytes());
+    out.push(symbt3_ajtai_opening_mode_code(value.opening_mode));
+}
+
+fn encode_symbt3_projection_layout(out: &mut Vec<u8>, value: &Symbt3ProjectionLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    out.push(symbt3_projection_mode_code(value.projection_mode));
+    out.push(symbt3_projection_seed_policy_code(
+        value.projection_seed_policy,
+    ));
+    out.extend_from_slice(&value.projection_matrix_digest);
+    push_usize(out, value.input_len);
+    push_usize(out, value.output_len);
+    push_usize(out, value.block_len);
+    push_usize(out, value.rows_per_block);
+    push_bytes(out, value.coefficient_domain.as_bytes());
+}
+
+fn encode_symbt3_range_layout(out: &mut Vec<u8>, value: &Symbt3RangeLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    out.push(symbt3_range_mode_code(value.range_mode));
+    out.extend_from_slice(&value.bound_b.to_le_bytes());
+    out.push(symbt3_signed_encoding_code(value.signed_encoding));
+    match value.table_digest {
+        Some(digest) => {
+            out.push(1);
+            out.extend_from_slice(&digest);
+        }
+        None => out.push(0),
+    }
+    match value.monomial_embedding_layout_digest {
+        Some(digest) => {
+            out.push(1);
+            out.extend_from_slice(&digest);
+        }
+        None => out.push(0),
+    }
+}
+
+fn encode_symbt3_ajtai_norm_range_layout(out: &mut Vec<u8>, value: &Symbt3AjtaiNormRangeLayout) {
+    out.extend_from_slice(value.version_marker.as_slice());
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    out.extend_from_slice(&value.algebra_law_digest);
+    out.extend_from_slice(&value.ajtai_linear_algebra_layout_digest);
+    push_usize(out, value.folded_opening_column);
+    push_usize(out, value.projected_opening_column);
+    encode_symbt3_projection_layout(out, &value.projection_layout);
+    encode_symbt3_range_layout(out, &value.range_layout);
+    out.extend_from_slice(&value.norm_bound.to_le_bytes());
+    out.push(symbt3_coefficient_encoding_code(value.coefficient_encoding));
+    push_bytes(out, value.reduction_policy.as_bytes());
+    push_bytes(out, value.selector_evaluator.as_bytes());
+    push_bytes(out, value.padding_policy.as_bytes());
+    out.push(symbt3_range_mode_code(value.range_mode));
+}
+
+fn encode_symbt3_r1cs_evaluator_layout(out: &mut Vec<u8>, value: &Symbt3R1csEvaluatorLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_bytes(out, value.field_id.as_bytes());
+    out.extend_from_slice(&value.modulus.to_le_bytes());
+    push_usize(out, value.num_constraints);
+    push_usize(out, value.num_variables);
+    push_usize(out, value.num_public);
+    push_usize(out, value.num_witness);
+    match value.constant_one_wire_index {
+        Some(idx) => {
+            out.push(1);
+            push_usize(out, idx);
+        }
+        None => out.push(0),
+    }
+    push_bytes(out, value.public_input_wire_layout.as_bytes());
+    push_bytes(out, value.witness_wire_layout.as_bytes());
+    push_bytes(out, value.sparse_encoding_format.as_bytes());
+    push_bytes(out, value.row_ordering.as_bytes());
+    push_bytes(out, value.column_ordering.as_bytes());
+    push_bytes(out, value.padding_policy.as_bytes());
+    push_bytes(out, value.coefficient_encoding.as_bytes());
+    push_bytes(out, value.term_encoding.as_bytes());
+    out.extend_from_slice(&value.evaluator_algorithm_id);
+}
+
+fn encode_symbt3_gr1cs_residual_layout(out: &mut Vec<u8>, value: &Symbt3Gr1csResidualLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.folded_evaluation_coordinate_count);
+    push_usize(out, value.tensor_rows);
+    push_usize(out, value.ring_degree);
+    push_bytes(out, value.grouping.as_bytes());
+    push_bytes(out, value.coordinate_ordering.as_bytes());
+    push_bytes(out, value.padding_policy.as_bytes());
+    push_usize(out, value.component_kind_tags.len());
+    for tag in &value.component_kind_tags {
+        push_bytes(out, tag.as_bytes());
+    }
+}
+
+fn encode_symbt3_algebra_law(out: &mut Vec<u8>, value: &Symbt3AlgebraLaw) {
+    out.extend_from_slice(value.version_marker.as_slice());
+    out.extend_from_slice(&value.law_version.to_le_bytes());
+    push_bytes(out, value.check_field_id.as_bytes());
+    push_bytes(out, value.coefficient_domain.as_bytes());
+    push_usize(out, value.ring_degree);
+    push_bytes(out, value.ring_relation.as_bytes());
+    push_bytes(out, value.coefficient_basis.as_bytes());
+    push_bytes(out, value.coefficient_order.as_bytes());
+    push_bytes(out, value.reduction_policy.as_bytes());
+    out.push(symbt3_beta_action_code(value.beta_action));
+    out.push(symbt3_product_law_code(value.product_law));
+    push_bytes(out, value.module_layout.as_bytes());
+    push_bytes(out, value.soundness_profile.as_bytes());
+    push_bytes(out, value.zk_profile.as_bytes());
+}
+
+fn encode_symbt3_folded_gr1cs_product_residual_layout(
+    out: &mut Vec<u8>,
+    value: &Symbt3FoldedGr1csProductResidualLayout,
+) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.product_domain_log_size);
+    push_bytes(out, value.equation_kind_axis.as_bytes());
+    push_bytes(out, value.row_axis.as_bytes());
+    push_usize(out, value.l_fold_column);
+    push_usize(out, value.r_fold_column);
+    push_usize(out, value.o_fold_column);
+    push_bytes(out, value.selector_evaluator.as_bytes());
+    out.push(symbt3_product_law_code(value.product_law));
+    out.push(symbt3_beta_action_code(value.beta_action));
+    push_bytes(out, value.padding_policy.as_bytes());
+    push_bytes(out, value.check_field.as_bytes());
+    push_bytes(out, value.soundness_profile.as_bytes());
+}
+
 fn encode_ring_matrix(out: &mut Vec<u8>, value: &[Vec<RingElement>]) {
     push_usize(out, value.len());
     for row in value {
@@ -6412,6 +9050,19 @@ fn read_bytes(bytes: &[u8], pos: &mut usize) -> Result<Vec<u8>, BatchedCpError> 
     Ok(value)
 }
 
+fn read_static_str(
+    bytes: &[u8],
+    pos: &mut usize,
+    expected: &'static str,
+) -> Result<&'static str, BatchedCpError> {
+    let value = read_bytes(bytes, pos)?;
+    if value == expected.as_bytes() {
+        Ok(expected)
+    } else {
+        Err(BatchedCpError::InvalidSemanticRelationContext)
+    }
+}
+
 fn read_digest(bytes: &[u8], pos: &mut usize) -> Result<Digest32, BatchedCpError> {
     let end = pos
         .checked_add(32)
@@ -6457,6 +9108,484 @@ fn read_ring_element(bytes: &[u8], pos: &mut usize) -> Result<RingElement, Batch
         *coeff = read_i64(bytes, pos)?;
     }
     Ok(RingElement { coeffs })
+}
+
+fn read_symbt3_ring_module_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3RingModuleLayout, BatchedCpError> {
+    let ring_degree = read_usize(bytes, pos)?;
+    let modulus = read_u64(bytes, pos)?;
+    let basis_order = read_static_str(bytes, pos, "coefficient-ascending")?;
+    let negacyclic_sign_convention = read_static_str(bytes, pos, "x^D=-1")?;
+    let action_side = match *bytes
+        .get(*pos)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?
+    {
+        1 => Symbt3RingActionSide::Left,
+        _ => return Err(BatchedCpError::InvalidSemanticRelationContext),
+    };
+    *pos += 1;
+    let opening_module_dimension = read_usize(bytes, pos)?;
+    let commitment_module_dimension = read_usize(bytes, pos)?;
+    let coordinate_encoding = read_static_str(bytes, pos, "centered-i64-le")?;
+    let beta_encoding = read_static_str(bytes, pos, "digest-base5-ring-coefficients")?;
+    let ring_action_version = read_u64(bytes, pos)?;
+    Ok(Symbt3RingModuleLayout {
+        ring_degree,
+        modulus,
+        basis_order,
+        negacyclic_sign_convention,
+        action_side,
+        opening_module_dimension,
+        commitment_module_dimension,
+        coordinate_encoding,
+        beta_encoding,
+        ring_action_version,
+    })
+}
+
+fn read_symbt3_ajtai_commit_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3AjtaiCommitLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let commitment_module_dimension = read_usize(bytes, pos)?;
+    let opening_module_dimension = read_usize(bytes, pos)?;
+    let ring_degree = read_usize(bytes, pos)?;
+    let modulus = read_u64(bytes, pos)?;
+    let indexed_evaluator_id = read_digest(bytes, pos)?;
+    let separated_message_randomness = match *bytes
+        .get(*pos)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?
+    {
+        0 => false,
+        1 => true,
+        _ => return Err(BatchedCpError::InvalidSemanticRelationContext),
+    };
+    *pos += 1;
+    Ok(Symbt3AjtaiCommitLayout {
+        layout_version,
+        commitment_module_dimension,
+        opening_module_dimension,
+        ring_degree,
+        modulus,
+        indexed_evaluator_id,
+        separated_message_randomness,
+    })
+}
+
+fn read_symbt3_ajtai_linear_algebra_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3AjtaiLinearAlgebraLayout, BatchedCpError> {
+    let marker_end = pos
+        .checked_add(8)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    let marker = bytes
+        .get(*pos..marker_end)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    if marker != b"SYMBT3F\0" {
+        return Err(BatchedCpError::InvalidSemanticRelationContext);
+    }
+    *pos = marker_end;
+    let layout_version = read_u64(bytes, pos)?;
+    let algebra_law_digest = read_digest(bytes, pos)?;
+    let ajtai_matrix_digest = read_digest(bytes, pos)?;
+    let ajtai_commit_layout_digest = read_digest(bytes, pos)?;
+    let kappa = read_usize(bytes, pos)?;
+    let opening_len = read_usize(bytes, pos)?;
+    let ring_degree = read_usize(bytes, pos)?;
+    let source_opening_column = read_usize(bytes, pos)?;
+    let source_commitment_column = read_usize(bytes, pos)?;
+    let folded_opening_column = read_usize(bytes, pos)?;
+    let folded_commitment_column = read_usize(bytes, pos)?;
+    let beta_action = symbt3_beta_action_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let product_law = symbt3_product_law_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let matrix_vector_evaluator = symbt3_ajtai_matrix_vector_evaluator_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let padding_policy = read_static_str(bytes, pos, "selector-zero-padded-tail")?;
+    let selector_evaluator = read_static_str(bytes, pos, "prefix-active-item-selector-v1")?;
+    let opening_mode = symbt3_ajtai_opening_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3AjtaiLinearAlgebraLayout {
+        version_marker: b"SYMBT3F\0",
+        layout_version,
+        algebra_law_digest,
+        ajtai_matrix_digest,
+        ajtai_commit_layout_digest,
+        kappa,
+        opening_len,
+        ring_degree,
+        source_opening_column,
+        source_commitment_column,
+        folded_opening_column,
+        folded_commitment_column,
+        beta_action,
+        product_law,
+        matrix_vector_evaluator,
+        padding_policy,
+        selector_evaluator,
+        opening_mode,
+    })
+}
+
+fn read_optional_digest(bytes: &[u8], pos: &mut usize) -> Result<Option<Digest32>, BatchedCpError> {
+    let tag = *bytes
+        .get(*pos)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    match tag {
+        0 => Ok(None),
+        1 => Ok(Some(read_digest(bytes, pos)?)),
+        _ => Err(BatchedCpError::InvalidSemanticRelationContext),
+    }
+}
+
+fn read_symbt3_projection_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3ProjectionLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let projection_mode = symbt3_projection_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let projection_seed_policy = symbt3_projection_seed_policy_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let projection_matrix_digest = read_digest(bytes, pos)?;
+    let input_len = read_usize(bytes, pos)?;
+    let output_len = read_usize(bytes, pos)?;
+    let block_len = read_usize(bytes, pos)?;
+    let rows_per_block = read_usize(bytes, pos)?;
+    let coefficient_domain = read_static_str(bytes, pos, "check-field-native-ring-coefficients")?;
+    Ok(Symbt3ProjectionLayout {
+        layout_version,
+        projection_mode,
+        projection_seed_policy,
+        projection_matrix_digest,
+        input_len,
+        output_len,
+        block_len,
+        rows_per_block,
+        coefficient_domain,
+    })
+}
+
+fn read_symbt3_range_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3RangeLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let range_mode = symbt3_range_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let bound_b = read_i64(bytes, pos)?;
+    let signed_encoding = symbt3_signed_encoding_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let table_digest = read_optional_digest(bytes, pos)?;
+    let monomial_embedding_layout_digest = read_optional_digest(bytes, pos)?;
+    Ok(Symbt3RangeLayout {
+        layout_version,
+        range_mode,
+        bound_b,
+        signed_encoding,
+        table_digest,
+        monomial_embedding_layout_digest,
+    })
+}
+
+fn read_symbt3_ajtai_norm_range_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3AjtaiNormRangeLayout, BatchedCpError> {
+    let marker_end = pos
+        .checked_add(8)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    let marker = bytes
+        .get(*pos..marker_end)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    if marker != b"SYMBT3G\0" {
+        return Err(BatchedCpError::InvalidSemanticRelationContext);
+    }
+    *pos = marker_end;
+    let layout_version = read_u64(bytes, pos)?;
+    let algebra_law_digest = read_digest(bytes, pos)?;
+    let ajtai_linear_algebra_layout_digest = read_digest(bytes, pos)?;
+    let folded_opening_column = read_usize(bytes, pos)?;
+    let projected_opening_column = read_usize(bytes, pos)?;
+    let projection_layout = read_symbt3_projection_layout(bytes, pos)?;
+    let range_layout = read_symbt3_range_layout(bytes, pos)?;
+    let norm_bound = read_i64(bytes, pos)?;
+    let coefficient_encoding = symbt3_coefficient_encoding_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let reduction_policy = read_static_str(bytes, pos, "CheckFieldNativeV1")?;
+    let selector_evaluator =
+        read_static_str(bytes, pos, "valid-folded-opening-coordinate-selector-v1")?;
+    let padding_policy = read_static_str(bytes, pos, "selector-zero-padded-tail")?;
+    let range_mode = symbt3_range_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3AjtaiNormRangeLayout {
+        version_marker: b"SYMBT3G\0",
+        layout_version,
+        algebra_law_digest,
+        ajtai_linear_algebra_layout_digest,
+        folded_opening_column,
+        projected_opening_column,
+        projection_layout,
+        range_layout,
+        norm_bound,
+        coefficient_encoding,
+        reduction_policy,
+        selector_evaluator,
+        padding_policy,
+        range_mode,
+    })
+}
+
+fn read_optional_usize(bytes: &[u8], pos: &mut usize) -> Result<Option<usize>, BatchedCpError> {
+    let tag = *bytes
+        .get(*pos)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    match tag {
+        0 => Ok(None),
+        1 => Ok(Some(read_usize(bytes, pos)?)),
+        _ => Err(BatchedCpError::InvalidSemanticRelationContext),
+    }
+}
+
+fn read_symbt3_r1cs_evaluator_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3R1csEvaluatorLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let field_id = read_static_str(bytes, pos, "BabyBear")?;
+    let modulus = read_u64(bytes, pos)?;
+    let num_constraints = read_usize(bytes, pos)?;
+    let num_variables = read_usize(bytes, pos)?;
+    let num_public = read_usize(bytes, pos)?;
+    let num_witness = read_usize(bytes, pos)?;
+    let constant_one_wire_index = read_optional_usize(bytes, pos)?;
+    let public_input_wire_layout = read_static_str(bytes, pos, "public-prefix-constant-ring")?;
+    let witness_wire_layout = read_static_str(bytes, pos, "witness-suffix-ring-coefficients")?;
+    let sparse_encoding_format = read_static_str(bytes, pos, "coo-row-col-i64-v1")?;
+    let row_ordering = read_static_str(bytes, pos, "ascending-row-index")?;
+    let column_ordering = read_static_str(bytes, pos, "ascending-column-index")?;
+    let padding_policy = read_static_str(bytes, pos, "zero-pad-to-power-of-two")?;
+    let coefficient_encoding = read_static_str(bytes, pos, "centered-i64-le")?;
+    let term_encoding = read_static_str(bytes, pos, "babybear-linear-form-v1")?;
+    let evaluator_algorithm_id = read_digest(bytes, pos)?;
+    Ok(Symbt3R1csEvaluatorLayout {
+        layout_version,
+        field_id,
+        modulus,
+        num_constraints,
+        num_variables,
+        num_public,
+        num_witness,
+        constant_one_wire_index,
+        public_input_wire_layout,
+        witness_wire_layout,
+        sparse_encoding_format,
+        row_ordering,
+        column_ordering,
+        padding_policy,
+        coefficient_encoding,
+        term_encoding,
+        evaluator_algorithm_id,
+    })
+}
+
+fn read_symbt3_gr1cs_residual_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3Gr1csResidualLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let folded_evaluation_coordinate_count = read_usize(bytes, pos)?;
+    let tensor_rows = read_usize(bytes, pos)?;
+    let ring_degree = read_usize(bytes, pos)?;
+    let grouping = read_static_str(bytes, pos, "triples-left-right-output")?;
+    let coordinate_ordering = read_static_str(bytes, pos, "evaluation-index-tensor-row-coeff")?;
+    let padding_policy = read_static_str(bytes, pos, "ignore-incomplete-trailing-triple")?;
+    let tag_len = read_usize(bytes, pos)?;
+    let mut component_kind_tags = Vec::with_capacity(tag_len);
+    for expected in ["left", "right", "output"] {
+        component_kind_tags.push(read_static_str(bytes, pos, expected)?);
+    }
+    if tag_len != component_kind_tags.len() {
+        return Err(BatchedCpError::InvalidSemanticRelationContext);
+    }
+    Ok(Symbt3Gr1csResidualLayout {
+        layout_version,
+        folded_evaluation_coordinate_count,
+        tensor_rows,
+        ring_degree,
+        grouping,
+        coordinate_ordering,
+        padding_policy,
+        component_kind_tags,
+    })
+}
+
+fn read_symbt3_algebra_law(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3AlgebraLaw, BatchedCpError> {
+    let marker_end = pos
+        .checked_add(8)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    let marker = bytes
+        .get(*pos..marker_end)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    if marker != b"SYMBT3E\0" {
+        return Err(BatchedCpError::InvalidSemanticRelationContext);
+    }
+    *pos = marker_end;
+    let law_version = read_u64(bytes, pos)?;
+    let check_field_id = read_static_str(bytes, pos, "BabyBear")?;
+    let coefficient_domain = read_static_str(bytes, pos, "check-field-native-ring")?;
+    let ring_degree = read_usize(bytes, pos)?;
+    let ring_relation = read_static_str(bytes, pos, "X^D+1")?;
+    let coefficient_basis = read_static_str(bytes, pos, "coefficient-ascending")?;
+    let coefficient_order = read_static_str(bytes, pos, "little-endian")?;
+    let reduction_policy = read_static_str(bytes, pos, "CheckFieldNativeV1")?;
+    let beta_action = symbt3_beta_action_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let product_law = symbt3_product_law_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let module_layout = read_static_str(bytes, pos, "coordinatewise-ring-module")?;
+    let soundness_profile = read_static_str(
+        bytes,
+        pos,
+        "NonAuthoritativeDevelopmentBaseFieldSingleCheck",
+    )?;
+    let zk_profile = read_static_str(bytes, pos, "NonZkDevelopment")?;
+    Ok(Symbt3AlgebraLaw {
+        version_marker: b"SYMBT3E\0",
+        law_version,
+        check_field_id,
+        coefficient_domain,
+        ring_degree,
+        ring_relation,
+        coefficient_basis,
+        coefficient_order,
+        reduction_policy,
+        beta_action,
+        product_law,
+        module_layout,
+        soundness_profile,
+        zk_profile,
+    })
+}
+
+fn read_symbt3_folded_gr1cs_product_residual_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3FoldedGr1csProductResidualLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let product_domain_log_size = read_usize(bytes, pos)?;
+    let equation_kind_axis = read_static_str(bytes, pos, "folded-gr1cs-left-right-output")?;
+    let row_axis = read_static_str(bytes, pos, "evaluation-index-tensor-row-coeff")?;
+    let l_fold_column = read_usize(bytes, pos)?;
+    let r_fold_column = read_usize(bytes, pos)?;
+    let o_fold_column = read_usize(bytes, pos)?;
+    let selector_evaluator = read_static_str(bytes, pos, "prefix-valid-coordinate-selector-v1")?;
+    let product_law = symbt3_product_law_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let beta_action = symbt3_beta_action_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let padding_policy = read_static_str(bytes, pos, "selector-zero-padded-tail")?;
+    let check_field = read_static_str(bytes, pos, "BabyBear")?;
+    let soundness_profile = read_static_str(
+        bytes,
+        pos,
+        "NonAuthoritativeDevelopmentBaseFieldSingleCheck",
+    )?;
+    Ok(Symbt3FoldedGr1csProductResidualLayout {
+        layout_version,
+        product_domain_log_size,
+        equation_kind_axis,
+        row_axis,
+        l_fold_column,
+        r_fold_column,
+        o_fold_column,
+        selector_evaluator,
+        product_law,
+        beta_action,
+        padding_policy,
+        check_field,
+        soundness_profile,
+    })
 }
 
 fn read_ring_matrix(

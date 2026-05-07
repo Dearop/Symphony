@@ -1,6 +1,8 @@
 mod common;
 
 #[cfg(feature = "whir")]
+use p3_baby_bear::BabyBear;
+#[cfg(feature = "whir")]
 use p3_field::PrimeCharacteristicRing;
 use symphony::batched_cp::{
     bucket_by_exact_shape, digest_ajtai_params, digest_r1cs_matrices, BatchedCpBucket,
@@ -10,11 +12,17 @@ use symphony::batched_cp::{
 };
 #[cfg(feature = "whir")]
 use symphony::batched_cp::{
+    derive_symbt3_batch_challenge_digest, derive_symbt3_beta_coefficients,
+    derive_symbt3_beta_ring_elements, derive_symbt3_public_statement_digest,
     BatchedCpSemanticColumnarV2Description, BatchedCpSemanticFamilyColumnarV2Description,
     BatchedCpSemanticFamilyTraceV2, BatchedCpSemanticRelationV2Description,
-    BatchedCpSemanticTraceV2,
+    BatchedCpSemanticTraceV2, BatchedCpSymbt3RelationDescription, BatchedCpSymbt3SetupDescriptor,
+    Symbt3BetaActionId, Symbt3ProductLawId, Symbt3ProjectionMode, Symbt3RangeMode,
+    Symbt3RingActionSide,
 };
 use symphony::commitment::Commitment;
+#[cfg(feature = "whir")]
+use symphony::cp_backend_api::CpBackend;
 use symphony::cp_relation_core::{CpPublicStatement, CpRelationError};
 #[cfg(feature = "whir")]
 use symphony::digest_core::{
@@ -29,6 +37,8 @@ use symphony::proof_orchestrator::{ProofBundle, Prover};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::{RingElement, RingVector};
 use symphony::SumcheckSnark;
+#[cfg(feature = "whir")]
+use symphony::{WhirProof, WhirSnark};
 
 fn modular_params() -> SymphonyParams {
     SymphonyParams {
@@ -688,7 +698,7 @@ fn batched_cp_structured_relation_context_is_stable_and_non_r1cs() {
     assert_eq!(decoded.relation_id(), structured.relation_id());
 
     let mut tampered = context.clone();
-    *tampered.last_mut().unwrap() ^= 1;
+    tampered[0] ^= 1;
     assert_eq!(
         BatchedCpStructuredRelationDescription::from_context_bytes(&tampered).unwrap_err(),
         BatchedCpError::InvalidStructuredRelationContext
@@ -834,10 +844,669 @@ fn batched_cp_semantic_v2_relation_context_is_stable_and_non_r1cs() {
     assert_eq!(decoded, semantic_v2);
 
     let mut tampered = context.clone();
-    *tampered.last_mut().unwrap() ^= 1;
+    tampered[0] ^= 1;
     assert_eq!(
         BatchedCpSemanticRelationV2Description::from_context_bytes(&tampered).unwrap_err(),
         BatchedCpError::InvalidSemanticRelationContext
+    );
+}
+
+#[cfg(feature = "whir")]
+#[test]
+fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
+    let (prover, r1cs, mut items) = build_fixture();
+    let item_a = items.remove(0);
+    let item_b = items.remove(0);
+    let params_digest = whir_parameter_digest();
+    let bucket = BatchedCpBucket::new(vec![item_a, item_b], params_digest).unwrap();
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &prover.ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    );
+    let relation = descriptor.relation_description();
+    let public = bucket.symbt3_public_statement_for_relation(&relation);
+
+    assert!(public.matches_relation(&relation));
+    assert_eq!(
+        public.message_oracle_roots.len(),
+        bucket.shape.accumulator_shape.num_rounds
+    );
+    assert_eq!(
+        public.canonical_bytes().len(),
+        relation.public_statement_bytes()
+    );
+    assert_eq!(
+        public.folded_commitment.len(),
+        relation.symbt3_commitment_coordinate_len()
+    );
+    assert_eq!(
+        public.folded_evaluation.len(),
+        relation.symbt3_evaluation_coordinate_len()
+    );
+    assert_eq!(
+        public.folded_accumulator_coordinates.len(),
+        relation.symbt3_accumulator_coordinate_len()
+    );
+    assert_eq!(
+        public.source_ajtai_opening_roots.len(),
+        bucket.shape.active_count
+    );
+    assert_eq!(
+        public.source_assignment_roots.len(),
+        bucket.shape.active_count * bucket.shape.accumulator_shape.local_public_input_count
+    );
+    assert_eq!(
+        public.folded_ajtai_commitment, public.folded_commitment,
+        "SYMBT3-C AjtaiCommitLayoutV1 uses c = A * opening_witness"
+    );
+    assert_eq!(
+        public.ring_module_layout_digest,
+        relation
+            .ring_module_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.ajtai_commit_layout_digest,
+        relation
+            .ajtai_commit_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.r1cs_evaluator_layout_digest,
+        relation
+            .r1cs_evaluator_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.gr1cs_residual_layout_digest,
+        relation
+            .gr1cs_residual_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.algebra_law_digest,
+        relation
+            .algebra_law
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.ajtai_linear_algebra_layout_digest,
+        relation
+            .ajtai_linear_algebra_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.ajtai_norm_range_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.projection_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .projection_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.range_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .range_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        relation.algebra_law.product_law,
+        Symbt3ProductLawId::RqNegacyclicConvolutionV1,
+        "SYMBT3-E must use the ring negacyclic product law by default"
+    );
+    assert_eq!(
+        relation.algebra_law.beta_action,
+        Symbt3BetaActionId::RingCoefficientActionV1,
+        "SYMBT3-E must use ring coefficient beta action by default"
+    );
+    assert_eq!(
+        relation.folded_gr1cs_product_residual_layout.product_law,
+        relation.algebra_law.product_law
+    );
+    assert_eq!(
+        relation.folded_gr1cs_product_residual_layout.beta_action,
+        relation.algebra_law.beta_action
+    );
+    assert_eq!(
+        relation.ajtai_linear_algebra_layout.product_law,
+        relation.algebra_law.product_law
+    );
+    assert_eq!(
+        relation.ajtai_linear_algebra_layout.beta_action,
+        relation.algebra_law.beta_action
+    );
+    assert_eq!(
+        relation
+            .ajtai_norm_range_layout
+            .projection_layout
+            .projection_mode,
+        Symbt3ProjectionMode::DirectDevDenseProjectionV1,
+        "SYMBT3-G starts with the direct development projection evaluator"
+    );
+    assert_eq!(
+        relation.ajtai_norm_range_layout.range_mode,
+        Symbt3RangeMode::DirectSignedRangeDevV1,
+        "SYMBT3-G starts with the direct signed development range predicate"
+    );
+    assert_eq!(
+        public.folded_gr1cs_product_residual_layout_digest,
+        relation
+            .folded_gr1cs_product_residual_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert!(
+        relation.has_symbt3_g_families(),
+        "SYMBT3-G residual families must be enabled in the development relation"
+    );
+
+    let relation_description = relation.to_relation_description();
+    assert_eq!(relation_description.num_constraints, 0);
+    assert_eq!(
+        relation_description.num_instance_vars,
+        public.canonical_bytes().len()
+    );
+    assert!(relation_description.num_witness_vars > 0);
+    let context = relation_description
+        .context
+        .as_ref()
+        .expect("SYMBT3 context");
+    let decoded = BatchedCpSymbt3RelationDescription::from_context_bytes(context).unwrap();
+    assert_eq!(decoded, relation);
+    assert_ne!(
+        relation.relation_id(),
+        bucket.shape.structured_relation_description().relation_id()
+    );
+    assert_ne!(
+        relation.relation_id(),
+        bucket
+            .shape
+            .semantic_v2_relation_description(&prover.ajtai, &r1cs, prover.params.b_input())
+            .semantic_relation_id()
+    );
+    assert_ne!(
+        relation.relation_id(),
+        bucket
+            .shape
+            .semantic_family_columnar_v2_relation_description(
+                &prover.ajtai,
+                &r1cs,
+                prover.params.b_input()
+            )
+            .semantic_relation_id()
+    );
+
+    let challenge_digest = derive_symbt3_batch_challenge_digest(&relation, &public);
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &public)
+    );
+    let public_statement_digest = derive_symbt3_public_statement_digest(&relation, &public);
+    let mut changed_public = public.clone();
+    changed_public.message_oracle_roots[0][0] ^= 1;
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_public)
+    );
+    let mut changed_folded = public.clone();
+    changed_folded.folded_public_input[0] += 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_folded),
+        "folding beta must not depend on output/folded public input"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_folded)
+    );
+    let mut changed_commitment = public.clone();
+    changed_commitment.folded_commitment[0] += 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_commitment),
+        "folding beta must not depend on folded commitment/output data"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_commitment)
+    );
+    let mut changed_folded_ajtai = public.clone();
+    changed_folded_ajtai.folded_ajtai_commitment[0] += 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_folded_ajtai),
+        "folding beta must not depend on folded Ajtai output data"
+    );
+    assert!(!changed_folded_ajtai.matches_relation(&relation));
+    let mut changed_source_ajtai_root = public.clone();
+    changed_source_ajtai_root.source_ajtai_opening_roots[0][0] ^= 1;
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_source_ajtai_root),
+        "source Ajtai roots must be beta-bound before folding"
+    );
+    let mut changed_source_assignment_root = public.clone();
+    changed_source_assignment_root.source_assignment_roots[0][0] ^= 1;
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_source_assignment_root),
+        "source assignment roots must be beta-bound before residual checks"
+    );
+    let mut changed_evaluation = public.clone();
+    changed_evaluation.folded_evaluation[0] += 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_evaluation),
+        "folding beta must not depend on folded evaluation/output data"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_evaluation)
+    );
+    let mut changed_gr1cs_boundary = public.clone();
+    changed_gr1cs_boundary.folded_gr1cs_boundary_digest[0] ^= 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_gr1cs_boundary),
+        "folding beta must not depend on folded GR1CS output data"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_gr1cs_boundary)
+    );
+    let mut changed_accumulator = public.clone();
+    changed_accumulator.folded_accumulator_coordinates[0] += 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_accumulator),
+        "folding beta must not depend on algebraic accumulator output data"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_accumulator)
+    );
+    let mut wrong_shape_public = public.clone();
+    wrong_shape_public.shape_id[0] ^= 1;
+    assert!(!wrong_shape_public.matches_relation(&relation));
+
+    let mut changed_ajtai = prover.ajtai.clone();
+    changed_ajtai.a[0][0].coeffs[0] += 1;
+    let changed_relation = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &changed_ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    )
+    .relation_description();
+    assert_ne!(
+        relation.ajtai_params_digest,
+        changed_relation.ajtai_params_digest
+    );
+    assert_ne!(relation.relation_id(), changed_relation.relation_id());
+
+    let mut changed_ring_relation = relation.clone();
+    changed_ring_relation.ring_module_layout.action_side = Symbt3RingActionSide::Left;
+    changed_ring_relation.ring_module_layout.ring_action_version += 1;
+    assert_ne!(relation.relation_id(), changed_ring_relation.relation_id());
+    let mut changed_r1cs_layout_relation = relation.clone();
+    changed_r1cs_layout_relation
+        .r1cs_evaluator_layout
+        .layout_version += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_r1cs_layout_relation.relation_id()
+    );
+    let mut changed_gr1cs_layout_relation = relation.clone();
+    changed_gr1cs_layout_relation
+        .gr1cs_residual_layout
+        .layout_version += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_gr1cs_layout_relation.relation_id()
+    );
+    let mut changed_algebra_law_relation = relation.clone();
+    changed_algebra_law_relation.algebra_law.product_law = Symbt3ProductLawId::FieldCoordinateMulV1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_algebra_law_relation.relation_id()
+    );
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_algebra_law_relation, &public),
+        "algebra law changes that alter folding semantics must alter beta"
+    );
+    let mut changed_ajtai_linear_layout_relation = relation.clone();
+    changed_ajtai_linear_layout_relation
+        .ajtai_linear_algebra_layout
+        .layout_version += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_ajtai_linear_layout_relation.relation_id()
+    );
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_ajtai_linear_layout_relation, &public),
+        "Ajtai algebra layout changes that alter folding semantics must alter beta"
+    );
+    let mut changed_norm_range_relation = relation.clone();
+    changed_norm_range_relation
+        .ajtai_norm_range_layout
+        .range_layout
+        .bound_b += 1;
+    changed_norm_range_relation
+        .ajtai_norm_range_layout
+        .norm_bound += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_norm_range_relation.relation_id()
+    );
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_norm_range_relation, &public),
+        "SYMBT3-G norm/range semantics are part of the folding protocol identity"
+    );
+    let mut changed_product_layout_relation = relation.clone();
+    changed_product_layout_relation
+        .folded_gr1cs_product_residual_layout
+        .layout_version += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_product_layout_relation.relation_id()
+    );
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_product_layout_relation, &public),
+        "D2 proof-relation layout changes must not alter the folding beta"
+    );
+
+    let mut changed_r1cs = r1cs.clone();
+    changed_r1cs.a.insert(0, 0, 1);
+    let changed_relation = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &prover.ajtai,
+        &changed_r1cs,
+        prover.params.b_input(),
+    )
+    .relation_description();
+    assert_ne!(
+        relation.r1cs_matrices_digest,
+        changed_relation.r1cs_matrices_digest
+    );
+    assert_ne!(relation.relation_id(), changed_relation.relation_id());
+
+    let mut tampered = context.clone();
+    tampered[0] ^= 1;
+    assert_eq!(
+        BatchedCpSymbt3RelationDescription::from_context_bytes(&tampered).unwrap_err(),
+        BatchedCpError::InvalidSemanticRelationContext
+    );
+}
+
+#[cfg(feature = "whir")]
+#[test]
+fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
+    let (prover, r1cs, mut items) = build_fixture();
+    let item_a = items.remove(0);
+    let item_b = items.remove(0);
+    let params_digest = whir_parameter_digest();
+    let bucket = BatchedCpBucket::new(vec![item_a, item_b], params_digest).unwrap();
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &prover.ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    );
+    let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+        .expect("WHIR exposes SYMBT3 relation shell");
+    assert_eq!(relation.num_constraints, 0);
+
+    let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+    let decoded_relation =
+        BatchedCpSymbt3RelationDescription::from_context_bytes(relation.context.as_ref().unwrap())
+            .unwrap();
+    let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+    let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+    let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
+        .expect("SYMBT3-D2 proof");
+    assert_eq!(
+        public.folded_ajtai_commitment,
+        decoded_relation.derive_ring_folded_commitment_boundary(&public)
+    );
+    assert_eq!(
+        proof.family_columnar_subproofs.len(),
+        0,
+        "SYMBT3-D2 must stay one top-level proof object, not a table-proof forest"
+    );
+    assert!(!proof.sumcheck_rounds_4.is_empty());
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof),
+        Some(true)
+    );
+    let mut bad_source_opening = witness.clone();
+    bad_source_opening.source_ajtai_opening_values[0][0] += 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_source_opening)
+            .is_none(),
+        "source Ajtai opening tampering must break the folded opening identity"
+    );
+    let mut bad_folded_opening = witness.clone();
+    bad_folded_opening.folded_ajtai_opening_values[0] += 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_folded_opening)
+            .is_none(),
+        "folded Ajtai opening tampering must break the folded opening identity"
+    );
+    let mut bad_range_opening = witness.clone();
+    bad_range_opening.folded_ajtai_opening_values[0] =
+        decoded_relation.ajtai_norm_range_layout.norm_bound + 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_range_opening)
+            .is_none(),
+        "SYMBT3-G folded Ajtai range violations must reject in the development proof"
+    );
+    let mut bad_source_assignment = witness.clone();
+    bad_source_assignment.source_r1cs_assignment_values[0][0] += 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_source_assignment)
+            .is_none(),
+        "source assignment tampering must be root-bound before beta and residual checks"
+    );
+
+    let mut changed_output = public.clone();
+    changed_output.folded_public_input[0] += 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_output),
+        "folding beta must remain input-transcript only"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_output, &proof),
+        Some(false)
+    );
+    let mut changed_commitment = public.clone();
+    changed_commitment.folded_commitment[0] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_commitment, &proof),
+        Some(false)
+    );
+    let mut changed_ajtai_commitment = public.clone();
+    changed_ajtai_commitment.folded_ajtai_commitment[0] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_ajtai_commitment, &proof),
+        Some(false)
+    );
+    let mut changed_folded_opening_root = public.clone();
+    changed_folded_opening_root.folded_ajtai_opening_root[0] ^= 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_folded_opening_root),
+        "folded Ajtai opening/range output data must not alter beta"
+    );
+    assert_ne!(
+        derive_symbt3_public_statement_digest(&decoded_relation, &public),
+        derive_symbt3_public_statement_digest(&decoded_relation, &changed_folded_opening_root),
+        "folded Ajtai opening/range output data must alter the proof public digest"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_folded_opening_root,
+            &proof
+        ),
+        Some(false)
+    );
+    let mut changed_evaluation = public.clone();
+    changed_evaluation.folded_evaluation[0] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_evaluation, &proof),
+        Some(false)
+    );
+    let product_len = decoded_relation
+        .gr1cs_residual_layout
+        .folded_evaluation_coordinate_count
+        / 3;
+    let mut changed_product_r = public.clone();
+    changed_product_r.folded_evaluation[product_len] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_product_r, &proof),
+        Some(false),
+        "tampering R_fold must reject"
+    );
+    let mut changed_product_o = public.clone();
+    changed_product_o.folded_evaluation[2 * product_len] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_product_o, &proof),
+        Some(false),
+        "tampering O_fold must reject"
+    );
+    let mut changed_gr1cs_boundary = public.clone();
+    changed_gr1cs_boundary.folded_gr1cs_boundary_digest[0] ^= 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_gr1cs_boundary, &proof),
+        Some(false)
+    );
+    let mut changed_accumulator = public.clone();
+    changed_accumulator.folded_accumulator_coordinates[0] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_accumulator, &proof),
+        Some(false)
+    );
+
+    let mut changed_root = public.clone();
+    changed_root.message_oracle_roots[0][0] ^= 1;
+    assert_ne!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_root)
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_root, &proof),
+        Some(false)
+    );
+
+    let mut changed_input = public.clone();
+    changed_input.input_public_values[0][0] += 1;
+    changed_input.input_public_boundary_digest = digest_domain_with_scheme(
+        PublicDigestScheme::Poseidon2BabyBear,
+        b"bad-symbt3-input-public-boundary",
+        b"tampered",
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_input, &proof),
+        Some(false)
+    );
+    let mut changed_source_commitment = public.clone();
+    changed_source_commitment.input_commitment_values[0][0] += 1;
+    changed_source_commitment.input_public_boundary_digest = digest_domain_with_scheme(
+        PublicDigestScheme::Poseidon2BabyBear,
+        b"bad-symbt3-input-public-boundary",
+        b"tampered-commitment",
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_source_commitment, &proof),
+        Some(false)
+    );
+    let mut changed_source_evaluation = public.clone();
+    changed_source_evaluation.input_evaluation_values[0][0] += 1;
+    changed_source_evaluation.input_public_boundary_digest = digest_domain_with_scheme(
+        PublicDigestScheme::Poseidon2BabyBear,
+        b"bad-symbt3-input-public-boundary",
+        b"tampered-evaluation",
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_source_evaluation, &proof),
+        Some(false)
+    );
+
+    let mut tampered_private_eval = proof.clone();
+    tampered_private_eval.private_opening_evals[0] += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_private_eval),
+        Some(false)
+    );
+    let mut tampered_residual_eval = proof.clone();
+    let last_eval = tampered_residual_eval
+        .private_opening_evals
+        .last_mut()
+        .expect("SYMBT3-D residual private eval");
+    *last_eval += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_residual_eval),
+        Some(false)
+    );
+    let mut tampered_sumcheck = proof.clone();
+    tampered_sumcheck.sumcheck_rounds_4[0][0] += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_sumcheck),
+        Some(false),
+        "wrong D2 product sumcheck round polynomial must reject"
+    );
+
+    let mut tampered_z = proof.clone();
+    tampered_z.z_eval += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_z),
+        Some(false)
+    );
+
+    let mut tampered_num_vars = proof.clone();
+    tampered_num_vars.num_vars += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_num_vars),
+        Some(false)
+    );
+
+    let betas = derive_symbt3_beta_coefficients(&decoded_relation, &public);
+    assert!(betas.iter().all(|beta| (-2..=2).contains(beta)));
+    let beta_rings = derive_symbt3_beta_ring_elements(&decoded_relation, &public);
+    assert_eq!(beta_rings.len(), public.batch_capacity);
+    assert!(beta_rings
+        .iter()
+        .flat_map(|beta| beta.coeffs.iter())
+        .all(|coeff| (-2..=2).contains(coeff)));
+
+    let non_symbt3_proof = WhirProof {
+        sumcheck_rounds_3: Vec::new(),
+        sumcheck_rounds_4: Vec::new(),
+        evaluations: [BabyBear::ZERO, BabyBear::ZERO, BabyBear::ZERO],
+        whir_pcs_proof: Default::default(),
+        z_eval: BabyBear::ZERO,
+        linear_checks: Vec::new(),
+        private_opening_evals: vec![BabyBear::ONE],
+        family_columnar_subproofs: Vec::new(),
+        num_vars: 1,
+        is_output: false,
+    };
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &non_symbt3_proof),
+        Some(false),
+        "non-SYMBT3 proof payloads must not be accepted as SYMBT3"
     );
 }
 
