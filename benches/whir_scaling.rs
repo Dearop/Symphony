@@ -2204,6 +2204,32 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             .gr1cs_residual_layout
             .folded_evaluation_coordinate_count
             / 3;
+        let manifest_component_count = decoded_relation.batch_manifest_layout.component_kinds.len();
+        let manifest_coordinate_count = decoded_relation
+            .batch_manifest_layout
+            .source_column_layout
+            .coordinate_count
+            * public.active_count;
+        let message_round_count = decoded_relation.message_semantic_layout.round_count;
+        let message_coordinate_count = decoded_relation
+            .message_semantic_layout
+            .round_layouts
+            .iter()
+            .map(|round| round.packed_field_len * public.active_count)
+            .sum::<usize>();
+        let message_to_trace_binding_count = decoded_relation
+            .message_semantic_layout
+            .round_layouts
+            .iter()
+            .map(|round| {
+                round
+                    .trace_column_bindings
+                    .iter()
+                    .map(|binding| binding.coordinate_len * public.active_count)
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+        let sumcheck_transition_count = message_coordinate_count;
         eprintln!(
             "[{profile}_vs_k k={k}] verify={} top_level_whir_proof_count=1 \
              family_columnar_subproof_count={} proof_bytes={} public_statement_bytes={} \
@@ -2212,7 +2238,10 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
              pcs_merkle_opening_proxy={} ajtai_linear_form_claims={} product_law={:?} \
              beta_action={:?} ring_degree={} ajtai_matrix_vector_evaluator={:?} \
              kappa={} opening_len={} projection_mode={:?} range_mode={:?} bound_b={} \
-             projection_output_len={} monomial_embedding_enabled=false",
+             projection_output_len={} monomial_embedding_enabled=false \
+             manifest_component_count={} manifest_coordinate_count={} membership_challenge_count=1 \
+             message_round_count={} message_coordinate_count={} \
+             message_to_trace_binding_count={} sumcheck_transition_count={}",
             verify_ok,
             proof.family_columnar_subproofs.len(),
             canonical_whir_proof_bytes(&proof).len(),
@@ -2244,6 +2273,12 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
                 .ajtai_norm_range_layout
                 .projection_layout
                 .output_len,
+            manifest_component_count,
+            manifest_coordinate_count,
+            message_round_count,
+            message_coordinate_count,
+            message_to_trace_binding_count,
+            sumcheck_transition_count,
         );
         eprintln!(
             "[{profile}_vs_k k={k}] source_r1cs_residual_claims={} \
@@ -2293,6 +2328,14 @@ fn bench_symbt3_g_vs_k(c: &mut Criterion) {
     bench_symbt3_profile_vs_k(c, "symbt3_g");
 }
 
+fn bench_symbt3_h_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_h");
+}
+
+fn bench_symbt3_i_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_i");
+}
+
 fn hex_digest(digest: &[u8; 32]) -> String {
     digest
         .iter()
@@ -2324,6 +2367,8 @@ criterion_group!(
     bench_symbt3_e_vs_k,
     bench_symbt3_f_vs_k,
     bench_symbt3_g_vs_k,
+    bench_symbt3_h_vs_k,
+    bench_symbt3_i_vs_k,
     bench_public_proof_batched_cp_size_vs_k,
 );
 criterion_main!(benches);

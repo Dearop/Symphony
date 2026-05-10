@@ -23,7 +23,7 @@ const SEMANTIC_COLUMNAR_V2_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBT2C\0";
 const SEMANTIC_FAMILY_COLUMNAR_V2_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBT2F\0";
 const SYMBT3_RELATION_CONTEXT_MAGIC: &[u8; 8] = b"SYMBT3\0\0";
 const SEMANTIC_COLUMNAR_V2_LAYOUT_VERSION: u64 = 1;
-const SYMBT3_LAYOUT_VERSION: u64 = 4;
+const SYMBT3_LAYOUT_VERSION: u64 = 6;
 const SYMBT3_CHALLENGE_SCHEDULE_VERSION: u64 = 2;
 const SYMBT3_RING_ACTION_VERSION: u64 = 1;
 const SYMBT3_AJTAI_COMMIT_LAYOUT_VERSION: u64 = 1;
@@ -35,6 +35,13 @@ const SYMBT3_AJTAI_LINEAR_ALGEBRA_LAYOUT_VERSION: u64 = 1;
 const SYMBT3_AJTAI_NORM_RANGE_LAYOUT_VERSION: u64 = 1;
 const SYMBT3_PROJECTION_LAYOUT_VERSION: u64 = 1;
 const SYMBT3_RANGE_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_BATCH_MANIFEST_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_MANIFEST_ORACLE_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_SOURCE_COLUMN_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_MESSAGE_SEMANTIC_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_ROUND_MESSAGE_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_MESSAGE_SECTION_LAYOUT_VERSION: u64 = 1;
+const SYMBT3_MESSAGE_BINDING_LAYOUT_VERSION: u64 = 1;
 const SYMBT2F_MAX_SECTION_EQUALITY_ROWS: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,11 +358,102 @@ pub enum BatchedCpSymbt3ConstraintFamily {
     CommittedSourceR1csResidualValidity,
     FoldedGr1csResidualValidity,
     FoldedGr1csProductResidualZeroCheck,
+    BatchManifestRootBinding,
+    SourceManifestColumnMembership,
+    SourceAssignmentRootManifestBinding,
+    SourceMessageRootManifestBinding,
+    RoundMessageLayoutValidity,
+    RoundChallengePrefixBinding,
+    MessageToTraceColumnBinding,
+    SumcheckRoundClaimTransition,
+    SumcheckFinalLocalClaimBinding,
+    FoldingMessageBoundaryConsistency,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Symbt3RingActionSide {
     Left,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3ActivePolicy {
+    PrefixActiveCountV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Symbt3ManifestComponentKind {
+    PublicInput,
+    SourceCommitmentCoordinate,
+    SourceEvaluationCoordinate,
+    SourceAccumulatorBoundaryCoordinate,
+    SourceAjtaiCommitmentCoordinate,
+    SourceAssignmentRootCoordinate,
+    SourceMessageRootCoordinate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3ManifestVisibility {
+    PublicBoundaryCoordinate,
+    CommittedPrivateRoot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3MembershipMode {
+    CoordinateEquality,
+    RootDigestEquality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3CommitmentSchemeId {
+    WhirDevOracleRootV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3ManifestRootPolicy {
+    TypedDigestRootV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3MessageSectionKind {
+    SumcheckRoundPolynomial,
+    SumcheckClaimValue,
+    EvaluationPoint,
+    EvaluationValue,
+    FoldedOutputCoordinate,
+    FoldedGr1csCoordinate,
+    AjtaiOpeningCoordinate,
+    AjtaiCommitmentCoordinate,
+    ProjectionCoordinate,
+    RangeWitnessCoordinate,
+    BoundaryDigestCoordinate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3MessageAlgebraType {
+    BabyBearFieldElement,
+    RingCoefficient,
+    DigestByteCoordinate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3MessageVisibility {
+    CommittedOracleValue,
+    PublicChallengeConstant,
+    PublicBoundaryCoordinate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3MessageBindingMode {
+    OracleToTraceEquality,
+    VerifierChallengeConstant,
+    SumcheckTransition,
+    FinalLocalClaim,
+    BoundaryCoordinateEquality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Symbt3MessageSemanticMode {
+    TypedAlgebraicOracleV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,6 +580,105 @@ pub struct Symbt3AjtaiNormRangeLayout {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3ManifestOracleLayout {
+    pub layout_version: u64,
+    pub row_count: usize,
+    pub component_count: usize,
+    pub coordinate_count: usize,
+    pub coordinate_ordering: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3SourceColumnLayout {
+    pub layout_version: u64,
+    pub component_count: usize,
+    pub coordinate_count: usize,
+    pub source_column_ordering: &'static str,
+    pub root_binding_policy: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3ManifestComponentLayout {
+    pub kind: Symbt3ManifestComponentKind,
+    pub coordinate_len: usize,
+    pub source_column_id: usize,
+    pub manifest_column_id: usize,
+    pub visibility: Symbt3ManifestVisibility,
+    pub membership_mode: Symbt3MembershipMode,
+    pub padding_policy: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3BatchManifestLayout {
+    pub version_marker: &'static [u8; 8],
+    pub layout_version: u64,
+    pub batch_size: usize,
+    pub active_count: usize,
+    pub active_policy: Symbt3ActivePolicy,
+    pub manifest_oracle_layout: Symbt3ManifestOracleLayout,
+    pub source_column_layout: Symbt3SourceColumnLayout,
+    pub component_kinds: Vec<Symbt3ManifestComponentLayout>,
+    pub commitment_scheme_id: Symbt3CommitmentSchemeId,
+    pub manifest_root_policy: Symbt3ManifestRootPolicy,
+    pub selector_evaluator: &'static str,
+    pub padding_policy: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3MessageSectionLayout {
+    pub layout_version: u64,
+    pub section_kind: Symbt3MessageSectionKind,
+    pub coordinate_offset: usize,
+    pub coordinate_len: usize,
+    pub algebra_type: Symbt3MessageAlgebraType,
+    pub visibility: Symbt3MessageVisibility,
+    pub binding_mode: Symbt3MessageBindingMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3MessageColumnBinding {
+    pub layout_version: u64,
+    pub round_index: usize,
+    pub message_coordinate_offset: usize,
+    pub trace_column_id: usize,
+    pub trace_coordinate_offset: usize,
+    pub coordinate_len: usize,
+    pub binding_mode: Symbt3MessageBindingMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3RoundMessageLayout {
+    pub layout_version: u64,
+    pub round_index: usize,
+    pub row_count: usize,
+    pub message_len: usize,
+    pub packed_field_len: usize,
+    pub coordinate_axis: &'static str,
+    pub section_axis: &'static str,
+    pub sections: Vec<Symbt3MessageSectionLayout>,
+    pub source_column_bindings: Vec<Symbt3MessageColumnBinding>,
+    pub trace_column_bindings: Vec<Symbt3MessageColumnBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3MessageSemanticLayout {
+    pub version_marker: &'static [u8; 8],
+    pub layout_version: u64,
+    pub round_count: usize,
+    pub round_layouts: Vec<Symbt3RoundMessageLayout>,
+    pub challenge_schedule_version: u64,
+    pub message_oracle_layout_digest: Digest32,
+    pub algebra_law_digest: Digest32,
+    pub gr1cs_layout_digest: Digest32,
+    pub ajtai_layout_digest: Digest32,
+    pub norm_range_layout_digest: Digest32,
+    pub manifest_layout_digest: Digest32,
+    pub selector_evaluator: &'static str,
+    pub padding_policy: &'static str,
+    pub semantic_mode: Symbt3MessageSemanticMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbt3R1csEvaluatorLayout {
     pub layout_version: u64,
     pub field_id: &'static str,
@@ -598,6 +795,8 @@ pub struct BatchedCpSymbt3RelationDescription {
     pub algebra_law: Symbt3AlgebraLaw,
     pub ajtai_linear_algebra_layout: Symbt3AjtaiLinearAlgebraLayout,
     pub ajtai_norm_range_layout: Symbt3AjtaiNormRangeLayout,
+    pub batch_manifest_layout: Symbt3BatchManifestLayout,
+    pub message_semantic_layout: Symbt3MessageSemanticLayout,
     pub folded_gr1cs_product_residual_layout: Symbt3FoldedGr1csProductResidualLayout,
     pub ajtai_matrix: Vec<Vec<RingElement>>,
     pub r1cs_matrices: R1CSMatrices,
@@ -616,6 +815,8 @@ pub struct BatchedCpSymbt3SetupDescriptor {
     pub algebra_law: Symbt3AlgebraLaw,
     pub ajtai_linear_algebra_layout: Symbt3AjtaiLinearAlgebraLayout,
     pub ajtai_norm_range_layout: Symbt3AjtaiNormRangeLayout,
+    pub batch_manifest_layout: Symbt3BatchManifestLayout,
+    pub message_semantic_layout: Symbt3MessageSemanticLayout,
     pub folded_gr1cs_product_residual_layout: Symbt3FoldedGr1csProductResidualLayout,
     pub ajtai_matrix: Vec<Vec<RingElement>>,
     pub r1cs_matrices: R1CSMatrices,
@@ -630,6 +831,10 @@ pub struct BatchedCpSymbt3PublicStatement {
     pub batch_capacity: usize,
     pub active_count: usize,
     pub input_public_boundary_digest: Digest32,
+    pub batch_manifest_root: Digest32,
+    pub batch_manifest_layout_digest: Digest32,
+    pub source_column_layout_digest: Digest32,
+    pub message_semantic_layout_digest: Digest32,
     pub input_public_values: Vec<Vec<i64>>,
     pub input_commitment_values: Vec<Vec<i64>>,
     pub input_evaluation_values: Vec<Vec<i64>>,
@@ -667,6 +872,8 @@ pub struct BatchedCpSymbt3Witness {
     pub source_ajtai_opening_values: Vec<Vec<i64>>,
     pub folded_ajtai_opening_values: Vec<i64>,
     pub source_r1cs_assignment_values: Vec<Vec<i64>>,
+    pub manifest_source_values: Vec<Vec<i64>>,
+    pub message_trace_values: Vec<Vec<i64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2259,6 +2466,17 @@ impl BatchedCpStatementShape {
             input_bound,
             self.accumulator_shape.digest_scheme,
         );
+        let batch_manifest_layout = Symbt3BatchManifestLayout::from_shape(self);
+        let message_semantic_layout = Symbt3MessageSemanticLayout::from_shape_and_layouts(
+            self,
+            &BatchedCpSymbt3OracleLayout::from_shape(self),
+            &algebra_law,
+            &gr1cs_residual_layout,
+            &ajtai_linear_algebra_layout,
+            &ajtai_norm_range_layout,
+            &batch_manifest_layout,
+            self.accumulator_shape.digest_scheme,
+        );
         let folded_gr1cs_product_residual_layout =
             Symbt3FoldedGr1csProductResidualLayout::from_shape(self);
         BatchedCpSymbt3SetupDescriptor {
@@ -2270,6 +2488,8 @@ impl BatchedCpStatementShape {
             algebra_law,
             ajtai_linear_algebra_layout,
             ajtai_norm_range_layout,
+            batch_manifest_layout,
+            message_semantic_layout,
             folded_gr1cs_product_residual_layout,
             ajtai_matrix: ajtai.a.clone(),
             r1cs_matrices: r1cs.clone(),
@@ -2494,6 +2714,282 @@ impl Symbt3AjtaiNormRangeLayout {
     }
 }
 
+impl Symbt3ManifestOracleLayout {
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_manifest_oracle_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-manifest-oracle-layout", &body)
+    }
+}
+
+impl Symbt3SourceColumnLayout {
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_source_column_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-source-column-layout", &body)
+    }
+}
+
+impl Symbt3BatchManifestLayout {
+    #[must_use]
+    pub fn from_shape(shape: &BatchedCpStatementShape) -> Self {
+        let mut next_column = 0usize;
+        let mut component = |kind, coordinate_len, visibility, membership_mode| {
+            let layout = Symbt3ManifestComponentLayout {
+                kind,
+                coordinate_len,
+                source_column_id: next_column,
+                manifest_column_id: next_column + 1,
+                visibility,
+                membership_mode,
+                padding_policy: "selector-zero-padded-tail",
+            };
+            next_column += 2;
+            layout
+        };
+        let public_len = shape.accumulator_shape.local_public_input_count
+            * shape.accumulator_shape.r1cs_num_public;
+        let commitment_len =
+            shape.accumulator_shape.commitment_kappa * shape.accumulator_shape.commitment_d;
+        let evaluation_len = shape.accumulator_shape.folded_evaluation_count * T * D;
+        let accumulator_len = public_len + commitment_len + evaluation_len;
+        let assignment_root_len = shape.accumulator_shape.local_public_input_count * 32;
+        let message_root_len = shape.accumulator_shape.num_rounds * 32;
+        let component_kinds = vec![
+            component(
+                Symbt3ManifestComponentKind::PublicInput,
+                public_len,
+                Symbt3ManifestVisibility::PublicBoundaryCoordinate,
+                Symbt3MembershipMode::CoordinateEquality,
+            ),
+            component(
+                Symbt3ManifestComponentKind::SourceCommitmentCoordinate,
+                commitment_len,
+                Symbt3ManifestVisibility::PublicBoundaryCoordinate,
+                Symbt3MembershipMode::CoordinateEquality,
+            ),
+            component(
+                Symbt3ManifestComponentKind::SourceEvaluationCoordinate,
+                evaluation_len,
+                Symbt3ManifestVisibility::PublicBoundaryCoordinate,
+                Symbt3MembershipMode::CoordinateEquality,
+            ),
+            component(
+                Symbt3ManifestComponentKind::SourceAccumulatorBoundaryCoordinate,
+                accumulator_len,
+                Symbt3ManifestVisibility::PublicBoundaryCoordinate,
+                Symbt3MembershipMode::CoordinateEquality,
+            ),
+            component(
+                Symbt3ManifestComponentKind::SourceAjtaiCommitmentCoordinate,
+                commitment_len,
+                Symbt3ManifestVisibility::PublicBoundaryCoordinate,
+                Symbt3MembershipMode::CoordinateEquality,
+            ),
+            component(
+                Symbt3ManifestComponentKind::SourceAssignmentRootCoordinate,
+                assignment_root_len,
+                Symbt3ManifestVisibility::CommittedPrivateRoot,
+                Symbt3MembershipMode::RootDigestEquality,
+            ),
+            component(
+                Symbt3ManifestComponentKind::SourceMessageRootCoordinate,
+                message_root_len,
+                Symbt3ManifestVisibility::CommittedPrivateRoot,
+                Symbt3MembershipMode::RootDigestEquality,
+            ),
+        ];
+        let coordinate_count = component_kinds
+            .iter()
+            .map(|component| component.coordinate_len)
+            .sum::<usize>();
+        let manifest_oracle_layout = Symbt3ManifestOracleLayout {
+            layout_version: SYMBT3_MANIFEST_ORACLE_LAYOUT_VERSION,
+            row_count: shape.batch_capacity,
+            component_count: component_kinds.len(),
+            coordinate_count,
+            coordinate_ordering: "item-component-coordinate",
+        };
+        let source_column_layout = Symbt3SourceColumnLayout {
+            layout_version: SYMBT3_SOURCE_COLUMN_LAYOUT_VERSION,
+            component_count: component_kinds.len(),
+            coordinate_count,
+            source_column_ordering: "item-component-coordinate",
+            root_binding_policy: "digest-coordinate-boundary-v1",
+        };
+        Self {
+            version_marker: b"SYMBT3H\0",
+            layout_version: SYMBT3_BATCH_MANIFEST_LAYOUT_VERSION,
+            batch_size: shape.batch_capacity,
+            active_count: shape.active_count,
+            active_policy: Symbt3ActivePolicy::PrefixActiveCountV1,
+            manifest_oracle_layout,
+            source_column_layout,
+            component_kinds,
+            commitment_scheme_id: Symbt3CommitmentSchemeId::WhirDevOracleRootV1,
+            manifest_root_policy: Symbt3ManifestRootPolicy::TypedDigestRootV1,
+            selector_evaluator: "prefix-active-valid-component-selector-v1",
+            padding_policy: "selector-zero-padded-tail",
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_batch_manifest_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-batch-manifest-layout", &body)
+    }
+}
+
+impl Symbt3MessageSemanticLayout {
+    #[must_use]
+    pub fn from_shape_and_layouts(
+        shape: &BatchedCpStatementShape,
+        oracle_layout: &BatchedCpSymbt3OracleLayout,
+        algebra_law: &Symbt3AlgebraLaw,
+        gr1cs_residual_layout: &Symbt3Gr1csResidualLayout,
+        ajtai_linear_algebra_layout: &Symbt3AjtaiLinearAlgebraLayout,
+        ajtai_norm_range_layout: &Symbt3AjtaiNormRangeLayout,
+        batch_manifest_layout: &Symbt3BatchManifestLayout,
+        scheme: PublicDigestScheme,
+    ) -> Self {
+        let round_layouts = oracle_layout
+            .message_oracles
+            .iter()
+            .map(|oracle| {
+                let polynomial_len = oracle.packed_field_len.min(2);
+                let claim_len = oracle
+                    .packed_field_len
+                    .saturating_sub(polynomial_len)
+                    .min(2);
+                let eval_point_len = oracle
+                    .packed_field_len
+                    .saturating_sub(polynomial_len + claim_len)
+                    .min(1);
+                let eval_value_len = oracle
+                    .packed_field_len
+                    .saturating_sub(polynomial_len + claim_len + eval_point_len);
+                let mut offset = 0usize;
+                let mut sections = Vec::new();
+                let mut push_section =
+                    |section_kind, coordinate_len, algebra_type, visibility, binding_mode| {
+                        if coordinate_len == 0 {
+                            return;
+                        }
+                        sections.push(Symbt3MessageSectionLayout {
+                            layout_version: SYMBT3_MESSAGE_SECTION_LAYOUT_VERSION,
+                            section_kind,
+                            coordinate_offset: offset,
+                            coordinate_len,
+                            algebra_type,
+                            visibility,
+                            binding_mode,
+                        });
+                        offset += coordinate_len;
+                    };
+                push_section(
+                    Symbt3MessageSectionKind::SumcheckRoundPolynomial,
+                    polynomial_len,
+                    Symbt3MessageAlgebraType::BabyBearFieldElement,
+                    Symbt3MessageVisibility::CommittedOracleValue,
+                    Symbt3MessageBindingMode::SumcheckTransition,
+                );
+                push_section(
+                    Symbt3MessageSectionKind::SumcheckClaimValue,
+                    claim_len,
+                    Symbt3MessageAlgebraType::BabyBearFieldElement,
+                    Symbt3MessageVisibility::CommittedOracleValue,
+                    Symbt3MessageBindingMode::SumcheckTransition,
+                );
+                push_section(
+                    Symbt3MessageSectionKind::EvaluationPoint,
+                    eval_point_len,
+                    Symbt3MessageAlgebraType::BabyBearFieldElement,
+                    Symbt3MessageVisibility::PublicChallengeConstant,
+                    Symbt3MessageBindingMode::VerifierChallengeConstant,
+                );
+                push_section(
+                    Symbt3MessageSectionKind::EvaluationValue,
+                    eval_value_len,
+                    Symbt3MessageAlgebraType::BabyBearFieldElement,
+                    Symbt3MessageVisibility::CommittedOracleValue,
+                    Symbt3MessageBindingMode::FinalLocalClaim,
+                );
+                let binding = Symbt3MessageColumnBinding {
+                    layout_version: SYMBT3_MESSAGE_BINDING_LAYOUT_VERSION,
+                    round_index: oracle.round,
+                    message_coordinate_offset: 0,
+                    trace_column_id: oracle.round,
+                    trace_coordinate_offset: 0,
+                    coordinate_len: oracle.packed_field_len,
+                    binding_mode: Symbt3MessageBindingMode::OracleToTraceEquality,
+                };
+                Symbt3RoundMessageLayout {
+                    layout_version: SYMBT3_ROUND_MESSAGE_LAYOUT_VERSION,
+                    round_index: oracle.round,
+                    row_count: oracle.row_count,
+                    message_len: oracle.message_len,
+                    packed_field_len: oracle.packed_field_len,
+                    coordinate_axis: "item-packed-message-coordinate",
+                    section_axis: "typed-round-message-section",
+                    sections,
+                    source_column_bindings: Vec::new(),
+                    trace_column_bindings: vec![binding],
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut message_oracle_body = Vec::new();
+        push_usize(
+            &mut message_oracle_body,
+            oracle_layout.message_oracles.len(),
+        );
+        for oracle in &oracle_layout.message_oracles {
+            push_usize(&mut message_oracle_body, oracle.round);
+            push_usize(&mut message_oracle_body, oracle.row_count);
+            push_usize(&mut message_oracle_body, oracle.message_len);
+            push_usize(&mut message_oracle_body, oracle.packed_field_len);
+        }
+        let message_oracle_layout_digest = digest_domain_with_scheme(
+            scheme,
+            b"batched-cp-symbt3-message-oracle-layout",
+            &message_oracle_body,
+        );
+        Self {
+            version_marker: b"SYMBT3I\0",
+            layout_version: SYMBT3_MESSAGE_SEMANTIC_LAYOUT_VERSION,
+            round_count: shape.accumulator_shape.num_rounds,
+            round_layouts,
+            challenge_schedule_version: SYMBT3_CHALLENGE_SCHEDULE_VERSION,
+            message_oracle_layout_digest,
+            algebra_law_digest: algebra_law.digest(scheme),
+            gr1cs_layout_digest: gr1cs_residual_layout.digest(scheme),
+            ajtai_layout_digest: ajtai_linear_algebra_layout.digest(scheme),
+            norm_range_layout_digest: ajtai_norm_range_layout.digest(scheme),
+            manifest_layout_digest: batch_manifest_layout.digest(scheme),
+            selector_evaluator: "prefix-active-message-coordinate-selector-v1",
+            padding_policy: "selector-zero-padded-tail",
+            semantic_mode: Symbt3MessageSemanticMode::TypedAlgebraicOracleV1,
+        }
+    }
+
+    #[must_use]
+    pub fn digest(&self, scheme: PublicDigestScheme) -> Digest32 {
+        let mut body = Vec::new();
+        encode_symbt3_message_semantic_layout(&mut body, self);
+        digest_domain_with_scheme(scheme, b"batched-cp-symbt3-message-semantic-layout", &body)
+    }
+
+    #[must_use]
+    pub fn coordinate_count(&self) -> usize {
+        self.round_layouts
+            .iter()
+            .map(|round| round.row_count * round.packed_field_len)
+            .sum()
+    }
+}
+
 impl Symbt3R1csEvaluatorLayout {
     #[must_use]
     pub fn from_shape_and_r1cs(
@@ -2675,6 +3171,16 @@ impl BatchedCpSymbt3OracleLayout {
             message_oracles,
             algebraic_columns,
             constraint_families: vec![
+                BatchedCpSymbt3ConstraintFamily::BatchManifestRootBinding,
+                BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership,
+                BatchedCpSymbt3ConstraintFamily::SourceAssignmentRootManifestBinding,
+                BatchedCpSymbt3ConstraintFamily::SourceMessageRootManifestBinding,
+                BatchedCpSymbt3ConstraintFamily::RoundMessageLayoutValidity,
+                BatchedCpSymbt3ConstraintFamily::RoundChallengePrefixBinding,
+                BatchedCpSymbt3ConstraintFamily::MessageToTraceColumnBinding,
+                BatchedCpSymbt3ConstraintFamily::SumcheckRoundClaimTransition,
+                BatchedCpSymbt3ConstraintFamily::SumcheckFinalLocalClaimBinding,
+                BatchedCpSymbt3ConstraintFamily::FoldingMessageBoundaryConsistency,
                 BatchedCpSymbt3ConstraintFamily::ChallengeToBeta,
                 BatchedCpSymbt3ConstraintFamily::FoldedPublicInputLinearIdentity,
                 BatchedCpSymbt3ConstraintFamily::FoldedCommitmentLinearIdentity,
@@ -2735,6 +3241,8 @@ impl BatchedCpSymbt3SetupDescriptor {
             algebra_law: self.algebra_law.clone(),
             ajtai_linear_algebra_layout: self.ajtai_linear_algebra_layout.clone(),
             ajtai_norm_range_layout: self.ajtai_norm_range_layout.clone(),
+            batch_manifest_layout: self.batch_manifest_layout.clone(),
+            message_semantic_layout: self.message_semantic_layout.clone(),
             folded_gr1cs_product_residual_layout: self.folded_gr1cs_product_residual_layout.clone(),
             ajtai_matrix: self.ajtai_matrix.clone(),
             r1cs_matrices: self.r1cs_matrices.clone(),
@@ -2991,6 +3499,56 @@ impl BatchedCpSymbt3RelationDescription {
     }
 
     #[must_use]
+    pub fn has_symbt3_h_families(&self) -> bool {
+        self.has_symbt3_g_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::BatchManifestRootBinding)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::SourceAssignmentRootManifestBinding)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::SourceMessageRootManifestBinding)
+    }
+
+    #[must_use]
+    pub fn has_symbt3_i_families(&self) -> bool {
+        self.has_symbt3_h_families()
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::RoundMessageLayoutValidity)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::RoundChallengePrefixBinding)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::MessageToTraceColumnBinding)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::SumcheckRoundClaimTransition)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::SumcheckFinalLocalClaimBinding)
+            && self
+                .oracle_layout
+                .constraint_families
+                .contains(&BatchedCpSymbt3ConstraintFamily::FoldingMessageBoundaryConsistency)
+    }
+
+    #[must_use]
     pub fn derive_folded_public_input_boundary(
         &self,
         statement: &BatchedCpSymbt3PublicStatement,
@@ -3145,6 +3703,8 @@ impl BatchedCpSymbt3RelationDescription {
         encode_symbt3_algebra_law(&mut out, &self.algebra_law);
         encode_symbt3_ajtai_linear_algebra_layout(&mut out, &self.ajtai_linear_algebra_layout);
         encode_symbt3_ajtai_norm_range_layout(&mut out, &self.ajtai_norm_range_layout);
+        encode_symbt3_batch_manifest_layout(&mut out, &self.batch_manifest_layout);
+        encode_symbt3_message_semantic_layout(&mut out, &self.message_semantic_layout);
         encode_symbt3_folded_gr1cs_product_residual_layout(
             &mut out,
             &self.folded_gr1cs_product_residual_layout,
@@ -3216,6 +3776,22 @@ impl BatchedCpSymbt3RelationDescription {
         body.extend_from_slice(
             &self
                 .ajtai_norm_range_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .batch_manifest_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .batch_manifest_layout
+                .source_column_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+        );
+        body.extend_from_slice(
+            &self
+                .message_semantic_layout
                 .digest(self.shape.accumulator_shape.digest_scheme),
         );
         body.extend_from_slice(&(SYMBT3_CHALLENGE_SCHEDULE_VERSION).to_le_bytes());
@@ -3293,6 +3869,8 @@ impl BatchedCpSymbt3RelationDescription {
         let algebra_law = read_symbt3_algebra_law(bytes, &mut pos)?;
         let ajtai_linear_algebra_layout = read_symbt3_ajtai_linear_algebra_layout(bytes, &mut pos)?;
         let ajtai_norm_range_layout = read_symbt3_ajtai_norm_range_layout(bytes, &mut pos)?;
+        let batch_manifest_layout = read_symbt3_batch_manifest_layout(bytes, &mut pos)?;
+        let message_semantic_layout = read_symbt3_message_semantic_layout(bytes, &mut pos)?;
         let folded_gr1cs_product_residual_layout =
             read_symbt3_folded_gr1cs_product_residual_layout(bytes, &mut pos)?;
         let ajtai_matrix = read_ring_matrix(bytes, &mut pos)?;
@@ -3332,6 +3910,8 @@ impl BatchedCpSymbt3RelationDescription {
             || ajtai_linear_algebra_layout.layout_version
                 != SYMBT3_AJTAI_LINEAR_ALGEBRA_LAYOUT_VERSION
             || ajtai_norm_range_layout.layout_version != SYMBT3_AJTAI_NORM_RANGE_LAYOUT_VERSION
+            || batch_manifest_layout.layout_version != SYMBT3_BATCH_MANIFEST_LAYOUT_VERSION
+            || message_semantic_layout.layout_version != SYMBT3_MESSAGE_SEMANTIC_LAYOUT_VERSION
             || folded_gr1cs_product_residual_layout.layout_version
                 != SYMBT3_FOLDED_GR1CS_PRODUCT_RESIDUAL_LAYOUT_VERSION
             || ajtai_matrix.len() != ajtai_commit_layout.commitment_module_dimension
@@ -3364,6 +3944,18 @@ impl BatchedCpSymbt3RelationDescription {
                     input_bound,
                     shape.accumulator_shape.digest_scheme,
                 )
+            || batch_manifest_layout != Symbt3BatchManifestLayout::from_shape(&shape)
+            || message_semantic_layout
+                != Symbt3MessageSemanticLayout::from_shape_and_layouts(
+                    &shape,
+                    &oracle_layout,
+                    &algebra_law,
+                    &gr1cs_residual_layout,
+                    &ajtai_linear_algebra_layout,
+                    &ajtai_norm_range_layout,
+                    &batch_manifest_layout,
+                    shape.accumulator_shape.digest_scheme,
+                )
             || folded_gr1cs_product_residual_layout
                 != Symbt3FoldedGr1csProductResidualLayout::from_shape(&shape)
         {
@@ -3379,6 +3971,8 @@ impl BatchedCpSymbt3RelationDescription {
             algebra_law,
             ajtai_linear_algebra_layout,
             ajtai_norm_range_layout,
+            batch_manifest_layout,
+            message_semantic_layout,
             folded_gr1cs_product_residual_layout,
             ajtai_matrix,
             r1cs_matrices,
@@ -5194,7 +5788,7 @@ impl BatchedCpBucket {
         relation: &BatchedCpSymbt3RelationDescription,
     ) -> BatchedCpSymbt3PublicStatement {
         let witness = self.witness_bundle();
-        let message_oracle_roots = witness
+        let message_oracle_roots: Vec<Digest32> = witness
             .round_message_oracles
             .iter()
             .enumerate()
@@ -5294,6 +5888,20 @@ impl BatchedCpBucket {
             relation,
             &source_assignment_roots,
         );
+        let manifest_rows = symbt3_manifest_rows_from_statement_parts(
+            relation,
+            &input_public_values,
+            &input_commitment_values,
+            &input_evaluation_values,
+            &input_accumulator_values,
+            &source_assignment_roots,
+            &message_oracle_roots,
+        );
+        let batch_manifest_root = symbt3_batch_manifest_root_from_rows(
+            self.shape.accumulator_shape.digest_scheme,
+            relation,
+            &manifest_rows,
+        );
         let folded_gr1cs_boundary_digest = symbt3_folded_gr1cs_boundary_digest(
             self.shape.accumulator_shape.digest_scheme,
             relation,
@@ -5305,6 +5913,17 @@ impl BatchedCpBucket {
             batch_capacity: self.shape.batch_capacity,
             active_count: self.shape.active_count,
             input_public_boundary_digest,
+            batch_manifest_root,
+            batch_manifest_layout_digest: relation
+                .batch_manifest_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            source_column_layout_digest: relation
+                .batch_manifest_layout
+                .source_column_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
+            message_semantic_layout_digest: relation
+                .message_semantic_layout
+                .digest(self.shape.accumulator_shape.digest_scheme),
             input_public_values,
             input_commitment_values,
             input_evaluation_values,
@@ -5401,6 +6020,11 @@ impl BatchedCpBucket {
             })
             .collect::<Vec<_>>();
         let public = self.symbt3_public_statement_for_relation(relation);
+        witness.manifest_source_values =
+            symbt3_manifest_rows_for_statement(relation, &public).unwrap_or_default();
+        witness.message_trace_values =
+            symbt3_message_semantic_rows_from_oracles(relation, &witness.message_oracles)
+                .unwrap_or_default();
         witness.folded_ajtai_opening_values = relation
             .derive_ring_folded_opening_boundary(&public, &witness.source_ajtai_opening_values);
         witness
@@ -6584,6 +7208,10 @@ impl BatchedCpSymbt3PublicStatement {
         push_usize(&mut out, self.batch_capacity);
         push_usize(&mut out, self.active_count);
         out.extend_from_slice(&self.input_public_boundary_digest);
+        out.extend_from_slice(&self.batch_manifest_root);
+        out.extend_from_slice(&self.batch_manifest_layout_digest);
+        out.extend_from_slice(&self.source_column_layout_digest);
+        out.extend_from_slice(&self.message_semantic_layout_digest);
         push_usize(&mut out, self.input_public_values.len());
         for row in &self.input_public_values {
             push_i64_vec(&mut out, row);
@@ -6660,6 +7288,29 @@ impl BatchedCpSymbt3PublicStatement {
                     &self.input_evaluation_values,
                     &self.input_accumulator_values,
                 )
+            && self.batch_manifest_layout_digest
+                == relation
+                    .batch_manifest_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.source_column_layout_digest
+                == relation
+                    .batch_manifest_layout
+                    .source_column_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.message_semantic_layout_digest
+                == relation
+                    .message_semantic_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme)
+            && self.batch_manifest_root
+                == symbt3_manifest_rows_for_statement(relation, self)
+                    .map(|rows| {
+                        symbt3_batch_manifest_root_from_rows(
+                            relation.shape.accumulator_shape.digest_scheme,
+                            relation,
+                            &rows,
+                        )
+                    })
+                    .unwrap_or([0u8; 32])
             && self.source_assignment_roots.len()
                 == relation.shape.active_count
                     * relation.shape.accumulator_shape.local_public_input_count
@@ -6745,6 +7396,8 @@ impl BatchedCpSymbt3Witness {
             source_ajtai_opening_values: Vec::new(),
             folded_ajtai_opening_values: Vec::new(),
             source_r1cs_assignment_values: Vec::new(),
+            manifest_source_values: Vec::new(),
+            message_trace_values: Vec::new(),
         }
     }
 }
@@ -6757,6 +7410,10 @@ pub fn derive_symbt3_batch_challenge_digest(
     let mut body = Vec::new();
     body.extend_from_slice(&relation.folding_protocol_id());
     body.extend_from_slice(&statement.input_public_boundary_digest);
+    body.extend_from_slice(&statement.batch_manifest_root);
+    body.extend_from_slice(&statement.batch_manifest_layout_digest);
+    body.extend_from_slice(&statement.source_column_layout_digest);
+    body.extend_from_slice(&statement.message_semantic_layout_digest);
     body.extend_from_slice(&statement.source_assignment_boundary_digest);
     body.extend_from_slice(&statement.source_ajtai_commitment_boundary_digest);
     body.extend_from_slice(&statement.ring_module_layout_digest);
@@ -6766,6 +7423,7 @@ pub fn derive_symbt3_batch_challenge_digest(
     body.extend_from_slice(&statement.algebra_law_digest);
     body.extend_from_slice(&statement.ajtai_linear_algebra_layout_digest);
     body.extend_from_slice(&statement.ajtai_norm_range_layout_digest);
+    body.extend_from_slice(&statement.message_semantic_layout_digest);
     push_usize(&mut body, statement.source_assignment_roots.len());
     for root in &statement.source_assignment_roots {
         body.extend_from_slice(root);
@@ -6795,6 +7453,10 @@ pub fn derive_symbt3_public_statement_digest(
 ) -> Digest32 {
     let mut body = Vec::new();
     body.extend_from_slice(&derive_symbt3_batch_challenge_digest(relation, statement));
+    body.extend_from_slice(&statement.batch_manifest_root);
+    body.extend_from_slice(&statement.batch_manifest_layout_digest);
+    body.extend_from_slice(&statement.source_column_layout_digest);
+    body.extend_from_slice(&statement.message_semantic_layout_digest);
     push_i64_vec(&mut body, &statement.folded_public_input);
     push_i64_vec(&mut body, &statement.folded_commitment);
     push_i64_vec(&mut body, &statement.folded_evaluation);
@@ -6808,6 +7470,7 @@ pub fn derive_symbt3_public_statement_digest(
     body.extend_from_slice(&statement.projection_layout_digest);
     body.extend_from_slice(&statement.range_layout_digest);
     body.extend_from_slice(&statement.folded_gr1cs_product_residual_layout_digest);
+    body.extend_from_slice(&statement.message_semantic_layout_digest);
     body.extend_from_slice(&statement.folded_output_accumulator_root);
     digest_domain_with_scheme(
         relation.shape.accumulator_shape.digest_scheme,
@@ -6887,17 +7550,37 @@ pub fn derive_symbt3_round_challenges(
     relation: &BatchedCpSymbt3RelationDescription,
     statement: &BatchedCpSymbt3PublicStatement,
 ) -> Vec<Digest32> {
-    let seed = derive_symbt3_batch_challenge_digest(relation, statement);
+    let mut prefix_seed_body = Vec::new();
+    prefix_seed_body.extend_from_slice(&relation.folding_protocol_id());
+    prefix_seed_body.extend_from_slice(&statement.input_public_boundary_digest);
+    prefix_seed_body.extend_from_slice(&statement.batch_manifest_root);
+    prefix_seed_body.extend_from_slice(&statement.source_assignment_boundary_digest);
+    prefix_seed_body.extend_from_slice(&statement.source_ajtai_commitment_boundary_digest);
+    push_usize(&mut prefix_seed_body, statement.batch_capacity);
+    push_usize(&mut prefix_seed_body, statement.active_count);
+    let mut prior = digest_domain_with_scheme(
+        relation.shape.accumulator_shape.digest_scheme,
+        b"batched-cp-symbt3-round-challenge-prefix-seed",
+        &prefix_seed_body,
+    );
     (0..relation.shape.accumulator_shape.num_rounds)
         .map(|round| {
             let mut body = Vec::new();
-            body.extend_from_slice(&seed);
+            body.extend_from_slice(&relation.folding_protocol_id());
+            body.extend_from_slice(&statement.input_public_boundary_digest);
+            body.extend_from_slice(&statement.batch_manifest_root);
+            for root in statement.message_oracle_roots.iter().take(round + 1) {
+                body.extend_from_slice(root);
+            }
+            body.extend_from_slice(&prior);
             push_usize(&mut body, round);
-            digest_domain_with_scheme(
+            let challenge = digest_domain_with_scheme(
                 relation.shape.accumulator_shape.digest_scheme,
                 b"batched-cp-symbt3-round-challenge",
                 &body,
-            )
+            );
+            prior = challenge;
+            challenge
         })
         .collect()
 }
@@ -6917,6 +7600,70 @@ pub fn symbt3_message_oracle_root(
         push_bytes(&mut body, row);
     }
     digest_domain_with_scheme(scheme, b"batched-cp-symbt3-message-oracle-root", &body)
+}
+
+#[must_use]
+pub fn symbt3_message_semantic_rows_from_oracles(
+    relation: &BatchedCpSymbt3RelationDescription,
+    message_oracles: &[Vec<Vec<u8>>],
+) -> Option<Vec<Vec<i64>>> {
+    if message_oracles.len() != relation.message_semantic_layout.round_layouts.len() {
+        return None;
+    }
+    let mut rows = Vec::with_capacity(relation.message_semantic_layout.round_layouts.len());
+    for (round_layout, round_rows) in relation
+        .message_semantic_layout
+        .round_layouts
+        .iter()
+        .zip(message_oracles.iter())
+    {
+        if round_rows.len() != round_layout.row_count {
+            return None;
+        }
+        let mut row_values =
+            Vec::with_capacity(round_layout.row_count * round_layout.packed_field_len);
+        for item in 0..relation.shape.active_count {
+            let message = round_rows.get(item)?;
+            if message.len() != round_layout.message_len {
+                return None;
+            }
+            row_values.extend(symbt3_pack_message_bytes(
+                message,
+                round_layout.packed_field_len,
+            ));
+        }
+        rows.push(row_values);
+    }
+    Some(rows)
+}
+
+#[must_use]
+pub fn symbt3_message_semantic_flat_values(
+    relation: &BatchedCpSymbt3RelationDescription,
+    message_oracles: &[Vec<Vec<u8>>],
+) -> Option<Vec<i64>> {
+    Some(
+        symbt3_message_semantic_rows_from_oracles(relation, message_oracles)?
+            .into_iter()
+            .flat_map(|row| row.into_iter())
+            .collect(),
+    )
+}
+
+fn symbt3_pack_message_bytes(message: &[u8], packed_field_len: usize) -> Vec<i64> {
+    let mut out = message
+        .chunks(4)
+        .take(packed_field_len)
+        .map(|chunk| {
+            let mut value = 0u32;
+            for (idx, &byte) in chunk.iter().enumerate() {
+                value |= (byte as u32) << (8 * idx);
+            }
+            (value as i128 % BABYBEAR_MODULUS_U64 as i128) as i64
+        })
+        .collect::<Vec<_>>();
+    out.resize(packed_field_len, 0);
+    out
 }
 
 pub fn bucket_by_exact_shape(
@@ -7004,6 +7751,10 @@ fn estimate_symbt3_public_statement_bytes(shape: &BatchedCpStatementShape) -> us
     out.extend_from_slice(&shape.shape_id);
     push_usize(&mut out, shape.batch_capacity);
     push_usize(&mut out, shape.active_count);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&[0u8; 32]);
     out.extend_from_slice(&[0u8; 32]);
     let coord_len =
         shape.accumulator_shape.local_public_input_count * shape.accumulator_shape.r1cs_num_public;
@@ -7139,6 +7890,135 @@ fn symbt3_input_public_boundary_digest(
     push_i64_matrix(&mut body, input_evaluation_values);
     push_i64_matrix(&mut body, input_accumulator_values);
     digest_domain_with_scheme(scheme, b"batched-cp-symbt3-input-public-boundary", &body)
+}
+
+fn symbt3_manifest_rows_from_statement_parts(
+    relation: &BatchedCpSymbt3RelationDescription,
+    input_public_values: &[Vec<i64>],
+    input_commitment_values: &[Vec<i64>],
+    input_evaluation_values: &[Vec<i64>],
+    input_accumulator_values: &[Vec<i64>],
+    source_assignment_roots: &[Digest32],
+    message_oracle_roots: &[Digest32],
+) -> Vec<Vec<i64>> {
+    (0..relation.shape.active_count)
+        .map(|item| {
+            let mut row = Vec::with_capacity(
+                relation
+                    .batch_manifest_layout
+                    .source_column_layout
+                    .coordinate_count,
+            );
+            row.extend_from_slice(
+                input_public_values
+                    .get(item)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            row.extend_from_slice(
+                input_commitment_values
+                    .get(item)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            row.extend_from_slice(
+                input_evaluation_values
+                    .get(item)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            row.extend_from_slice(
+                input_accumulator_values
+                    .get(item)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            row.extend_from_slice(
+                input_commitment_values
+                    .get(item)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            );
+            let assignment_start = item * relation.shape.accumulator_shape.local_public_input_count;
+            let assignment_end =
+                assignment_start + relation.shape.accumulator_shape.local_public_input_count;
+            for root in source_assignment_roots
+                .get(assignment_start..assignment_end)
+                .unwrap_or(&[])
+            {
+                row.extend(root.iter().map(|&byte| byte as i64));
+            }
+            for root in message_oracle_roots {
+                row.extend(root.iter().map(|&byte| byte as i64));
+            }
+            row.resize(
+                relation
+                    .batch_manifest_layout
+                    .source_column_layout
+                    .coordinate_count,
+                0,
+            );
+            row
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn symbt3_manifest_rows_for_statement(
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &BatchedCpSymbt3PublicStatement,
+) -> Option<Vec<Vec<i64>>> {
+    if statement.input_public_values.len() != relation.shape.active_count
+        || statement.input_commitment_values.len() != relation.shape.active_count
+        || statement.input_evaluation_values.len() != relation.shape.active_count
+        || statement.input_accumulator_values.len() != relation.shape.active_count
+        || statement.source_assignment_roots.len()
+            != relation.shape.active_count
+                * relation.shape.accumulator_shape.local_public_input_count
+        || statement.message_oracle_roots.len() != relation.shape.accumulator_shape.num_rounds
+    {
+        return None;
+    }
+    let rows = symbt3_manifest_rows_from_statement_parts(
+        relation,
+        &statement.input_public_values,
+        &statement.input_commitment_values,
+        &statement.input_evaluation_values,
+        &statement.input_accumulator_values,
+        &statement.source_assignment_roots,
+        &statement.message_oracle_roots,
+    );
+    rows.iter()
+        .all(|row| {
+            row.len()
+                == relation
+                    .batch_manifest_layout
+                    .source_column_layout
+                    .coordinate_count
+        })
+        .then_some(rows)
+}
+
+#[must_use]
+pub fn symbt3_batch_manifest_root_from_rows(
+    scheme: PublicDigestScheme,
+    relation: &BatchedCpSymbt3RelationDescription,
+    rows: &[Vec<i64>],
+) -> Digest32 {
+    let mut body = Vec::new();
+    body.extend_from_slice(&relation.batch_manifest_layout.digest(scheme));
+    body.extend_from_slice(
+        &relation
+            .batch_manifest_layout
+            .source_column_layout
+            .digest(scheme),
+    );
+    push_i64_matrix(&mut body, rows);
+    digest_domain_with_scheme(
+        scheme,
+        b"batched-cp-symbt3-typed-batch-manifest-root",
+        &body,
+    )
 }
 
 fn symbt3_source_assignment_root(
@@ -7570,6 +8450,201 @@ fn symbt3_coefficient_encoding_from_code(code: u8) -> Option<Symbt3CoefficientEn
     })
 }
 
+fn symbt3_active_policy_code(value: Symbt3ActivePolicy) -> u8 {
+    match value {
+        Symbt3ActivePolicy::PrefixActiveCountV1 => 1,
+    }
+}
+
+fn symbt3_active_policy_from_code(code: u8) -> Option<Symbt3ActivePolicy> {
+    Some(match code {
+        1 => Symbt3ActivePolicy::PrefixActiveCountV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_manifest_component_kind_code(value: Symbt3ManifestComponentKind) -> u8 {
+    match value {
+        Symbt3ManifestComponentKind::PublicInput => 1,
+        Symbt3ManifestComponentKind::SourceCommitmentCoordinate => 2,
+        Symbt3ManifestComponentKind::SourceEvaluationCoordinate => 3,
+        Symbt3ManifestComponentKind::SourceAccumulatorBoundaryCoordinate => 4,
+        Symbt3ManifestComponentKind::SourceAjtaiCommitmentCoordinate => 5,
+        Symbt3ManifestComponentKind::SourceAssignmentRootCoordinate => 6,
+        Symbt3ManifestComponentKind::SourceMessageRootCoordinate => 7,
+    }
+}
+
+fn symbt3_manifest_component_kind_from_code(code: u8) -> Option<Symbt3ManifestComponentKind> {
+    Some(match code {
+        1 => Symbt3ManifestComponentKind::PublicInput,
+        2 => Symbt3ManifestComponentKind::SourceCommitmentCoordinate,
+        3 => Symbt3ManifestComponentKind::SourceEvaluationCoordinate,
+        4 => Symbt3ManifestComponentKind::SourceAccumulatorBoundaryCoordinate,
+        5 => Symbt3ManifestComponentKind::SourceAjtaiCommitmentCoordinate,
+        6 => Symbt3ManifestComponentKind::SourceAssignmentRootCoordinate,
+        7 => Symbt3ManifestComponentKind::SourceMessageRootCoordinate,
+        _ => return None,
+    })
+}
+
+fn symbt3_manifest_visibility_code(value: Symbt3ManifestVisibility) -> u8 {
+    match value {
+        Symbt3ManifestVisibility::PublicBoundaryCoordinate => 1,
+        Symbt3ManifestVisibility::CommittedPrivateRoot => 2,
+    }
+}
+
+fn symbt3_manifest_visibility_from_code(code: u8) -> Option<Symbt3ManifestVisibility> {
+    Some(match code {
+        1 => Symbt3ManifestVisibility::PublicBoundaryCoordinate,
+        2 => Symbt3ManifestVisibility::CommittedPrivateRoot,
+        _ => return None,
+    })
+}
+
+fn symbt3_membership_mode_code(value: Symbt3MembershipMode) -> u8 {
+    match value {
+        Symbt3MembershipMode::CoordinateEquality => 1,
+        Symbt3MembershipMode::RootDigestEquality => 2,
+    }
+}
+
+fn symbt3_membership_mode_from_code(code: u8) -> Option<Symbt3MembershipMode> {
+    Some(match code {
+        1 => Symbt3MembershipMode::CoordinateEquality,
+        2 => Symbt3MembershipMode::RootDigestEquality,
+        _ => return None,
+    })
+}
+
+fn symbt3_commitment_scheme_code(value: Symbt3CommitmentSchemeId) -> u8 {
+    match value {
+        Symbt3CommitmentSchemeId::WhirDevOracleRootV1 => 1,
+    }
+}
+
+fn symbt3_commitment_scheme_from_code(code: u8) -> Option<Symbt3CommitmentSchemeId> {
+    Some(match code {
+        1 => Symbt3CommitmentSchemeId::WhirDevOracleRootV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_manifest_root_policy_code(value: Symbt3ManifestRootPolicy) -> u8 {
+    match value {
+        Symbt3ManifestRootPolicy::TypedDigestRootV1 => 1,
+    }
+}
+
+fn symbt3_manifest_root_policy_from_code(code: u8) -> Option<Symbt3ManifestRootPolicy> {
+    Some(match code {
+        1 => Symbt3ManifestRootPolicy::TypedDigestRootV1,
+        _ => return None,
+    })
+}
+
+fn symbt3_message_section_kind_code(value: Symbt3MessageSectionKind) -> u8 {
+    match value {
+        Symbt3MessageSectionKind::SumcheckRoundPolynomial => 1,
+        Symbt3MessageSectionKind::SumcheckClaimValue => 2,
+        Symbt3MessageSectionKind::EvaluationPoint => 3,
+        Symbt3MessageSectionKind::EvaluationValue => 4,
+        Symbt3MessageSectionKind::FoldedOutputCoordinate => 5,
+        Symbt3MessageSectionKind::FoldedGr1csCoordinate => 6,
+        Symbt3MessageSectionKind::AjtaiOpeningCoordinate => 7,
+        Symbt3MessageSectionKind::AjtaiCommitmentCoordinate => 8,
+        Symbt3MessageSectionKind::ProjectionCoordinate => 9,
+        Symbt3MessageSectionKind::RangeWitnessCoordinate => 10,
+        Symbt3MessageSectionKind::BoundaryDigestCoordinate => 11,
+    }
+}
+
+fn symbt3_message_section_kind_from_code(code: u8) -> Option<Symbt3MessageSectionKind> {
+    Some(match code {
+        1 => Symbt3MessageSectionKind::SumcheckRoundPolynomial,
+        2 => Symbt3MessageSectionKind::SumcheckClaimValue,
+        3 => Symbt3MessageSectionKind::EvaluationPoint,
+        4 => Symbt3MessageSectionKind::EvaluationValue,
+        5 => Symbt3MessageSectionKind::FoldedOutputCoordinate,
+        6 => Symbt3MessageSectionKind::FoldedGr1csCoordinate,
+        7 => Symbt3MessageSectionKind::AjtaiOpeningCoordinate,
+        8 => Symbt3MessageSectionKind::AjtaiCommitmentCoordinate,
+        9 => Symbt3MessageSectionKind::ProjectionCoordinate,
+        10 => Symbt3MessageSectionKind::RangeWitnessCoordinate,
+        11 => Symbt3MessageSectionKind::BoundaryDigestCoordinate,
+        _ => return None,
+    })
+}
+
+fn symbt3_message_algebra_type_code(value: Symbt3MessageAlgebraType) -> u8 {
+    match value {
+        Symbt3MessageAlgebraType::BabyBearFieldElement => 1,
+        Symbt3MessageAlgebraType::RingCoefficient => 2,
+        Symbt3MessageAlgebraType::DigestByteCoordinate => 3,
+    }
+}
+
+fn symbt3_message_algebra_type_from_code(code: u8) -> Option<Symbt3MessageAlgebraType> {
+    Some(match code {
+        1 => Symbt3MessageAlgebraType::BabyBearFieldElement,
+        2 => Symbt3MessageAlgebraType::RingCoefficient,
+        3 => Symbt3MessageAlgebraType::DigestByteCoordinate,
+        _ => return None,
+    })
+}
+
+fn symbt3_message_visibility_code(value: Symbt3MessageVisibility) -> u8 {
+    match value {
+        Symbt3MessageVisibility::CommittedOracleValue => 1,
+        Symbt3MessageVisibility::PublicChallengeConstant => 2,
+        Symbt3MessageVisibility::PublicBoundaryCoordinate => 3,
+    }
+}
+
+fn symbt3_message_visibility_from_code(code: u8) -> Option<Symbt3MessageVisibility> {
+    Some(match code {
+        1 => Symbt3MessageVisibility::CommittedOracleValue,
+        2 => Symbt3MessageVisibility::PublicChallengeConstant,
+        3 => Symbt3MessageVisibility::PublicBoundaryCoordinate,
+        _ => return None,
+    })
+}
+
+fn symbt3_message_binding_mode_code(value: Symbt3MessageBindingMode) -> u8 {
+    match value {
+        Symbt3MessageBindingMode::OracleToTraceEquality => 1,
+        Symbt3MessageBindingMode::VerifierChallengeConstant => 2,
+        Symbt3MessageBindingMode::SumcheckTransition => 3,
+        Symbt3MessageBindingMode::FinalLocalClaim => 4,
+        Symbt3MessageBindingMode::BoundaryCoordinateEquality => 5,
+    }
+}
+
+fn symbt3_message_binding_mode_from_code(code: u8) -> Option<Symbt3MessageBindingMode> {
+    Some(match code {
+        1 => Symbt3MessageBindingMode::OracleToTraceEquality,
+        2 => Symbt3MessageBindingMode::VerifierChallengeConstant,
+        3 => Symbt3MessageBindingMode::SumcheckTransition,
+        4 => Symbt3MessageBindingMode::FinalLocalClaim,
+        5 => Symbt3MessageBindingMode::BoundaryCoordinateEquality,
+        _ => return None,
+    })
+}
+
+fn symbt3_message_semantic_mode_code(value: Symbt3MessageSemanticMode) -> u8 {
+    match value {
+        Symbt3MessageSemanticMode::TypedAlgebraicOracleV1 => 1,
+    }
+}
+
+fn symbt3_message_semantic_mode_from_code(code: u8) -> Option<Symbt3MessageSemanticMode> {
+    Some(match code {
+        1 => Symbt3MessageSemanticMode::TypedAlgebraicOracleV1,
+        _ => return None,
+    })
+}
+
 fn symbt3_constraint_family_code(family: BatchedCpSymbt3ConstraintFamily) -> u8 {
     match family {
         BatchedCpSymbt3ConstraintFamily::ChallengeToBeta => 1,
@@ -7590,6 +8665,16 @@ fn symbt3_constraint_family_code(family: BatchedCpSymbt3ConstraintFamily) -> u8 
         BatchedCpSymbt3ConstraintFamily::CommittedSourceR1csResidualValidity => 16,
         BatchedCpSymbt3ConstraintFamily::FoldedGr1csResidualValidity => 17,
         BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck => 18,
+        BatchedCpSymbt3ConstraintFamily::BatchManifestRootBinding => 19,
+        BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership => 20,
+        BatchedCpSymbt3ConstraintFamily::SourceAssignmentRootManifestBinding => 21,
+        BatchedCpSymbt3ConstraintFamily::SourceMessageRootManifestBinding => 22,
+        BatchedCpSymbt3ConstraintFamily::RoundMessageLayoutValidity => 23,
+        BatchedCpSymbt3ConstraintFamily::RoundChallengePrefixBinding => 24,
+        BatchedCpSymbt3ConstraintFamily::MessageToTraceColumnBinding => 25,
+        BatchedCpSymbt3ConstraintFamily::SumcheckRoundClaimTransition => 26,
+        BatchedCpSymbt3ConstraintFamily::SumcheckFinalLocalClaimBinding => 27,
+        BatchedCpSymbt3ConstraintFamily::FoldingMessageBoundaryConsistency => 28,
     }
 }
 
@@ -7613,6 +8698,16 @@ fn symbt3_constraint_family_from_code(code: u8) -> Option<BatchedCpSymbt3Constra
         16 => BatchedCpSymbt3ConstraintFamily::CommittedSourceR1csResidualValidity,
         17 => BatchedCpSymbt3ConstraintFamily::FoldedGr1csResidualValidity,
         18 => BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck,
+        19 => BatchedCpSymbt3ConstraintFamily::BatchManifestRootBinding,
+        20 => BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership,
+        21 => BatchedCpSymbt3ConstraintFamily::SourceAssignmentRootManifestBinding,
+        22 => BatchedCpSymbt3ConstraintFamily::SourceMessageRootManifestBinding,
+        23 => BatchedCpSymbt3ConstraintFamily::RoundMessageLayoutValidity,
+        24 => BatchedCpSymbt3ConstraintFamily::RoundChallengePrefixBinding,
+        25 => BatchedCpSymbt3ConstraintFamily::MessageToTraceColumnBinding,
+        26 => BatchedCpSymbt3ConstraintFamily::SumcheckRoundClaimTransition,
+        27 => BatchedCpSymbt3ConstraintFamily::SumcheckFinalLocalClaimBinding,
+        28 => BatchedCpSymbt3ConstraintFamily::FoldingMessageBoundaryConsistency,
         _ => return None,
     })
 }
@@ -8742,6 +9837,115 @@ fn encode_symbt3_ajtai_norm_range_layout(out: &mut Vec<u8>, value: &Symbt3AjtaiN
     out.push(symbt3_range_mode_code(value.range_mode));
 }
 
+fn encode_symbt3_manifest_oracle_layout(out: &mut Vec<u8>, value: &Symbt3ManifestOracleLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.row_count);
+    push_usize(out, value.component_count);
+    push_usize(out, value.coordinate_count);
+    push_bytes(out, value.coordinate_ordering.as_bytes());
+}
+
+fn encode_symbt3_source_column_layout(out: &mut Vec<u8>, value: &Symbt3SourceColumnLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.component_count);
+    push_usize(out, value.coordinate_count);
+    push_bytes(out, value.source_column_ordering.as_bytes());
+    push_bytes(out, value.root_binding_policy.as_bytes());
+}
+
+fn encode_symbt3_manifest_component_layout(
+    out: &mut Vec<u8>,
+    value: &Symbt3ManifestComponentLayout,
+) {
+    out.push(symbt3_manifest_component_kind_code(value.kind));
+    push_usize(out, value.coordinate_len);
+    push_usize(out, value.source_column_id);
+    push_usize(out, value.manifest_column_id);
+    out.push(symbt3_manifest_visibility_code(value.visibility));
+    out.push(symbt3_membership_mode_code(value.membership_mode));
+    push_bytes(out, value.padding_policy.as_bytes());
+}
+
+fn encode_symbt3_batch_manifest_layout(out: &mut Vec<u8>, value: &Symbt3BatchManifestLayout) {
+    out.extend_from_slice(value.version_marker);
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.batch_size);
+    push_usize(out, value.active_count);
+    out.push(symbt3_active_policy_code(value.active_policy));
+    encode_symbt3_manifest_oracle_layout(out, &value.manifest_oracle_layout);
+    encode_symbt3_source_column_layout(out, &value.source_column_layout);
+    push_usize(out, value.component_kinds.len());
+    for component in &value.component_kinds {
+        encode_symbt3_manifest_component_layout(out, component);
+    }
+    out.push(symbt3_commitment_scheme_code(value.commitment_scheme_id));
+    out.push(symbt3_manifest_root_policy_code(value.manifest_root_policy));
+    push_bytes(out, value.selector_evaluator.as_bytes());
+    push_bytes(out, value.padding_policy.as_bytes());
+}
+
+fn encode_symbt3_message_section_layout(out: &mut Vec<u8>, value: &Symbt3MessageSectionLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    out.push(symbt3_message_section_kind_code(value.section_kind));
+    push_usize(out, value.coordinate_offset);
+    push_usize(out, value.coordinate_len);
+    out.push(symbt3_message_algebra_type_code(value.algebra_type));
+    out.push(symbt3_message_visibility_code(value.visibility));
+    out.push(symbt3_message_binding_mode_code(value.binding_mode));
+}
+
+fn encode_symbt3_message_column_binding(out: &mut Vec<u8>, value: &Symbt3MessageColumnBinding) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.round_index);
+    push_usize(out, value.message_coordinate_offset);
+    push_usize(out, value.trace_column_id);
+    push_usize(out, value.trace_coordinate_offset);
+    push_usize(out, value.coordinate_len);
+    out.push(symbt3_message_binding_mode_code(value.binding_mode));
+}
+
+fn encode_symbt3_round_message_layout(out: &mut Vec<u8>, value: &Symbt3RoundMessageLayout) {
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.round_index);
+    push_usize(out, value.row_count);
+    push_usize(out, value.message_len);
+    push_usize(out, value.packed_field_len);
+    push_bytes(out, value.coordinate_axis.as_bytes());
+    push_bytes(out, value.section_axis.as_bytes());
+    push_usize(out, value.sections.len());
+    for section in &value.sections {
+        encode_symbt3_message_section_layout(out, section);
+    }
+    push_usize(out, value.source_column_bindings.len());
+    for binding in &value.source_column_bindings {
+        encode_symbt3_message_column_binding(out, binding);
+    }
+    push_usize(out, value.trace_column_bindings.len());
+    for binding in &value.trace_column_bindings {
+        encode_symbt3_message_column_binding(out, binding);
+    }
+}
+
+fn encode_symbt3_message_semantic_layout(out: &mut Vec<u8>, value: &Symbt3MessageSemanticLayout) {
+    out.extend_from_slice(value.version_marker);
+    out.extend_from_slice(&value.layout_version.to_le_bytes());
+    push_usize(out, value.round_count);
+    push_usize(out, value.round_layouts.len());
+    for round in &value.round_layouts {
+        encode_symbt3_round_message_layout(out, round);
+    }
+    out.extend_from_slice(&value.challenge_schedule_version.to_le_bytes());
+    out.extend_from_slice(&value.message_oracle_layout_digest);
+    out.extend_from_slice(&value.algebra_law_digest);
+    out.extend_from_slice(&value.gr1cs_layout_digest);
+    out.extend_from_slice(&value.ajtai_layout_digest);
+    out.extend_from_slice(&value.norm_range_layout_digest);
+    out.extend_from_slice(&value.manifest_layout_digest);
+    push_bytes(out, value.selector_evaluator.as_bytes());
+    push_bytes(out, value.padding_policy.as_bytes());
+    out.push(symbt3_message_semantic_mode_code(value.semantic_mode));
+}
+
 fn encode_symbt3_r1cs_evaluator_layout(out: &mut Vec<u8>, value: &Symbt3R1csEvaluatorLayout) {
     out.extend_from_slice(&value.layout_version.to_le_bytes());
     push_bytes(out, value.field_id.as_bytes());
@@ -9389,6 +10593,306 @@ fn read_symbt3_ajtai_norm_range_layout(
         selector_evaluator,
         padding_policy,
         range_mode,
+    })
+}
+
+fn read_symbt3_manifest_oracle_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3ManifestOracleLayout, BatchedCpError> {
+    Ok(Symbt3ManifestOracleLayout {
+        layout_version: read_u64(bytes, pos)?,
+        row_count: read_usize(bytes, pos)?,
+        component_count: read_usize(bytes, pos)?,
+        coordinate_count: read_usize(bytes, pos)?,
+        coordinate_ordering: read_static_str(bytes, pos, "item-component-coordinate")?,
+    })
+}
+
+fn read_symbt3_source_column_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3SourceColumnLayout, BatchedCpError> {
+    Ok(Symbt3SourceColumnLayout {
+        layout_version: read_u64(bytes, pos)?,
+        component_count: read_usize(bytes, pos)?,
+        coordinate_count: read_usize(bytes, pos)?,
+        source_column_ordering: read_static_str(bytes, pos, "item-component-coordinate")?,
+        root_binding_policy: read_static_str(bytes, pos, "digest-coordinate-boundary-v1")?,
+    })
+}
+
+fn read_symbt3_manifest_component_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3ManifestComponentLayout, BatchedCpError> {
+    let kind = symbt3_manifest_component_kind_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let coordinate_len = read_usize(bytes, pos)?;
+    let source_column_id = read_usize(bytes, pos)?;
+    let manifest_column_id = read_usize(bytes, pos)?;
+    let visibility = symbt3_manifest_visibility_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let membership_mode = symbt3_membership_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3ManifestComponentLayout {
+        kind,
+        coordinate_len,
+        source_column_id,
+        manifest_column_id,
+        visibility,
+        membership_mode,
+        padding_policy: read_static_str(bytes, pos, "selector-zero-padded-tail")?,
+    })
+}
+
+fn read_symbt3_batch_manifest_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3BatchManifestLayout, BatchedCpError> {
+    let marker_end = pos
+        .checked_add(8)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    let marker = bytes
+        .get(*pos..marker_end)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    if marker != b"SYMBT3H\0" {
+        return Err(BatchedCpError::InvalidSemanticRelationContext);
+    }
+    *pos = marker_end;
+    let layout_version = read_u64(bytes, pos)?;
+    let batch_size = read_usize(bytes, pos)?;
+    let active_count = read_usize(bytes, pos)?;
+    let active_policy = symbt3_active_policy_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let manifest_oracle_layout = read_symbt3_manifest_oracle_layout(bytes, pos)?;
+    let source_column_layout = read_symbt3_source_column_layout(bytes, pos)?;
+    let component_count = read_usize(bytes, pos)?;
+    let mut component_kinds = Vec::with_capacity(component_count);
+    for _ in 0..component_count {
+        component_kinds.push(read_symbt3_manifest_component_layout(bytes, pos)?);
+    }
+    let commitment_scheme_id = symbt3_commitment_scheme_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let manifest_root_policy = symbt3_manifest_root_policy_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3BatchManifestLayout {
+        version_marker: b"SYMBT3H\0",
+        layout_version,
+        batch_size,
+        active_count,
+        active_policy,
+        manifest_oracle_layout,
+        source_column_layout,
+        component_kinds,
+        commitment_scheme_id,
+        manifest_root_policy,
+        selector_evaluator: read_static_str(
+            bytes,
+            pos,
+            "prefix-active-valid-component-selector-v1",
+        )?,
+        padding_policy: read_static_str(bytes, pos, "selector-zero-padded-tail")?,
+    })
+}
+
+fn read_symbt3_message_section_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3MessageSectionLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let section_kind = symbt3_message_section_kind_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let coordinate_offset = read_usize(bytes, pos)?;
+    let coordinate_len = read_usize(bytes, pos)?;
+    let algebra_type = symbt3_message_algebra_type_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let visibility = symbt3_message_visibility_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    let binding_mode = symbt3_message_binding_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3MessageSectionLayout {
+        layout_version,
+        section_kind,
+        coordinate_offset,
+        coordinate_len,
+        algebra_type,
+        visibility,
+        binding_mode,
+    })
+}
+
+fn read_symbt3_message_column_binding(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3MessageColumnBinding, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let round_index = read_usize(bytes, pos)?;
+    let message_coordinate_offset = read_usize(bytes, pos)?;
+    let trace_column_id = read_usize(bytes, pos)?;
+    let trace_coordinate_offset = read_usize(bytes, pos)?;
+    let coordinate_len = read_usize(bytes, pos)?;
+    let binding_mode = symbt3_message_binding_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3MessageColumnBinding {
+        layout_version,
+        round_index,
+        message_coordinate_offset,
+        trace_column_id,
+        trace_coordinate_offset,
+        coordinate_len,
+        binding_mode,
+    })
+}
+
+fn read_symbt3_round_message_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3RoundMessageLayout, BatchedCpError> {
+    let layout_version = read_u64(bytes, pos)?;
+    let round_index = read_usize(bytes, pos)?;
+    let row_count = read_usize(bytes, pos)?;
+    let message_len = read_usize(bytes, pos)?;
+    let packed_field_len = read_usize(bytes, pos)?;
+    let coordinate_axis = read_static_str(bytes, pos, "item-packed-message-coordinate")?;
+    let section_axis = read_static_str(bytes, pos, "typed-round-message-section")?;
+    let section_count = read_usize(bytes, pos)?;
+    let mut sections = Vec::with_capacity(section_count);
+    for _ in 0..section_count {
+        sections.push(read_symbt3_message_section_layout(bytes, pos)?);
+    }
+    let source_binding_count = read_usize(bytes, pos)?;
+    let mut source_column_bindings = Vec::with_capacity(source_binding_count);
+    for _ in 0..source_binding_count {
+        source_column_bindings.push(read_symbt3_message_column_binding(bytes, pos)?);
+    }
+    let trace_binding_count = read_usize(bytes, pos)?;
+    let mut trace_column_bindings = Vec::with_capacity(trace_binding_count);
+    for _ in 0..trace_binding_count {
+        trace_column_bindings.push(read_symbt3_message_column_binding(bytes, pos)?);
+    }
+    Ok(Symbt3RoundMessageLayout {
+        layout_version,
+        round_index,
+        row_count,
+        message_len,
+        packed_field_len,
+        coordinate_axis,
+        section_axis,
+        sections,
+        source_column_bindings,
+        trace_column_bindings,
+    })
+}
+
+fn read_symbt3_message_semantic_layout(
+    bytes: &[u8],
+    pos: &mut usize,
+) -> Result<Symbt3MessageSemanticLayout, BatchedCpError> {
+    let marker_end = pos
+        .checked_add(8)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    let marker = bytes
+        .get(*pos..marker_end)
+        .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    if marker != b"SYMBT3I\0" {
+        return Err(BatchedCpError::InvalidSemanticRelationContext);
+    }
+    *pos = marker_end;
+    let layout_version = read_u64(bytes, pos)?;
+    let round_count = read_usize(bytes, pos)?;
+    let round_layout_count = read_usize(bytes, pos)?;
+    let mut round_layouts = Vec::with_capacity(round_layout_count);
+    for _ in 0..round_layout_count {
+        round_layouts.push(read_symbt3_round_message_layout(bytes, pos)?);
+    }
+    let challenge_schedule_version = read_u64(bytes, pos)?;
+    let message_oracle_layout_digest = read_digest(bytes, pos)?;
+    let algebra_law_digest = read_digest(bytes, pos)?;
+    let gr1cs_layout_digest = read_digest(bytes, pos)?;
+    let ajtai_layout_digest = read_digest(bytes, pos)?;
+    let norm_range_layout_digest = read_digest(bytes, pos)?;
+    let manifest_layout_digest = read_digest(bytes, pos)?;
+    let selector_evaluator =
+        read_static_str(bytes, pos, "prefix-active-message-coordinate-selector-v1")?;
+    let padding_policy = read_static_str(bytes, pos, "selector-zero-padded-tail")?;
+    let semantic_mode = symbt3_message_semantic_mode_from_code(
+        *bytes
+            .get(*pos)
+            .ok_or(BatchedCpError::InvalidSemanticRelationContext)?,
+    )
+    .ok_or(BatchedCpError::InvalidSemanticRelationContext)?;
+    *pos += 1;
+    Ok(Symbt3MessageSemanticLayout {
+        version_marker: b"SYMBT3I\0",
+        layout_version,
+        round_count,
+        round_layouts,
+        challenge_schedule_version,
+        message_oracle_layout_digest,
+        algebra_law_digest,
+        gr1cs_layout_digest,
+        ajtai_layout_digest,
+        norm_range_layout_digest,
+        manifest_layout_digest,
+        selector_evaluator,
+        padding_policy,
+        semantic_mode,
     })
 }
 

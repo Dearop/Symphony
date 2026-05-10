@@ -569,13 +569,16 @@ Implementation requirements:
 
 Current submilestone:
 
-- `SYMBT3-G` extends the non-authoritative algebraic blocks with a versioned
-  Ajtai norm/range layout. The default development profile uses
+- `SYMBT3-I` extends the non-authoritative algebraic blocks with a versioned
+  CP message-semantic layout. The cumulative development profile
+  still includes the `SYMBT3-G` Ajtai norm/range layout, using
   `RqNegacyclicConvolutionV1` for folded GR1CS product residuals,
   `RingCoefficientActionV1` for ring/module beta action, and
   `DirectDevMatrixVectorV1` for the folded Ajtai map check. It adds
   `DirectDevDenseProjectionV1` and `DirectSignedRangeDevV1` as development
-  projection/range evidence for the folded Ajtai opening.
+  projection/range evidence for the folded Ajtai opening, and now adds
+  `Symbt3BatchManifestLayoutV1` for typed manifest/source membership, and now
+  adds `Symbt3MessageSemanticLayoutV1` for typed message-to-trace binding.
 - `relation_id` is stable relation metadata only; message roots and folded
   public output values are instance data.
 - `relation_id` binds `Symbt3RingModuleLayout` and `AjtaiCommitLayoutV1`,
@@ -583,16 +586,18 @@ Current submilestone:
   dimensions, beta encoding, Ajtai indexed evaluator id, and commit layout
   version. It also binds `Symbt3R1csEvaluatorLayoutV1` and
   `Symbt3Gr1csResidualLayoutV1`, `Symbt3AlgebraLawV1`,
-  `Symbt3AjtaiLinearAlgebraLayoutV1`, and
-  `Symbt3AjtaiNormRangeLayoutV1`, and
+  `Symbt3AjtaiLinearAlgebraLayoutV1`,
+  `Symbt3AjtaiNormRangeLayoutV1`, `Symbt3BatchManifestLayoutV1`, and
+  `Symbt3MessageSemanticLayoutV1`,
   `Symbt3FoldedGr1csProductResidualLayoutV1`, including matrix/evaluator
   digest, public/witness wire layout, sparse term encoding, Ajtai matrix-vector
-  evaluator id, projection/range evaluator ids, coordinate grouping, product
-  law, beta action, selector layout, padding policy, and version.
+  evaluator id, projection/range evaluator ids, manifest/source component
+  layout, coordinate grouping, product law, beta action, selector layout,
+  padding policy, and version.
 - `folding_transcript_digest` binds `relation_id`, the input/public-boundary
-  digest, source assignment roots, source Ajtai opening roots, source
-  commitment boundary, message-oracle roots, WHIR parameter digest, batch size,
-  and active count.
+  digest, batch manifest root, source assignment roots, source Ajtai opening
+  roots, source commitment boundary, message-oracle roots, WHIR parameter
+  digest, batch size, and active count.
 - `proof_public_statement_digest` additionally binds folded public-input,
   commitment, evaluation, declared algebraic accumulator, folded Ajtai
   opening/commitment boundary, folded-GR1CS boundary digest, and output-bound
@@ -614,6 +619,18 @@ Current submilestone:
   checks the projected coefficients with `DirectSignedRangeDevV1` under a
   relation-bound bound. This is development check-field range evidence, not
   full integer/mod-q lattice range authority.
+- `SYMBT3-H` adds typed source/manifest membership. The first development
+  profile binds a typed batch manifest root, manifest layout digest, and
+  source-column layout digest, and checks
+  `Source(T,K,C) = Manifest(T,K,C)` for active public/input-side source
+  coordinates and digest/root boundary coordinates inside the same single
+  SYMBT3 table. This is not byte transcript reconstruction.
+- `SYMBT3-I` adds typed CP message semantic validity. The first development
+  profile binds a message-semantic layout digest, treats round-message roots as
+  the CP message commitment boundary, derives prefix round challenges outside
+  the relation, and checks typed message-to-trace equality inside the same
+  single SYMBT3 table. The checked values are algebraic packed message
+  coordinates, not canonical message bytes, FS openings, or digest-body tables.
 - The development proof also commits to source-R1CS residual columns computed
   from setup-bound sparse evaluator metadata and source assignment roots, and
   folded-GR1CS boundary residual columns.
@@ -629,8 +646,8 @@ Current submilestone:
   reduction, and soundness treatment.
 - Cryptographic roots/digests are public-boundary data and are not folded as
   linear algebraic coordinates.
-- `SYMBT3-G` remains non-authoritative and non-ZK; full monomial embedding
-  range authority, manifest membership, CP message semantic validity,
+- `SYMBT3-I` remains non-authoritative and non-ZK; full monomial embedding
+  range authority, production sumcheck transcript authority,
   production integer/lattice `R_q` reduction semantics, and final WHIR/Σ-IOP
   soundness analysis are future SYMBT3 blocks.
 
@@ -746,6 +763,65 @@ These numbers remain architecture/proof-shape measurements for a
 non-authoritative development path, not product public-verifier performance
 claims.
 
+SYMBT3-H adds the typed manifest/source membership development layout and
+profile benchmark:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_h_vs_k"
+```
+
+The benchmark reports manifest component count, manifest coordinate count,
+membership challenge count, and the same one-proof architecture metrics. The
+required structural guard remains:
+
+```text
+top_level_whir_proof_count = 1
+family_columnar_subproof_count = 0
+backend_table_count = 1
+```
+
+SYMBT3-H architecture benchmark, recorded on 2026-05-07 with the command
+above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | manifest components | manifest coordinates | membership challenges |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 1 | 735,652 | 25.906 ms | 13.482 ms | 28 | 28 | 11 | 16 | 7 | 1,218 | 1 |
+| 2 | 1 | 0 | 1 | 801,784 | 44.825 ms | 19.817 ms | 34 | 34 | 12 | 17 | 7 | 2,436 | 1 |
+
+These numbers remain architecture/proof-shape measurements for a
+non-authoritative development path, not product public-verifier performance
+claims. The manifest membership table is intentionally typed algebraic/oracle
+boundary data; it does not reintroduce byte transcript reconstruction.
+
+SYMBT3-I adds the CP message semantic development layout and profile
+benchmark:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_i_vs_k"
+```
+
+The benchmark reports message round count, message coordinate count,
+message-to-trace binding count, sumcheck transition count, and the same
+one-proof architecture metrics. The required structural guard remains:
+
+```text
+top_level_whir_proof_count = 1
+family_columnar_subproof_count = 0
+backend_table_count = 1
+```
+
+SYMBT3-I architecture benchmark, recorded on 2026-05-07 with the command
+above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | message rounds | message coordinates | message-to-trace bindings | sumcheck transitions |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 1 | 798,232 | 45.866 ms | 19.563 ms | 34 | 34 | 12 | 17 | 1 | 3,928 | 3,928 | 3,928 |
+| 2 | 1 | 0 | 1 | 1,100,993 | 169.30 ms | 51.712 ms | 40 | 40 | 13 | 19 | 1 | 7,856 | 7,856 | 7,856 |
+
+SYMBT3-I is a semantic coverage benchmark for the non-authoritative
+development path. It is not a product public-verifier benchmark, and it does
+not reintroduce byte transcript/hash/opening reconstruction.
+
 Acceptance criteria:
 
 - `SYMBT3` verifies honest `k = 1, 2, 4` same-shape batches with one CP proof
@@ -757,7 +833,10 @@ Acceptance criteria:
   proofs are not accepted as a `SYMBT3` proof.
 - Negative tests cover shape mismatch, public-boundary mismatch, message-oracle
   root tampering, challenge tampering, beta tampering, folded-output tampering,
-  Ajtai algebra tampering, and R1CS/GR1CS residual tampering.
+  Ajtai algebra tampering, R1CS/GR1CS residual tampering, batch-manifest-root
+  tampering, active source/manifest coordinate tampering, message semantic
+  layout tampering, message oracle coordinate tampering, and message-to-trace
+  binding tampering.
 - Benchmark output shows a small constant number of WHIR proof objects and a
   proof size/verifier time trajectory consistent with the CP-SNARK north star.
 

@@ -572,24 +572,29 @@ verification still uses the authoritative monolithic typed CP route.
 `SYMBT3` is the CP-aware WHIR oracle relation target. It is not a byte/table
 proof path: CP round messages `M_i(T,U_i)` are modeled as first-class
 committed message oracles, their roots are public CP commitments, and
-Fiat-Shamir challenges are derived outside the proven relation. `SYMBT3-G`
+Fiat-Shamir challenges are derived outside the proven relation. `SYMBT3-I`
 extends the first algebraic blocks with a versioned `Symbt3AlgebraLawV1`,
 `RqNegacyclicConvolutionV1` product law, `RingCoefficientActionV1` beta
 action, a versioned `Symbt3AjtaiLinearAlgebraLayoutV1`, folded Ajtai opening
 algebra, source-R1CS residual columns, folded-GR1CS boundary residual columns,
 and a direct folded GR1CS product-residual zero-check over public folded `L/R/O`
 ring-coordinate chunks. It also adds `Symbt3AjtaiNormRangeLayoutV1` with a
-direct development projection/range predicate over the folded Ajtai opening.
+direct development projection/range predicate over the folded Ajtai opening,
+and `Symbt3BatchManifestLayoutV1` with typed source/manifest membership
+columns. It also adds `Symbt3MessageSemanticLayoutV1`, which treats round
+messages as typed algebraic oracle coordinates and binds those coordinates to
+the SYMBT3 trace columns consumed by the development folding checks.
 `relation_id` binds stable relation metadata plus the
 `Symbt3RingModuleLayout`, `AjtaiCommitLayoutV1`,
 `Symbt3R1csEvaluatorLayoutV1`, `Symbt3Gr1csResidualLayoutV1`,
 `Symbt3AlgebraLawV1`, `Symbt3AjtaiLinearAlgebraLayoutV1`, and
-`Symbt3AjtaiNormRangeLayoutV1`, and
+`Symbt3AjtaiNormRangeLayoutV1`, `Symbt3BatchManifestLayoutV1`,
+`Symbt3MessageSemanticLayoutV1`, and
 `Symbt3FoldedGr1csProductResidualLayoutV1`;
 `folding_transcript_digest` binds the input/public boundary, source assignment
-roots, source Ajtai opening roots, source commitment boundary, message oracle
-roots, WHIR parameter digest, batch size, and active count before beta is
-sampled. Folded/output fields are bound later through
+roots, source Ajtai opening roots, source commitment boundary, batch manifest
+root, message oracle roots, WHIR parameter digest, batch size, and active count
+before beta is sampled. Folded/output fields are bound later through
 `proof_public_statement_digest`, so they do not change beta.
 
 The WHIR development hook still produces one top-level proof object with no
@@ -621,14 +626,34 @@ opening. The first profile uses `DirectDevDenseProjectionV1`, which projects
 declared signed bound inside the same single SYMBT3 table. Monomial embedding
 range authority is not enabled yet.
 
-`SYMBT3-G` proves only development algebraic consistency and a development
-check-field range predicate: it does not prove full integer/mod-q lattice range
-authority, manifest membership, CP message semantic validity, hash-byte
+`SYMBT3-H` adds typed manifest/source-column membership. The first profile
+builds a typed manifest row per active batch item with public-input,
+source-commitment, source-evaluation, accumulator-boundary, source-Ajtai
+commitment, source-assignment-root, and message-root components. The same
+single SYMBT3 table opens source and manifest columns and checks their
+membership residual; metadata binds the batch manifest root, manifest layout
+digest, and source-column layout digest into the input-side challenge path.
+This is a typed algebraic/oracle boundary check, not a byte transcript replay.
+
+`SYMBT3-I` adds CP message semantic validity for the development profile. The
+message semantic layout records typed round-message sections and
+message-to-trace bindings. The prover must commit message-oracle rows whose
+roots match the public CP message roots; the same single SYMBT3 table opens
+message-value, trace-value, externally derived round-challenge, and
+message-semantic residual columns. The checked relation binds
+`Message(T,U) = Trace(T,K,C)` and verifies the challenge columns against
+verifier-derived prefix round challenges. This remains algebraic/oracle
+binding, not byte transcript reconstruction.
+
+`SYMBT3-I` proves only development algebraic consistency, development
+check-field range evidence, typed source/manifest membership, and typed
+message-to-trace oracle binding: it does not prove full integer/mod-q lattice
+range authority, production sumcheck transcript authority, hash-byte
 construction, FS openings, message digest byte equality, canonical
 message-section reconstruction, zero knowledge, or final production WHIR/Σ-IOP
 soundness.
 
-`SYMBT3-G` is explicitly `NonAuthoritativeDevelopment` and `NonZkDevelopment`.
+`SYMBT3-I` is explicitly `NonAuthoritativeDevelopment` and `NonZkDevelopment`.
 Product public verification still uses the authoritative monolithic typed CP
 route until `SYMBT3` has all CP algebraic blocks, negative coverage, a
 zero-knowledge story, and benchmark data. The first `symbt3_c_vs_k`
@@ -668,6 +693,21 @@ proof bytes, 8.6389 ms prove mean, and 8.0182 ms verify mean. The projection
 mode is `DirectDevDenseProjectionV1`, range mode is `DirectSignedRangeDevV1`,
 and monomial embedding is disabled. These remain development-path architecture
 numbers, not product public-verifier performance claims.
+The first `symbt3_h_vs_k` benchmark adds the typed manifest/source membership
+layout while preserving the one-proof guard: `k=1` measured 735,652 proof
+bytes, 25.906 ms prove mean, and 13.482 ms verify mean; `k=2` measured 801,784
+proof bytes, 44.825 ms prove mean, and 19.817 ms verify mean. It reports 7
+manifest component kinds and 1 membership challenge; manifest coordinates are
+1,218 for `k=1` and 2,436 for `k=2`. These remain development-path
+architecture numbers, not product public-verifier performance claims.
+The first `symbt3_i_vs_k` benchmark target adds typed CP message semantic
+columns while preserving the one-proof guard: `k=1` measured 798,232 proof
+bytes, 45.866 ms prove mean, and 19.563 ms verify mean; `k=2` measured
+1,100,993 proof bytes, 169.30 ms prove mean, and 51.712 ms verify mean. It
+reports 1 message round, 3,928 message coordinates for `k=1`, 7,856 for
+`k=2`, and matching message-to-trace binding and sumcheck transition counts.
+These remain development-path architecture numbers; the hard guard is still
+one top-level WHIR proof object and zero family-columnar subproofs.
 WHIR can now prove and verify a `SYMBTC1` product-domain oracle proof for this
 context: one WHIR commitment to the canonical batch oracle and one
 transcript-bound opening, plus openings for all verifier-known packed oracle

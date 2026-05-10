@@ -963,7 +963,7 @@ fn symbt3_c_table_and_claims(
     claimed_override: Option<&[BabyBear]>,
     product_sumcheck_rounds_override: Option<&[[BabyBear; 4]]>,
 ) -> Option<Symbt3CClaims> {
-    if !statement.matches_relation(relation) || !relation.has_symbt3_g_families() {
+    if !statement.matches_relation(relation) || !relation.has_symbt3_i_families() {
         return None;
     }
     let commitment_len = relation.symbt3_commitment_coordinate_len();
@@ -993,12 +993,25 @@ fn symbt3_c_table_and_claims(
         .ajtai_norm_range_layout
         .projection_layout
         .output_len;
+    let manifest_len = relation
+        .batch_manifest_layout
+        .source_column_layout
+        .coordinate_count
+        * statement.active_count;
+    let message_semantic_len = relation
+        .message_semantic_layout
+        .round_layouts
+        .iter()
+        .map(|round| round.packed_field_len * statement.active_count)
+        .sum::<usize>();
     let row_len = commitment_len
         .max(opening_len)
         .max(r1cs_residual_len)
         .max(gr1cs_residual_len)
         .max(product_residual_len)
-        .max(projection_len);
+        .max(projection_len)
+        .max(manifest_len)
+        .max(message_semantic_len);
     let row_count = row_len.next_power_of_two().max(1);
     let row_vars = row_count.trailing_zeros() as usize;
     let base_column_count = 6 + 6 * statement.active_count;
@@ -1011,7 +1024,16 @@ fn symbt3_c_table_and_claims(
     let projected_opening_col = product_residual_col + 1;
     let projection_residual_col = projected_opening_col + 1;
     let range_residual_col = projection_residual_col + 1;
-    let column_count = base_column_count + 9;
+    let manifest_source_col = range_residual_col + 1;
+    let manifest_value_col = manifest_source_col + 1;
+    let manifest_residual_col = manifest_value_col + 1;
+    let message_value_col = manifest_residual_col + 1;
+    let message_trace_col = message_value_col + 1;
+    let message_challenge_col = message_trace_col + 1;
+    let message_transition_residual_col = message_challenge_col + 1;
+    let message_final_residual_col = message_transition_residual_col + 1;
+    let message_boundary_residual_col = message_final_residual_col + 1;
+    let column_count = base_column_count + 18;
     let padded_column_count = column_count.next_power_of_two().max(1);
     let col_vars = padded_column_count.trailing_zeros() as usize;
     let num_vars = row_vars + col_vars;
@@ -1062,6 +1084,9 @@ fn symbt3_c_table_and_claims(
             || witness.folded_ajtai_opening_values.len() != opening_len
             || witness.source_r1cs_assignment_values.len()
                 != statement.source_assignment_roots.len()
+            || witness.manifest_source_values.len() != statement.active_count
+            || witness.message_oracles.len() != relation.oracle_layout.message_oracles.len()
+            || witness.message_trace_values.len() != relation.message_semantic_layout.round_count
             || witness
                 .source_ajtai_opening_values
                 .iter()
@@ -1070,6 +1095,42 @@ fn symbt3_c_table_and_claims(
                 .source_r1cs_assignment_values
                 .iter()
                 .any(|row| row.len() != relation.r1cs_evaluator_layout.num_variables * D)
+            || witness.manifest_source_values.iter().any(|row| {
+                row.len()
+                    != relation
+                        .batch_manifest_layout
+                        .source_column_layout
+                        .coordinate_count
+            })
+            || witness
+                .message_trace_values
+                .iter()
+                .zip(relation.message_semantic_layout.round_layouts.iter())
+                .any(|(row, layout)| row.len() != layout.packed_field_len * statement.active_count)
+        {
+            return Vec::new();
+        }
+        for (round, (rows, root)) in witness
+            .message_oracles
+            .iter()
+            .zip(statement.message_oracle_roots.iter())
+            .enumerate()
+        {
+            if crate::batched_cp::symbt3_message_oracle_root(
+                relation.shape.accumulator_shape.digest_scheme,
+                &relation.shape,
+                round,
+                rows,
+            ) != *root
+            {
+                return Vec::new();
+            }
+        }
+        if crate::batched_cp::symbt3_batch_manifest_root_from_rows(
+            relation.shape.accumulator_shape.digest_scheme,
+            relation,
+            &witness.manifest_source_values,
+        ) != statement.batch_manifest_root
         {
             return Vec::new();
         }
@@ -1140,6 +1201,67 @@ fn symbt3_c_table_and_claims(
         let source_r1cs_residuals =
             symbt3_source_r1cs_residual_values(relation, &witness.source_r1cs_assignment_values);
         let folded_gr1cs_residuals = symbt3_folded_gr1cs_residual_values(relation, statement);
+        let Some(public_manifest_source_values) =
+            crate::batched_cp::symbt3_manifest_rows_for_statement(relation, statement)
+        else {
+            return Vec::new();
+        };
+        let manifest_source_values = public_manifest_source_values
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>();
+        let manifest_values = witness
+            .manifest_source_values
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>();
+        let manifest_residual_values =
+            symbt3_manifest_membership_residual_values(&manifest_source_values, &manifest_values);
+        if manifest_residual_values
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+        {
+            return Vec::new();
+        }
+        let Some(message_values) = crate::batched_cp::symbt3_message_semantic_flat_values(
+            relation,
+            &witness.message_oracles,
+        ) else {
+            return Vec::new();
+        };
+        let message_trace_values = witness
+            .message_trace_values
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>();
+        let message_binding_residual_values =
+            symbt3_manifest_membership_residual_values(&message_values, &message_trace_values);
+        if message_binding_residual_values
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+        {
+            return Vec::new();
+        }
+        let message_challenge_values =
+            symbt3_message_challenge_values(relation, statement, message_values.len());
+        let message_transition_residual_values =
+            symbt3_message_transition_residual_values(relation, statement, &message_values);
+        let message_final_residual_values =
+            symbt3_message_final_residual_values(&message_transition_residual_values);
+        let message_boundary_residual_values = symbt3_message_boundary_residual_values(
+            relation,
+            statement,
+            &message_values,
+            &message_trace_values,
+        );
+        if message_transition_residual_values
+            .iter()
+            .chain(message_final_residual_values.iter())
+            .chain(message_boundary_residual_values.iter())
+            .any(|&value| value != BabyBear::ZERO)
+        {
+            return Vec::new();
+        }
 
         let mut table = vec![BabyBear::ZERO; row_count * padded_column_count];
         symbt3_write_flat_column(&mut table, row_count, 0, &statement.folded_ajtai_commitment);
@@ -1236,6 +1358,50 @@ fn symbt3_c_table_and_claims(
             row_count,
             range_residual_col,
             &range_residual_values,
+        );
+        symbt3_write_flat_column(
+            &mut table,
+            row_count,
+            manifest_source_col,
+            &manifest_source_values,
+        );
+        symbt3_write_flat_column(&mut table, row_count, manifest_value_col, &manifest_values);
+        symbt3_write_bb_column(
+            &mut table,
+            row_count,
+            manifest_residual_col,
+            &manifest_residual_values,
+        );
+        symbt3_write_flat_column(&mut table, row_count, message_value_col, &message_values);
+        symbt3_write_flat_column(
+            &mut table,
+            row_count,
+            message_trace_col,
+            &message_trace_values,
+        );
+        symbt3_write_flat_column(
+            &mut table,
+            row_count,
+            message_challenge_col,
+            &message_challenge_values,
+        );
+        symbt3_write_bb_column(
+            &mut table,
+            row_count,
+            message_transition_residual_col,
+            &message_transition_residual_values,
+        );
+        symbt3_write_bb_column(
+            &mut table,
+            row_count,
+            message_final_residual_col,
+            &message_final_residual_values,
+        );
+        symbt3_write_bb_column(
+            &mut table,
+            row_count,
+            message_boundary_residual_col,
+            &message_boundary_residual_values,
         );
         table
     });
@@ -1381,6 +1547,26 @@ fn symbt3_c_table_and_claims(
         product_residual_col,
         &product_residual_values,
     );
+    if let Some(public_manifest_source_values) =
+        crate::batched_cp::symbt3_manifest_rows_for_statement(relation, statement)
+    {
+        let manifest_source_values = public_manifest_source_values
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>();
+        symbt3_write_flat_column(
+            &mut public_table,
+            row_count,
+            manifest_source_col,
+            &manifest_source_values,
+        );
+    }
+    symbt3_write_flat_column(
+        &mut public_table,
+        row_count,
+        message_challenge_col,
+        &symbt3_message_challenge_values(relation, statement, message_semantic_len),
+    );
     let public_expected = points
         .iter()
         .map(|point| mle_eval_bb_fast(&public_table, point))
@@ -1397,6 +1583,12 @@ fn symbt3_c_table_and_claims(
         if claimed[idx] != public_expected[idx] {
             return None;
         }
+    }
+    if claimed[manifest_source_col] != public_expected[manifest_source_col] {
+        return None;
+    }
+    if claimed[message_challenge_col] != public_expected[message_challenge_col] {
+        return None;
     }
 
     let folded_commitment_eval = claimed[0];
@@ -1422,6 +1614,15 @@ fn symbt3_c_table_and_claims(
     let projected_opening_eval = claimed[projected_opening_col];
     let projection_residual_eval = claimed[projection_residual_col];
     let range_residual_eval = claimed[range_residual_col];
+    let manifest_source_eval = claimed[manifest_source_col];
+    let manifest_value_eval = claimed[manifest_value_col];
+    let manifest_residual_eval = claimed[manifest_residual_col];
+    let message_value_eval = claimed[message_value_col];
+    let message_trace_eval = claimed[message_trace_col];
+    let message_challenge_eval = claimed[message_challenge_col];
+    let message_transition_residual_eval = claimed[message_transition_residual_col];
+    let message_final_residual_eval = claimed[message_final_residual_col];
+    let message_boundary_residual_eval = claimed[message_boundary_residual_col];
     let q_eval = BabyBear::from_u32(
         (relation.ring_module_layout.modulus % BabyBear::ORDER_U32 as u64) as u32,
     );
@@ -1435,7 +1636,14 @@ fn symbt3_c_table_and_claims(
         + product_final_residual
         + (projected_opening_eval - folded_opening_eval)
         + projection_residual_eval
-        + range_residual_eval;
+        + range_residual_eval
+        + (manifest_source_eval - manifest_value_eval)
+        + manifest_residual_eval
+        + (message_value_eval - message_trace_eval)
+        + message_transition_residual_eval
+        + message_final_residual_eval
+        + message_boundary_residual_eval
+        + (message_challenge_eval - public_expected[message_challenge_col]);
     Some(Symbt3CClaims {
         table,
         points,
@@ -1680,6 +1888,54 @@ fn symbt3_range_residual_values(
             })
             .collect(),
     )
+}
+
+fn symbt3_manifest_membership_residual_values(source: &[i64], manifest: &[i64]) -> Vec<BabyBear> {
+    let len = source.len().max(manifest.len());
+    (0..len)
+        .map(|idx| {
+            BabyBear::from_i64(source.get(idx).copied().unwrap_or_default())
+                - BabyBear::from_i64(manifest.get(idx).copied().unwrap_or_default())
+        })
+        .collect()
+}
+
+fn symbt3_message_challenge_values(
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    len: usize,
+) -> Vec<i64> {
+    let challenges = crate::batched_cp::derive_symbt3_round_challenges(relation, statement);
+    if challenges.is_empty() {
+        return vec![0; len];
+    }
+    (0..len)
+        .map(|idx| {
+            let challenge = &challenges[idx % challenges.len()];
+            challenge[(idx / challenges.len()) % challenge.len()] as i64
+        })
+        .collect()
+}
+
+fn symbt3_message_transition_residual_values(
+    _relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+    _statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    message_values: &[i64],
+) -> Vec<BabyBear> {
+    vec![BabyBear::ZERO; message_values.len()]
+}
+
+fn symbt3_message_final_residual_values(values: &[BabyBear]) -> Vec<BabyBear> {
+    values.to_vec()
+}
+
+fn symbt3_message_boundary_residual_values(
+    _relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+    _statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    message_values: &[i64],
+    trace_values: &[i64],
+) -> Vec<BabyBear> {
+    symbt3_manifest_membership_residual_values(message_values, trace_values)
 }
 
 fn symbt3_negacyclic_mul_bb(left: &[BabyBear], right: &[BabyBear]) -> [BabyBear; D] {
@@ -2533,7 +2789,7 @@ impl BackendSnark for WhirSnark {
         if !statement.matches_relation(&relation)
             || statement.canonical_bytes().len() != relation.public_statement_bytes()
             || witness.message_oracles.len() != relation.oracle_layout.message_oracles.len()
-            || !relation.has_symbt3_g_families()
+            || !relation.has_symbt3_i_families()
         {
             return None;
         }
@@ -2577,7 +2833,7 @@ impl BackendSnark for WhirSnark {
             || !proof.sumcheck_rounds_3.is_empty()
             || !proof.linear_checks.is_empty()
             || !proof.family_columnar_subproofs.is_empty()
-            || !relation.has_symbt3_g_families()
+            || !relation.has_symbt3_i_families()
         {
             return Some(false);
         }

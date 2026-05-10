@@ -14,11 +14,13 @@ use symphony::batched_cp::{
 use symphony::batched_cp::{
     derive_symbt3_batch_challenge_digest, derive_symbt3_beta_coefficients,
     derive_symbt3_beta_ring_elements, derive_symbt3_public_statement_digest,
+    derive_symbt3_round_challenges, symbt3_batch_manifest_root_from_rows,
+    symbt3_manifest_rows_for_statement, symbt3_message_semantic_rows_from_oracles,
     BatchedCpSemanticColumnarV2Description, BatchedCpSemanticFamilyColumnarV2Description,
     BatchedCpSemanticFamilyTraceV2, BatchedCpSemanticRelationV2Description,
     BatchedCpSemanticTraceV2, BatchedCpSymbt3RelationDescription, BatchedCpSymbt3SetupDescriptor,
-    Symbt3BetaActionId, Symbt3ProductLawId, Symbt3ProjectionMode, Symbt3RangeMode,
-    Symbt3RingActionSide,
+    Symbt3BetaActionId, Symbt3MessageSectionKind, Symbt3ProductLawId, Symbt3ProjectionMode,
+    Symbt3RangeMode, Symbt3RingActionSide,
 };
 use symphony::commitment::Commitment;
 #[cfg(feature = "whir")]
@@ -944,6 +946,47 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
             .digest(bucket.shape.accumulator_shape.digest_scheme)
     );
     assert_eq!(
+        public.batch_manifest_layout_digest,
+        relation
+            .batch_manifest_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.source_column_layout_digest,
+        relation
+            .batch_manifest_layout
+            .source_column_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.message_semantic_layout_digest,
+        relation
+            .message_semantic_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        relation.message_semantic_layout.round_count,
+        bucket.shape.accumulator_shape.num_rounds
+    );
+    assert!(relation
+        .message_semantic_layout
+        .round_layouts
+        .iter()
+        .all(|round| round.sections.iter().all(|section| !matches!(
+            section.section_kind,
+            Symbt3MessageSectionKind::BoundaryDigestCoordinate
+        ))));
+    let manifest_rows =
+        symbt3_manifest_rows_for_statement(&relation, &public).expect("SYMBT3-H manifest rows");
+    assert_eq!(
+        public.batch_manifest_root,
+        symbt3_batch_manifest_root_from_rows(
+            bucket.shape.accumulator_shape.digest_scheme,
+            &relation,
+            &manifest_rows
+        )
+    );
+    assert_eq!(
         public.projection_layout_digest,
         relation
             .ajtai_norm_range_layout
@@ -1003,8 +1046,8 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
             .digest(bucket.shape.accumulator_shape.digest_scheme)
     );
     assert!(
-        relation.has_symbt3_g_families(),
-        "SYMBT3-G residual families must be enabled in the development relation"
+        relation.has_symbt3_i_families(),
+        "SYMBT3-I message-semantic residual families must be enabled in the development relation"
     );
 
     let relation_description = relation.to_relation_description();
@@ -1054,6 +1097,24 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert_ne!(
         challenge_digest,
         derive_symbt3_batch_challenge_digest(&relation, &changed_public)
+    );
+    let round_challenges = derive_symbt3_round_challenges(&relation, &public);
+    let mut changed_later_round = public.clone();
+    if changed_later_round.message_oracle_roots.len() > 1 {
+        changed_later_round.message_oracle_roots[1][0] ^= 1;
+        let changed_round_challenges =
+            derive_symbt3_round_challenges(&relation, &changed_later_round);
+        assert_eq!(
+            round_challenges[0], changed_round_challenges[0],
+            "prefix round challenge 0 must not depend on later message roots"
+        );
+    }
+    let mut changed_manifest_root = public.clone();
+    changed_manifest_root.batch_manifest_root[0] ^= 1;
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_manifest_root),
+        "batch manifest root is input-side data and must affect beta"
     );
     let mut changed_folded = public.clone();
     changed_folded.folded_public_input[0] += 1;
@@ -1212,6 +1273,43 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
         derive_symbt3_batch_challenge_digest(&changed_norm_range_relation, &public),
         "SYMBT3-G norm/range semantics are part of the folding protocol identity"
     );
+    let mut changed_manifest_relation = relation.clone();
+    changed_manifest_relation
+        .batch_manifest_layout
+        .component_kinds[0]
+        .coordinate_len += 1;
+    changed_manifest_relation
+        .batch_manifest_layout
+        .manifest_oracle_layout
+        .coordinate_count += 1;
+    changed_manifest_relation
+        .batch_manifest_layout
+        .source_column_layout
+        .coordinate_count += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_manifest_relation.relation_id()
+    );
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_manifest_relation, &public),
+        "SYMBT3-H manifest/source layout semantics are part of the folding protocol identity"
+    );
+    let mut changed_message_relation = relation.clone();
+    changed_message_relation
+        .message_semantic_layout
+        .round_layouts[0]
+        .sections[0]
+        .coordinate_len += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_message_relation.relation_id()
+    );
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_message_relation, &public),
+        "SYMBT3-I message semantic layout is part of the folding protocol identity"
+    );
     let mut changed_product_layout_relation = relation.clone();
     changed_product_layout_relation
         .folded_gr1cs_product_residual_layout
@@ -1273,8 +1371,13 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
             .unwrap();
     let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
     let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+    assert_eq!(
+        witness.message_trace_values,
+        symbt3_message_semantic_rows_from_oracles(&decoded_relation, &witness.message_oracles)
+            .expect("SYMBT3-I message semantic rows")
+    );
     let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
-        .expect("SYMBT3-D2 proof");
+        .expect("SYMBT3-I proof");
     assert_eq!(
         public.folded_ajtai_commitment,
         decoded_relation.derive_ring_folded_commitment_boundary(&public)
@@ -1282,7 +1385,7 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     assert_eq!(
         proof.family_columnar_subproofs.len(),
         0,
-        "SYMBT3-D2 must stay one top-level proof object, not a table-proof forest"
+        "SYMBT3-I must stay one top-level proof object, not a table-proof forest"
     );
     assert!(!proof.sumcheck_rounds_4.is_empty());
     assert_eq!(
@@ -1317,6 +1420,25 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
         <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_source_assignment)
             .is_none(),
         "source assignment tampering must be root-bound before beta and residual checks"
+    );
+    let mut bad_manifest = witness.clone();
+    bad_manifest.manifest_source_values[0][0] += 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_manifest).is_none(),
+        "SYMBT3-H manifest/source coordinate tampering must reject"
+    );
+    let mut bad_message = witness.clone();
+    bad_message.message_oracles[0][0][0] ^= 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_message).is_none(),
+        "SYMBT3-I message oracle coordinate tampering must reject against the public message root"
+    );
+    let mut bad_message_trace = witness.clone();
+    bad_message_trace.message_trace_values[0][0] += 1;
+    assert!(
+        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_message_trace)
+            .is_none(),
+        "SYMBT3-I message-to-trace binding tampering must reject"
     );
 
     let mut changed_output = public.clone();
@@ -1407,6 +1529,23 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     );
     assert_eq!(
         <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_root, &proof),
+        Some(false)
+    );
+    let mut changed_message_layout = public.clone();
+    changed_message_layout.message_semantic_layout_digest[0] ^= 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_message_layout, &proof),
+        Some(false)
+    );
+    let mut changed_manifest_root = public.clone();
+    changed_manifest_root.batch_manifest_root[0] ^= 1;
+    assert_ne!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_manifest_root),
+        "SYMBT3-H batch manifest root must be input-side beta-bound"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_manifest_root, &proof),
         Some(false)
     );
 
