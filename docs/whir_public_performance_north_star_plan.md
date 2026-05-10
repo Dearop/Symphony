@@ -569,16 +569,16 @@ Implementation requirements:
 
 Current submilestone:
 
-- `SYMBT3-I` extends the non-authoritative algebraic blocks with a versioned
-  CP message-semantic layout. The cumulative development profile
-  still includes the `SYMBT3-G` Ajtai norm/range layout, using
+- `SYMBT3-J` extends the non-authoritative cumulative profile with a
+  production-shaped Ajtai norm/range layer. The cumulative development profile
+  uses
   `RqNegacyclicConvolutionV1` for folded GR1CS product residuals,
   `RingCoefficientActionV1` for ring/module beta action, and
-  `DirectDevMatrixVectorV1` for the folded Ajtai map check. It adds
-  `DirectDevDenseProjectionV1` and `DirectSignedRangeDevV1` as development
-  projection/range evidence for the folded Ajtai opening, and now adds
-  `Symbt3BatchManifestLayoutV1` for typed manifest/source membership, and now
-  adds `Symbt3MessageSemanticLayoutV1` for typed message-to-trace binding.
+  `DirectDevMatrixVectorV1` for the folded Ajtai map check. It uses
+  `StructuredBlockProjectionV1` and `MonomialEmbeddingRangeV1` for folded
+  Ajtai norm/range evidence, `Symbt3BatchManifestLayoutV1` for typed
+  manifest/source membership, and `Symbt3MessageSemanticLayoutV1` with native
+  message-oracle views for typed CP message semantics.
 - `relation_id` is stable relation metadata only; message roots and folded
   public output values are instance data.
 - `relation_id` binds `Symbt3RingModuleLayout` and `AjtaiCommitLayoutV1`,
@@ -614,23 +614,26 @@ Current submilestone:
   `A * f_fold = c_fold` under the declared algebra law. Source item map
   consistency `A * f_T = c_T` is deferred as an optional heavier source-opening
   authority block.
-- `SYMBT3-G` adds folded Ajtai norm/range evidence. The first development
-  profile projects `flatten(f_fold)` with `DirectDevDenseProjectionV1` and
-  checks the projected coefficients with `DirectSignedRangeDevV1` under a
-  relation-bound bound. This is development check-field range evidence, not
-  full integer/mod-q lattice range authority.
+- `SYMBT3-J` upgrades folded Ajtai norm/range evidence. The default cumulative
+  profile projects `flatten(f_fold)` with `StructuredBlockProjectionV1`, using
+  relation-bound `{0, +/-1}` entry distribution metadata, and checks projected
+  values with `MonomialEmbeddingRangeV1` plus representative-policy metadata.
+  This is production-shaped check-field range evidence, not full integer/mod-q
+  lattice range authority.
 - `SYMBT3-H` adds typed source/manifest membership. The first development
   profile binds a typed batch manifest root, manifest layout digest, and
   source-column layout digest, and checks
   `Source(T,K,C) = Manifest(T,K,C)` for active public/input-side source
   coordinates and digest/root boundary coordinates inside the same single
   SYMBT3 table. This is not byte transcript reconstruction.
-- `SYMBT3-I` adds typed CP message semantic validity. The first development
+- `SYMBT3-I2` adds native typed CP message-oracle views. The development
   profile binds a message-semantic layout digest, treats round-message roots as
   the CP message commitment boundary, derives prefix round challenges outside
-  the relation, and checks typed message-to-trace equality inside the same
-  single SYMBT3 table. The checked values are algebraic packed message
-  coordinates, not canonical message bytes, FS openings, or digest-body tables.
+  the relation, and maps message-derived trace values directly to
+  `M_r(T,U)` coordinates through relation-bound view metadata. Pure
+  `Message = Trace` copy columns and per-coordinate copy residuals are not
+  allocated. The checked values are algebraic message-view coordinates, not
+  canonical message bytes, FS openings, or digest-body tables.
 - The development proof also commits to source-R1CS residual columns computed
   from setup-bound sparse evaluator metadata and source assignment roots, and
   folded-GR1CS boundary residual columns.
@@ -646,10 +649,10 @@ Current submilestone:
   reduction, and soundness treatment.
 - Cryptographic roots/digests are public-boundary data and are not folded as
   linear algebraic coordinates.
-- `SYMBT3-I` remains non-authoritative and non-ZK; full monomial embedding
-  range authority, production sumcheck transcript authority,
-  production integer/lattice `R_q` reduction semantics, and final WHIR/Σ-IOP
-  soundness analysis are future SYMBT3 blocks.
+- `SYMBT3-J` remains non-authoritative and non-ZK; final integer/lattice `R_q`
+  representative authority, production sumcheck transcript authority,
+  zero-knowledge masking, and final WHIR/Σ-IOP soundness analysis are future
+  SYMBT3 blocks.
 
 Architecture benchmark baseline, recorded on 2026-05-06 with:
 
@@ -725,6 +728,39 @@ These numbers remain architecture/proof-shape measurements for a
 non-authoritative development path, not product public-verifier performance
 claims.
 
+SYMBT3-K adds an authority soundness profile gate. `Symbt3AuthorityProfileV1`
+is canonical profile metadata binding the enabled A/B/D/D2/E/F/G/H/I2/J2
+families, WHIR parameter digest, folding/proof/public-statement schedules,
+ring/module algebra, production projection/range/monomial policy, challenge
+policy, Fiat-Shamir domain separators, union-bound family count, accepted
+shape, ZK status, and authority status. This is not a product routing
+promotion. The current development proof verifies on the SYMBT3 dev hook but
+fails the K authority gate until the relation has a non-development soundness
+profile and ZK/product authority policy.
+
+SYMBT3-K2 splits the authority-style gates:
+
+- `ResearchAuthorityCandidate`: explicitly `SoundnessCandidate`,
+  `NonZkDevelopment`, `ResearchOnly`, and `product_eligible=false`. A current
+  SYMBT3-J2 proof may pass this gate when all semantic families are enabled and
+  the production-shaped projection/range profile is used.
+- `ProductAuthority`: product-eligible, non-research, ZK-required, and still
+  rejects non-ZK profiles, development range/projection modes, missing J2
+  families, and development soundness profiles.
+
+Product `verify_public` still does not route through SYMBT3.
+
+Opt-in comparison command:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_research_vs_product_verify_vs_k"
+```
+
+This benchmark reports product `verify_public` and
+`verify_symbt3_research_authority_candidate` side by side. It requires the
+`ResearchAuthorityCandidate` profile, does not require `ProductAuthority`, and
+keeps the research verifier explicitly non-ZK/research-only/product-ineligible.
+
 SYMBT3-F adds the explicit Ajtai commitment/opening linear-algebra layout and
 profile benchmark:
 
@@ -793,16 +829,15 @@ non-authoritative development path, not product public-verifier performance
 claims. The manifest membership table is intentionally typed algebraic/oracle
 boundary data; it does not reintroduce byte transcript reconstruction.
 
-SYMBT3-I adds the CP message semantic development layout and profile
-benchmark:
+SYMBT3-I2 adds native CP message-oracle views and a profile benchmark:
 
 ```text
-SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_i_vs_k"
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_i2_vs_k"
 ```
 
-The benchmark reports message round count, message coordinate count,
-message-to-trace binding count, sumcheck transition count, and the same
-one-proof architecture metrics. The required structural guard remains:
+The benchmark reports message round count, native message-view coordinate
+count, message-to-trace binding count, semantic sumcheck transition count, and
+the same one-proof architecture metrics. The required structural guard remains:
 
 ```text
 top_level_whir_proof_count = 1
@@ -810,17 +845,90 @@ family_columnar_subproof_count = 0
 backend_table_count = 1
 ```
 
-SYMBT3-I architecture benchmark, recorded on 2026-05-07 with the command
-above:
+SYMBT3-I baseline architecture benchmark, recorded on 2026-05-07:
 
 | k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | message rounds | message coordinates | message-to-trace bindings | sumcheck transitions |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 1 | 1 | 0 | 1 | 798,232 | 45.866 ms | 19.563 ms | 34 | 34 | 12 | 17 | 1 | 3,928 | 3,928 | 3,928 |
 | 2 | 1 | 0 | 1 | 1,100,993 | 169.30 ms | 51.712 ms | 40 | 40 | 13 | 19 | 1 | 7,856 | 7,856 | 7,856 |
 
-SYMBT3-I is a semantic coverage benchmark for the non-authoritative
+SYMBT3-I2 native-view architecture benchmark, recorded on 2026-05-10 with the
+command above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | message rounds | message view coordinates | message-to-trace bindings | semantic transitions |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 1 | 747,339 | 26.364 ms | 14.600 ms | 29 | 29 | 11 | 16 | 1 | 6 | 0 | 2 |
+| 2 | 1 | 0 | 1 | 807,042 | 48.393 ms | 20.824 ms | 35 | 35 | 12 | 17 | 1 | 12 | 0 | 2 |
+
+SYMBT3-I2 is a semantic coverage benchmark for the non-authoritative
 development path. It is not a product public-verifier benchmark, and it does
 not reintroduce byte transcript/hash/opening reconstruction.
+
+SYMBT3-J adds the production-shaped structured projection and monomial
+embedding norm/range profile:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_j_vs_k"
+```
+
+The benchmark reports projection mode, projection block length, range mode,
+bound, projection output length, monomial-embedding status, message view
+coordinates, message-to-trace binding count, and the same one-proof
+architecture metrics. The required structural guard remains:
+
+```text
+top_level_whir_proof_count = 1
+family_columnar_subproof_count = 0
+backend_table_count = 1
+```
+
+SYMBT3-J structured-range architecture benchmark, recorded on 2026-05-10 with
+the command above:
+
+| k | top-level WHIR proofs | family-columnar subproofs | backend tables | proof bytes | prove mean | verify mean | opened field elements | PCS/Merkle opening proxy | sumcheck rounds | max oracle `num_vars` | projection mode | block len | range mode | bound B | projection output length | monomial embedding | message view coordinates | message-to-trace bindings |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---:|---:|---|---:|---:|
+| 1 | 1 | 0 | 1 | 735,444 | 27.255 ms | 14.270 ms | 30 | 30 | 11 | 16 | `StructuredBlockProjectionV1` | 64 | `MonomialEmbeddingRangeV1` | 8,388,608 | 3 | enabled | 6 | 0 |
+| 2 | 1 | 0 | 1 | 801,392 | 49.314 ms | 20.919 ms | 36 | 36 | 12 | 17 | `StructuredBlockProjectionV1` | 64 | `MonomialEmbeddingRangeV1` | 16,777,216 | 3 | enabled | 12 | 0 |
+
+SYMBT3-J is a semantic coverage benchmark for the non-authoritative
+development path. It replaces the default direct development projection/range
+scaffold, but it is not a final integer/mod-q lattice soundness claim and is
+not a product public-verifier benchmark.
+
+SYMBT3-J2 adds verifier-cost attribution and range-evaluator compression while
+keeping the same default J semantics. The deterministic monomial-witness and
+representative-residual columns are no longer committed table columns; they are
+virtual consequences of the projected opening and relation-bound range layout.
+This reduces the default `k=2` profile from `num_vars=18` to `num_vars=17` and
+from 38 to 36 opened field elements while preserving:
+
+```text
+top_level_whir_proof_count = 1
+family_columnar_subproof_count = 0
+backend_table_count = 1
+message_to_trace_binding_count = 0
+```
+
+Differential J2 profiles, recorded on 2026-05-10 with:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_j"
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "symbt3_i2"
+```
+
+| profile | k | projection mode | range mode | projection output len | monomial coords | proof bytes | verify mean | num_vars | opened fields |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| `symbt3_i2` | 2 | `DirectDevDenseProjectionV1` | `DirectSignedRangeDevV1` | 192 | 0 | 804,220 | 21.320 ms | 17 | 36 |
+| `symbt3_j_projection_only` | 2 | `StructuredBlockProjectionV1` | `DirectSignedRangeDevV1` | 3 | 0 | 800,217 | 20.927 ms | 17 | 36 |
+| `symbt3_j_monomial_only` | 2 | `DirectDevDenseProjectionV1` | `MonomialEmbeddingRangeV1` | 192 | 192 | 804,892 | 21.322 ms | 17 | 36 |
+| `symbt3_j_full` | 2 | `StructuredBlockProjectionV1` | `MonomialEmbeddingRangeV1` | 3 | 3 | 802,471 | 21.227 ms | 17 | 36 |
+
+The first attribution run shows the previous J overhead was primarily the
+extra oracle variable caused by committed range/debug columns, not local
+projection arithmetic. For `symbt3_j_full` at `k=2`, the single-shot verifier
+profile reported approximately 22.1 ms total, 7.5 ms in WHIR/PCS opening
+verification, 2.0 ms in transcript/public-statement work, and 12.6 ms in the
+combined sumcheck/final-constraint evaluator.
 
 Acceptance criteria:
 
@@ -835,8 +943,9 @@ Acceptance criteria:
   root tampering, challenge tampering, beta tampering, folded-output tampering,
   Ajtai algebra tampering, R1CS/GR1CS residual tampering, batch-manifest-root
   tampering, active source/manifest coordinate tampering, message semantic
-  layout tampering, message oracle coordinate tampering, and message-to-trace
-  binding tampering.
+  layout tampering, message oracle coordinate tampering, message view layout
+  tampering, structured projection/range/monomial layout tampering, and
+  projected opening/range witness tampering.
 - Benchmark output shows a small constant number of WHIR proof objects and a
   proof size/verifier time trajectory consistent with the CP-SNARK north star.
 

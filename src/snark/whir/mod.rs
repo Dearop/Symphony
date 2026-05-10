@@ -417,6 +417,25 @@ pub struct WhirProof {
     pub is_output: bool,
 }
 
+/// Coarse verifier attribution for the non-authoritative SYMBT3 development
+/// path. These counters are intended for architecture benchmarks; they are not
+/// part of the public proof envelope.
+#[derive(Debug, Clone, Default)]
+pub struct Symbt3VerifierCostProfile {
+    pub verify_total_ms: f64,
+    pub verify_whir_pcs_ms: f64,
+    pub verify_merkle_or_pcs_opening_ms: f64,
+    pub verify_transcript_ms: f64,
+    pub verify_sumcheck_rounds_ms: f64,
+    pub verify_final_constraint_eval_ms: f64,
+    pub verify_manifest_membership_eval_ms: f64,
+    pub verify_message_view_eval_ms: f64,
+    pub verify_projection_eval_ms: f64,
+    pub verify_monomial_embedding_eval_ms: f64,
+    pub verify_representative_eval_ms: f64,
+    pub verify_ajtai_eval_ms: f64,
+}
+
 /// Private opening slice for one structured batched-CP semantic block.
 ///
 /// This is a development/audit helper for the non-authoritative SYMBTC1 path;
@@ -1000,10 +1019,7 @@ fn symbt3_c_table_and_claims(
         * statement.active_count;
     let message_semantic_len = relation
         .message_semantic_layout
-        .round_layouts
-        .iter()
-        .map(|round| round.packed_field_len * statement.active_count)
-        .sum::<usize>();
+        .view_coordinate_count(statement.active_count);
     let row_len = commitment_len
         .max(opening_len)
         .max(r1cs_residual_len)
@@ -1024,16 +1040,12 @@ fn symbt3_c_table_and_claims(
     let projected_opening_col = product_residual_col + 1;
     let projection_residual_col = projected_opening_col + 1;
     let range_residual_col = projection_residual_col + 1;
-    let manifest_source_col = range_residual_col + 1;
+    let monomial_residual_col = range_residual_col + 1;
+    let manifest_source_col = monomial_residual_col + 1;
     let manifest_value_col = manifest_source_col + 1;
     let manifest_residual_col = manifest_value_col + 1;
     let message_value_col = manifest_residual_col + 1;
-    let message_trace_col = message_value_col + 1;
-    let message_challenge_col = message_trace_col + 1;
-    let message_transition_residual_col = message_challenge_col + 1;
-    let message_final_residual_col = message_transition_residual_col + 1;
-    let message_boundary_residual_col = message_final_residual_col + 1;
-    let column_count = base_column_count + 18;
+    let column_count = base_column_count + 14;
     let padded_column_count = column_count.next_power_of_two().max(1);
     let col_vars = padded_column_count.trailing_zeros() as usize;
     let num_vars = row_vars + col_vars;
@@ -1086,7 +1098,6 @@ fn symbt3_c_table_and_claims(
                 != statement.source_assignment_roots.len()
             || witness.manifest_source_values.len() != statement.active_count
             || witness.message_oracles.len() != relation.oracle_layout.message_oracles.len()
-            || witness.message_trace_values.len() != relation.message_semantic_layout.round_count
             || witness
                 .source_ajtai_opening_values
                 .iter()
@@ -1102,11 +1113,6 @@ fn symbt3_c_table_and_claims(
                         .source_column_layout
                         .coordinate_count
             })
-            || witness
-                .message_trace_values
-                .iter()
-                .zip(relation.message_semantic_layout.round_layouts.iter())
-                .any(|(row, layout)| row.len() != layout.packed_field_len * statement.active_count)
         {
             return Vec::new();
         }
@@ -1172,6 +1178,7 @@ fn symbt3_c_table_and_claims(
             return Vec::new();
         };
         let Some(projection_residual_values) = symbt3_projection_residual_values(
+            relation,
             &witness.folded_ajtai_opening_values,
             &projected_opening_values,
         ) else {
@@ -1182,8 +1189,15 @@ fn symbt3_c_table_and_claims(
         else {
             return Vec::new();
         };
+        let Some(monomial_residual_values) =
+            symbt3_monomial_embedding_residual_values(relation, &projected_opening_values)
+        else {
+            return Vec::new();
+        };
         if range_residual_values
             .iter()
+            .chain(projection_residual_values.iter())
+            .chain(monomial_residual_values.iter())
             .any(|&value| value != BabyBear::ZERO)
         {
             return Vec::new();
@@ -1223,45 +1237,11 @@ fn symbt3_c_table_and_claims(
         {
             return Vec::new();
         }
-        let Some(message_values) = crate::batched_cp::symbt3_message_semantic_flat_values(
-            relation,
-            &witness.message_oracles,
-        ) else {
+        let Some(message_values) =
+            crate::batched_cp::symbt3_message_view_flat_values(relation, &witness.message_oracles)
+        else {
             return Vec::new();
         };
-        let message_trace_values = witness
-            .message_trace_values
-            .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect::<Vec<_>>();
-        let message_binding_residual_values =
-            symbt3_manifest_membership_residual_values(&message_values, &message_trace_values);
-        if message_binding_residual_values
-            .iter()
-            .any(|&value| value != BabyBear::ZERO)
-        {
-            return Vec::new();
-        }
-        let message_challenge_values =
-            symbt3_message_challenge_values(relation, statement, message_values.len());
-        let message_transition_residual_values =
-            symbt3_message_transition_residual_values(relation, statement, &message_values);
-        let message_final_residual_values =
-            symbt3_message_final_residual_values(&message_transition_residual_values);
-        let message_boundary_residual_values = symbt3_message_boundary_residual_values(
-            relation,
-            statement,
-            &message_values,
-            &message_trace_values,
-        );
-        if message_transition_residual_values
-            .iter()
-            .chain(message_final_residual_values.iter())
-            .chain(message_boundary_residual_values.iter())
-            .any(|&value| value != BabyBear::ZERO)
-        {
-            return Vec::new();
-        }
 
         let mut table = vec![BabyBear::ZERO; row_count * padded_column_count];
         symbt3_write_flat_column(&mut table, row_count, 0, &statement.folded_ajtai_commitment);
@@ -1359,6 +1339,12 @@ fn symbt3_c_table_and_claims(
             range_residual_col,
             &range_residual_values,
         );
+        symbt3_write_bb_column(
+            &mut table,
+            row_count,
+            monomial_residual_col,
+            &monomial_residual_values,
+        );
         symbt3_write_flat_column(
             &mut table,
             row_count,
@@ -1373,36 +1359,6 @@ fn symbt3_c_table_and_claims(
             &manifest_residual_values,
         );
         symbt3_write_flat_column(&mut table, row_count, message_value_col, &message_values);
-        symbt3_write_flat_column(
-            &mut table,
-            row_count,
-            message_trace_col,
-            &message_trace_values,
-        );
-        symbt3_write_flat_column(
-            &mut table,
-            row_count,
-            message_challenge_col,
-            &message_challenge_values,
-        );
-        symbt3_write_bb_column(
-            &mut table,
-            row_count,
-            message_transition_residual_col,
-            &message_transition_residual_values,
-        );
-        symbt3_write_bb_column(
-            &mut table,
-            row_count,
-            message_final_residual_col,
-            &message_final_residual_values,
-        );
-        symbt3_write_bb_column(
-            &mut table,
-            row_count,
-            message_boundary_residual_col,
-            &message_boundary_residual_values,
-        );
         table
     });
     if table.as_ref().is_some_and(Vec::is_empty) {
@@ -1561,12 +1517,6 @@ fn symbt3_c_table_and_claims(
             &manifest_source_values,
         );
     }
-    symbt3_write_flat_column(
-        &mut public_table,
-        row_count,
-        message_challenge_col,
-        &symbt3_message_challenge_values(relation, statement, message_semantic_len),
-    );
     let public_expected = points
         .iter()
         .map(|point| mle_eval_bb_fast(&public_table, point))
@@ -1585,9 +1535,6 @@ fn symbt3_c_table_and_claims(
         }
     }
     if claimed[manifest_source_col] != public_expected[manifest_source_col] {
-        return None;
-    }
-    if claimed[message_challenge_col] != public_expected[message_challenge_col] {
         return None;
     }
 
@@ -1611,18 +1558,12 @@ fn symbt3_c_table_and_claims(
     let product_eq_final = mle_eval_bb_fast(&product_eq_table, &product_row_point);
     let product_final_residual = product_final_claim - product_eq_final * product_residual_final;
     let _opened_product_columns = (product_l_final, product_r_final, product_o_final);
-    let projected_opening_eval = claimed[projected_opening_col];
     let projection_residual_eval = claimed[projection_residual_col];
     let range_residual_eval = claimed[range_residual_col];
+    let monomial_residual_eval = claimed[monomial_residual_col];
     let manifest_source_eval = claimed[manifest_source_col];
     let manifest_value_eval = claimed[manifest_value_col];
     let manifest_residual_eval = claimed[manifest_residual_col];
-    let message_value_eval = claimed[message_value_col];
-    let message_trace_eval = claimed[message_trace_col];
-    let message_challenge_eval = claimed[message_challenge_col];
-    let message_transition_residual_eval = claimed[message_transition_residual_col];
-    let message_final_residual_eval = claimed[message_final_residual_col];
-    let message_boundary_residual_eval = claimed[message_boundary_residual_col];
     let q_eval = BabyBear::from_u32(
         (relation.ring_module_layout.modulus % BabyBear::ORDER_U32 as u64) as u32,
     );
@@ -1634,16 +1575,11 @@ fn symbt3_c_table_and_claims(
         + source_r1cs_residual_eval
         + folded_gr1cs_residual_eval
         + product_final_residual
-        + (projected_opening_eval - folded_opening_eval)
         + projection_residual_eval
         + range_residual_eval
+        + monomial_residual_eval
         + (manifest_source_eval - manifest_value_eval)
-        + manifest_residual_eval
-        + (message_value_eval - message_trace_eval)
-        + message_transition_residual_eval
-        + message_final_residual_eval
-        + message_boundary_residual_eval
-        + (message_challenge_eval - public_expected[message_challenge_col]);
+        + manifest_residual_eval;
     Some(Symbt3CClaims {
         table,
         points,
@@ -1838,29 +1774,86 @@ fn symbt3_folded_ajtai_projection_values(
     folded_opening: &[i64],
 ) -> Option<Vec<i64>> {
     let layout = &relation.ajtai_norm_range_layout.projection_layout;
-    if layout.projection_mode != crate::batched_cp::Symbt3ProjectionMode::DirectDevDenseProjectionV1
-        || layout.input_len != folded_opening.len()
-        || layout.output_len != folded_opening.len()
-    {
+    if layout.input_len != folded_opening.len() {
         return None;
     }
-    Some(folded_opening.to_vec())
+    match layout.projection_mode {
+        crate::batched_cp::Symbt3ProjectionMode::DirectDevDenseProjectionV1 => {
+            if layout.output_len != folded_opening.len() {
+                return None;
+            }
+            Some(folded_opening.to_vec())
+        }
+        crate::batched_cp::Symbt3ProjectionMode::StructuredBlockProjectionV1 => {
+            symbt3_structured_projection_values(layout, folded_opening)
+        }
+    }
 }
 
 fn symbt3_projection_residual_values(
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
     folded_opening: &[i64],
     projected_opening: &[i64],
 ) -> Option<Vec<BabyBear>> {
-    if folded_opening.len() != projected_opening.len() {
+    let expected = symbt3_folded_ajtai_projection_values(relation, folded_opening)?;
+    if expected.len() != projected_opening.len() {
         return None;
     }
     Some(
         projected_opening
             .iter()
-            .zip(folded_opening.iter())
+            .zip(expected.iter())
             .map(|(&projected, &folded)| BabyBear::from_i64(projected) - BabyBear::from_i64(folded))
             .collect(),
     )
+}
+
+fn symbt3_structured_projection_values(
+    layout: &crate::batched_cp::Symbt3ProjectionLayout,
+    folded_opening: &[i64],
+) -> Option<Vec<i64>> {
+    if layout.block_len == 0
+        || layout.rows_per_block == 0
+        || layout.entry_distribution
+            != crate::batched_cp::Symbt3ProjectionEntryDistribution::ZeroPlusMinusOneV1
+    {
+        return None;
+    }
+    let block_count = layout.input_len.div_ceil(layout.block_len);
+    if layout.output_len != block_count * layout.rows_per_block {
+        return None;
+    }
+    let mut out = Vec::with_capacity(layout.output_len);
+    for block in 0..block_count {
+        let block_start = block * layout.block_len;
+        for row in 0..layout.rows_per_block {
+            let mut acc = 0i64;
+            for j in 0..layout.block_len {
+                let idx = block_start + j;
+                if idx >= folded_opening.len() {
+                    break;
+                }
+                let sign = symbt3_projection_entry_sign(layout, row, j);
+                acc = acc.saturating_add(sign.saturating_mul(folded_opening[idx]));
+            }
+            out.push(acc);
+        }
+    }
+    Some(out)
+}
+
+fn symbt3_projection_entry_sign(
+    layout: &crate::batched_cp::Symbt3ProjectionLayout,
+    row: usize,
+    coeff: usize,
+) -> i64 {
+    let idx = (row.wrapping_mul(layout.block_len).wrapping_add(coeff))
+        % layout.projection_matrix_digest.len();
+    match layout.projection_matrix_digest[idx] % 3 {
+        0 => 0,
+        1 => 1,
+        _ => -1,
+    }
 }
 
 fn symbt3_range_residual_values(
@@ -1868,11 +1861,7 @@ fn symbt3_range_residual_values(
     projected_opening: &[i64],
 ) -> Option<Vec<BabyBear>> {
     let layout = &relation.ajtai_norm_range_layout;
-    if layout.range_mode != crate::batched_cp::Symbt3RangeMode::DirectSignedRangeDevV1
-        || layout.range_layout.range_mode
-            != crate::batched_cp::Symbt3RangeMode::DirectSignedRangeDevV1
-        || layout.range_layout.bound_b != layout.norm_bound
-    {
+    if layout.range_layout.bound_b != layout.norm_bound {
         return None;
     }
     let bound = layout.norm_bound;
@@ -1890,6 +1879,48 @@ fn symbt3_range_residual_values(
     )
 }
 
+fn symbt3_monomial_embedding_residual_values(
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+    projected_opening: &[i64],
+) -> Option<Vec<BabyBear>> {
+    let layout = &relation.ajtai_norm_range_layout;
+    if layout.range_mode == crate::batched_cp::Symbt3RangeMode::DirectSignedRangeDevV1
+        && layout.range_layout.range_mode
+            == crate::batched_cp::Symbt3RangeMode::DirectSignedRangeDevV1
+    {
+        return Some(vec![BabyBear::ZERO; projected_opening.len()]);
+    }
+    if layout.range_mode != crate::batched_cp::Symbt3RangeMode::MonomialEmbeddingRangeV1
+        || layout.range_layout.range_mode
+            != crate::batched_cp::Symbt3RangeMode::MonomialEmbeddingRangeV1
+        || layout.range_layout.table_digest
+            != Some(layout.monomial_embedding_layout.table_polynomial_digest)
+        || layout.range_layout.monomial_embedding_layout_digest
+            != Some(
+                layout
+                    .monomial_embedding_layout
+                    .digest(relation.shape.accumulator_shape.digest_scheme),
+            )
+        || layout.representative_layout.canonical_rep_policy
+            != crate::batched_cp::Symbt3CanonicalRepPolicy::CenteredModQRepresentativeV1
+        || layout.representative_layout.signed_range != layout.norm_bound
+    {
+        return None;
+    }
+    Some(
+        projected_opening
+            .iter()
+            .map(|&projected| {
+                if projected.saturating_abs() <= layout.norm_bound {
+                    BabyBear::ZERO
+                } else {
+                    BabyBear::ONE
+                }
+            })
+            .collect(),
+    )
+}
+
 fn symbt3_manifest_membership_residual_values(source: &[i64], manifest: &[i64]) -> Vec<BabyBear> {
     let len = source.len().max(manifest.len());
     (0..len)
@@ -1898,44 +1929,6 @@ fn symbt3_manifest_membership_residual_values(source: &[i64], manifest: &[i64]) 
                 - BabyBear::from_i64(manifest.get(idx).copied().unwrap_or_default())
         })
         .collect()
-}
-
-fn symbt3_message_challenge_values(
-    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
-    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
-    len: usize,
-) -> Vec<i64> {
-    let challenges = crate::batched_cp::derive_symbt3_round_challenges(relation, statement);
-    if challenges.is_empty() {
-        return vec![0; len];
-    }
-    (0..len)
-        .map(|idx| {
-            let challenge = &challenges[idx % challenges.len()];
-            challenge[(idx / challenges.len()) % challenge.len()] as i64
-        })
-        .collect()
-}
-
-fn symbt3_message_transition_residual_values(
-    _relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
-    _statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
-    message_values: &[i64],
-) -> Vec<BabyBear> {
-    vec![BabyBear::ZERO; message_values.len()]
-}
-
-fn symbt3_message_final_residual_values(values: &[BabyBear]) -> Vec<BabyBear> {
-    values.to_vec()
-}
-
-fn symbt3_message_boundary_residual_values(
-    _relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
-    _statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
-    message_values: &[i64],
-    trace_values: &[i64],
-) -> Vec<BabyBear> {
-    symbt3_manifest_membership_residual_values(message_values, trace_values)
 }
 
 fn symbt3_negacyclic_mul_bb(left: &[BabyBear], right: &[BabyBear]) -> [BabyBear; D] {
@@ -2820,50 +2813,7 @@ impl BackendSnark for WhirSnark {
         statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
         proof: &Self::Proof,
     ) -> Option<bool> {
-        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
-            vk.relation.context.as_ref()?,
-        )
-        .ok()?;
-        if !statement.matches_relation(&relation)
-            || statement.canonical_bytes().len() != relation.public_statement_bytes()
-        {
-            return Some(false);
-        }
-        if proof.is_output
-            || !proof.sumcheck_rounds_3.is_empty()
-            || !proof.linear_checks.is_empty()
-            || !proof.family_columnar_subproofs.is_empty()
-            || !relation.has_symbt3_i_families()
-        {
-            return Some(false);
-        }
-        let Some(claims) = symbt3_c_table_and_claims(
-            &vk.seed,
-            &relation,
-            statement,
-            None,
-            Some(&proof.private_opening_evals),
-            Some(&proof.sumcheck_rounds_4),
-        ) else {
-            return Some(false);
-        };
-        if proof.num_vars != claims.num_vars
-            || proof.evaluations != claims.evaluations
-            || proof.z_eval != claims.z_eval
-            || claims
-                .evaluations
-                .iter()
-                .any(|&eval| eval != BabyBear::ZERO)
-        {
-            return Some(false);
-        }
-        Some(whir_verify_opening_multi(
-            &vk.seed,
-            claims.num_vars,
-            &proof.whir_pcs_proof,
-            &claims.points,
-            &proof.private_opening_evals,
-        ))
+        verify_symbt3_batched_cp_with_profile(vk, statement, proof, None)
     }
 
     fn prove_typed_output(
@@ -2991,6 +2941,162 @@ impl BackendSnark for WhirSnark {
         }
         verify_cp(vk, instance, proof)
     }
+}
+
+impl WhirSnark {
+    /// Verify a SYMBT3 development proof and return coarse verifier-cost
+    /// attribution for architecture benchmarks.
+    #[must_use]
+    pub fn profile_symbt3_batched_cp_verifier(
+        vk: &WhirVerifyingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        proof: &WhirProof,
+    ) -> Option<(bool, Symbt3VerifierCostProfile)> {
+        let mut profile = Symbt3VerifierCostProfile::default();
+        let ok = verify_symbt3_batched_cp_with_profile(vk, statement, proof, Some(&mut profile))?;
+        Some((ok, profile))
+    }
+
+    /// Authority-profile gate for SYMBT3.
+    ///
+    /// This deliberately does not affect product routing. Current SYMBT3
+    /// development proofs fail this gate because the profile still requires a
+    /// production soundness/ZK posture before promotion.
+    #[must_use]
+    pub fn verify_symbt3_authority_profile(
+        vk: &WhirVerifyingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        proof: &WhirProof,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+    ) -> Option<bool> {
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            vk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        if !profile.accepts_statement_for_product_authority(&relation, statement) {
+            return Some(false);
+        }
+        verify_symbt3_batched_cp_with_profile(vk, statement, proof, None)
+    }
+
+    /// Research-only SYMBT3 authority-candidate gate.
+    ///
+    /// This permits non-ZK, non-product SYMBT3-J2 proofs to pass an
+    /// authority-style semantic gate for benchmarks and research comparisons
+    /// without making them product-route eligible.
+    #[must_use]
+    pub fn verify_symbt3_research_authority_candidate(
+        vk: &WhirVerifyingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        proof: &WhirProof,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+    ) -> Option<bool> {
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            vk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        if !profile.accepts_statement_for_research_authority_candidate(&relation, statement) {
+            return Some(false);
+        }
+        verify_symbt3_batched_cp_with_profile(vk, statement, proof, None)
+    }
+}
+
+fn elapsed_ms(start: std::time::Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1_000.0
+}
+
+fn verify_symbt3_batched_cp_with_profile(
+    vk: &WhirVerifyingKey,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    proof: &WhirProof,
+    mut profile: Option<&mut Symbt3VerifierCostProfile>,
+) -> Option<bool> {
+    let total_start = std::time::Instant::now();
+    let transcript_start = std::time::Instant::now();
+    let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+        vk.relation.context.as_ref()?,
+    )
+    .ok()?;
+    if !statement.matches_relation(&relation)
+        || statement.canonical_bytes().len() != relation.public_statement_bytes()
+    {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.verify_transcript_ms += elapsed_ms(transcript_start);
+            profile.verify_total_ms = elapsed_ms(total_start);
+        }
+        return Some(false);
+    }
+    if proof.is_output
+        || !proof.sumcheck_rounds_3.is_empty()
+        || !proof.linear_checks.is_empty()
+        || !proof.family_columnar_subproofs.is_empty()
+        || !relation.has_symbt3_i_families()
+    {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.verify_transcript_ms += elapsed_ms(transcript_start);
+            profile.verify_total_ms = elapsed_ms(total_start);
+        }
+        return Some(false);
+    }
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.verify_transcript_ms += elapsed_ms(transcript_start);
+    }
+
+    let constraint_start = std::time::Instant::now();
+    let Some(claims) = symbt3_c_table_and_claims(
+        &vk.seed,
+        &relation,
+        statement,
+        None,
+        Some(&proof.private_opening_evals),
+        Some(&proof.sumcheck_rounds_4),
+    ) else {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.verify_final_constraint_eval_ms += elapsed_ms(constraint_start);
+            profile.verify_total_ms = elapsed_ms(total_start);
+        }
+        return Some(false);
+    };
+    if let Some(profile) = profile.as_deref_mut() {
+        let elapsed = elapsed_ms(constraint_start);
+        profile.verify_final_constraint_eval_ms += elapsed;
+        profile.verify_sumcheck_rounds_ms += elapsed;
+        profile.verify_manifest_membership_eval_ms += 0.0;
+        profile.verify_message_view_eval_ms += 0.0;
+        profile.verify_projection_eval_ms += 0.0;
+        profile.verify_monomial_embedding_eval_ms += 0.0;
+        profile.verify_representative_eval_ms += 0.0;
+        profile.verify_ajtai_eval_ms += 0.0;
+    }
+    if proof.num_vars != claims.num_vars
+        || proof.evaluations != claims.evaluations
+        || proof.z_eval != claims.z_eval
+        || claims
+            .evaluations
+            .iter()
+            .any(|&eval| eval != BabyBear::ZERO)
+    {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.verify_total_ms = elapsed_ms(total_start);
+        }
+        return Some(false);
+    }
+    let pcs_start = std::time::Instant::now();
+    let ok = whir_verify_opening_multi(
+        &vk.seed,
+        claims.num_vars,
+        &proof.whir_pcs_proof,
+        &claims.points,
+        &proof.private_opening_evals,
+    );
+    if let Some(profile) = profile.as_deref_mut() {
+        let pcs_ms = elapsed_ms(pcs_start);
+        profile.verify_whir_pcs_ms += pcs_ms;
+        profile.verify_merkle_or_pcs_opening_ms += pcs_ms;
+        profile.verify_total_ms = elapsed_ms(total_start);
+    }
+    Some(ok)
 }
 
 // ---------------------------------------------------------------------------

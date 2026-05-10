@@ -15,12 +15,15 @@ use symphony::batched_cp::{
     derive_symbt3_batch_challenge_digest, derive_symbt3_beta_coefficients,
     derive_symbt3_beta_ring_elements, derive_symbt3_public_statement_digest,
     derive_symbt3_round_challenges, symbt3_batch_manifest_root_from_rows,
-    symbt3_manifest_rows_for_statement, symbt3_message_semantic_rows_from_oracles,
-    BatchedCpSemanticColumnarV2Description, BatchedCpSemanticFamilyColumnarV2Description,
-    BatchedCpSemanticFamilyTraceV2, BatchedCpSemanticRelationV2Description,
-    BatchedCpSemanticTraceV2, BatchedCpSymbt3RelationDescription, BatchedCpSymbt3SetupDescriptor,
-    Symbt3BetaActionId, Symbt3MessageSectionKind, Symbt3ProductLawId, Symbt3ProjectionMode,
-    Symbt3RangeMode, Symbt3RingActionSide,
+    symbt3_manifest_rows_for_statement, BatchedCpSemanticColumnarV2Description,
+    BatchedCpSemanticFamilyColumnarV2Description, BatchedCpSemanticFamilyTraceV2,
+    BatchedCpSemanticRelationV2Description, BatchedCpSemanticTraceV2,
+    BatchedCpSymbt3RelationDescription, BatchedCpSymbt3SetupDescriptor, Symbt3AuthorityProfile,
+    Symbt3AuthorityStatus, Symbt3BetaActionId, Symbt3CanonicalRepPolicy,
+    Symbt3FieldExtensionPolicy, Symbt3MessageSectionKind, Symbt3MessageSemanticMode,
+    Symbt3ProductLawId, Symbt3ProjectionEntryDistribution, Symbt3ProjectionMode, Symbt3RangeMode,
+    Symbt3RingActionSide, Symbt3RoutingStatus, Symbt3SoundnessStatus,
+    Symbt3SumcheckChallengePolicy, Symbt3ZkStatus,
 };
 use symphony::commitment::Commitment;
 #[cfg(feature = "whir")]
@@ -968,6 +971,34 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
         relation.message_semantic_layout.round_count,
         bucket.shape.accumulator_shape.num_rounds
     );
+    assert_eq!(
+        relation.message_semantic_layout.semantic_mode,
+        Symbt3MessageSemanticMode::NativeOracleViewV1,
+        "SYMBT3-I2 consumes CP messages through native relation-bound oracle views"
+    );
+    assert_eq!(
+        relation
+            .message_semantic_layout
+            .message_to_trace_binding_count(),
+        0,
+        "SYMBT3-I2 must not materialize per-coordinate message-to-trace copy constraints"
+    );
+    assert!(
+        relation
+            .message_semantic_layout
+            .round_layouts
+            .iter()
+            .all(|round| !round.message_views.is_empty()
+                && round.trace_column_bindings.is_empty()),
+        "message-derived trace values must be virtual views into M_r(T,U), not duplicate trace columns"
+    );
+    assert!(
+        relation
+            .message_semantic_layout
+            .view_coordinate_count(bucket.shape.active_count)
+            < relation.message_semantic_layout.coordinate_count(),
+        "SYMBT3-I2 should expose semantic message views instead of the full packed message payload"
+    );
     assert!(relation
         .message_semantic_layout
         .round_layouts
@@ -1001,6 +1032,33 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
             .digest(bucket.shape.accumulator_shape.digest_scheme)
     );
     assert_eq!(
+        public.production_norm_range_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.structured_projection_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .projection_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.monomial_embedding_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .monomial_embedding_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
+        public.representative_layout_digest,
+        relation
+            .ajtai_norm_range_layout
+            .representative_layout
+            .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    assert_eq!(
         relation.algebra_law.product_law,
         Symbt3ProductLawId::RqNegacyclicConvolutionV1,
         "SYMBT3-E must use the ring negacyclic product law by default"
@@ -1031,13 +1089,27 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
             .ajtai_norm_range_layout
             .projection_layout
             .projection_mode,
-        Symbt3ProjectionMode::DirectDevDenseProjectionV1,
-        "SYMBT3-G starts with the direct development projection evaluator"
+        Symbt3ProjectionMode::StructuredBlockProjectionV1,
+        "SYMBT3-J must default to structured projection, not identity projection"
     );
     assert_eq!(
         relation.ajtai_norm_range_layout.range_mode,
-        Symbt3RangeMode::DirectSignedRangeDevV1,
-        "SYMBT3-G starts with the direct signed development range predicate"
+        Symbt3RangeMode::MonomialEmbeddingRangeV1,
+        "SYMBT3-J must default to monomial-embedding range semantics"
+    );
+    assert_eq!(
+        relation
+            .ajtai_norm_range_layout
+            .projection_layout
+            .entry_distribution,
+        Symbt3ProjectionEntryDistribution::ZeroPlusMinusOneV1
+    );
+    assert_eq!(
+        relation
+            .ajtai_norm_range_layout
+            .representative_layout
+            .canonical_rep_policy,
+        Symbt3CanonicalRepPolicy::CenteredModQRepresentativeV1
     );
     assert_eq!(
         public.folded_gr1cs_product_residual_layout_digest,
@@ -1047,7 +1119,112 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     );
     assert!(
         relation.has_symbt3_i_families(),
-        "SYMBT3-I message-semantic residual families must be enabled in the development relation"
+        "SYMBT3-I2 native message-oracle view families must be enabled in the development relation"
+    );
+    assert!(
+        relation.has_symbt3_j_families(),
+        "SYMBT3-J structured projection and monomial range families must be enabled in the development relation"
+    );
+    let dev_profile = Symbt3AuthorityProfile::development_from_relation(&relation);
+    assert_eq!(
+        dev_profile.authority_status,
+        Symbt3AuthorityStatus::NonAuthoritativeDevelopment
+    );
+    assert_eq!(
+        dev_profile.field_policy,
+        Symbt3FieldExtensionPolicy::BaseFieldSingleCheckDevelopment
+    );
+    assert_eq!(
+        dev_profile.sumcheck_challenge_policy,
+        Symbt3SumcheckChallengePolicy::BaseFieldSingleChallengeDevelopment
+    );
+    assert!(dev_profile.matches_relation_metadata(&relation));
+    assert!(
+        !dev_profile.accepts_relation_for_product_authority(&relation),
+        "the development SYMBT3 profile is not an authority profile"
+    );
+    assert!(
+        !dev_profile.accepts_relation_for_research_authority_candidate(&relation),
+        "development-only soundness status is not a research authority candidate"
+    );
+    let research_profile =
+        Symbt3AuthorityProfile::research_authority_candidate_from_relation(&relation, 64);
+    assert_eq!(
+        research_profile.soundness_status,
+        Symbt3SoundnessStatus::SoundnessCandidate
+    );
+    assert_eq!(research_profile.zk_status, Symbt3ZkStatus::NonZkDevelopment);
+    assert_eq!(
+        research_profile.routing_status,
+        Symbt3RoutingStatus::ResearchOnly
+    );
+    assert!(!research_profile.product_eligible);
+    assert!(research_profile.research_only);
+    assert!(research_profile.matches_relation_metadata(&relation));
+    assert!(
+        research_profile.accepts_relation_for_research_authority_candidate(&relation),
+        "SYMBT3-J2 can pass a non-ZK research authority-candidate gate when all semantic families are enabled"
+    );
+    assert!(
+        !research_profile.accepts_relation_for_product_authority(&relation),
+        "research-only non-ZK profiles must not be product-authority eligible"
+    );
+    let authority_profile =
+        Symbt3AuthorityProfile::authority_candidate_from_relation(&relation, 128);
+    assert_eq!(
+        authority_profile.authority_status,
+        Symbt3AuthorityStatus::AuthorityCandidateV1
+    );
+    assert!(authority_profile.product_eligible);
+    assert!(!authority_profile.research_only);
+    assert!(authority_profile.matches_relation_metadata(&relation));
+    assert!(
+        !authority_profile.accepts_relation_for_product_authority(&relation),
+        "current SYMBT3-J2 relation is still NonAuthoritativeDevelopment/NonZkDevelopment"
+    );
+    assert_ne!(
+        dev_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        authority_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        "authority status and soundness policy are profile-bound"
+    );
+    let mut changed_authority_profile = authority_profile.clone();
+    changed_authority_profile.soundness_target_bits += 1;
+    assert_ne!(
+        authority_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        changed_authority_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        "profile mutation must change the authority profile digest"
+    );
+    let mut wrong_whir_profile = authority_profile.clone();
+    wrong_whir_profile.whir_parameter_digest[0] ^= 1;
+    assert!(
+        !wrong_whir_profile.matches_relation_metadata(&relation),
+        "proofs built under one WHIR parameter set must not match another authority profile"
+    );
+    let mut missing_manifest_profile = authority_profile.clone();
+    missing_manifest_profile.enabled_families.retain(|family| {
+        *family
+            != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership
+    });
+    assert!(
+        !missing_manifest_profile.matches_relation_metadata(&relation),
+        "missing manifest/message-view authority families must change/reject the profile"
+    );
+    let mut non_zk_product_profile = research_profile.clone();
+    non_zk_product_profile.product_eligible = true;
+    non_zk_product_profile.research_only = false;
+    non_zk_product_profile.routing_status = Symbt3RoutingStatus::ProductAuthority;
+    assert!(
+        !non_zk_product_profile.accepts_relation_for_product_authority(&relation),
+        "any product-eligible profile must reject NonZk"
+    );
+    let mut missing_j2_profile = research_profile.clone();
+    missing_j2_profile.enabled_families.retain(|family| {
+        *family
+            != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::ProjectedOpeningMonomialEmbedding
+    });
+    assert!(
+        !missing_j2_profile.matches_relation_metadata(&relation),
+        "missing J2 families must reject both research and product authority profiles"
     );
 
     let relation_description = relation.to_relation_description();
@@ -1182,6 +1359,18 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
         public_statement_digest,
         derive_symbt3_public_statement_digest(&relation, &changed_gr1cs_boundary)
     );
+    let mut changed_norm_range_public = public.clone();
+    changed_norm_range_public.norm_range_public_digest[0] ^= 1;
+    assert_eq!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_norm_range_public),
+        "SYMBT3-J projection/range public data must not alter beta"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_norm_range_public),
+        "SYMBT3-J projection/range public data must alter the proof public digest"
+    );
     let mut changed_accumulator = public.clone();
     changed_accumulator.folded_accumulator_coordinates[0] += 1;
     assert_eq!(
@@ -1271,7 +1460,22 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert_ne!(
         challenge_digest,
         derive_symbt3_batch_challenge_digest(&changed_norm_range_relation, &public),
-        "SYMBT3-G norm/range semantics are part of the folding protocol identity"
+        "SYMBT3-J norm/range semantics are part of the folding protocol identity"
+    );
+    let mut changed_structured_projection_relation = relation.clone();
+    changed_structured_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .block_len += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_structured_projection_relation.relation_id(),
+        "SYMBT3-J structured projection layout is relation-bound"
+    );
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&changed_structured_projection_relation, &public),
+        "SYMBT3-J structured projection semantics are beta-bound"
     );
     let mut changed_manifest_relation = relation.clone();
     changed_manifest_relation
@@ -1309,6 +1513,15 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
         challenge_digest,
         derive_symbt3_batch_challenge_digest(&changed_message_relation, &public),
         "SYMBT3-I message semantic layout is part of the folding protocol identity"
+    );
+    let mut changed_view_relation = relation.clone();
+    changed_view_relation.message_semantic_layout.round_layouts[0].message_views[0]
+        .message_coordinate_map
+        .message_coordinate_offset += 1;
+    assert_ne!(
+        relation.relation_id(),
+        changed_view_relation.relation_id(),
+        "SYMBT3-I2 message view maps are relation-bound evaluator metadata"
     );
     let mut changed_product_layout_relation = relation.clone();
     changed_product_layout_relation
@@ -1372,12 +1585,14 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
     let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
     assert_eq!(
-        witness.message_trace_values,
-        symbt3_message_semantic_rows_from_oracles(&decoded_relation, &witness.message_oracles)
-            .expect("SYMBT3-I message semantic rows")
+        decoded_relation
+            .message_semantic_layout
+            .message_to_trace_binding_count(),
+        0,
+        "SYMBT3-I2 must not allocate duplicate TraceValue columns for direct message views"
     );
     let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
-        .expect("SYMBT3-I proof");
+        .expect("SYMBT3-I2 proof");
     assert_eq!(
         public.folded_ajtai_commitment,
         decoded_relation.derive_ring_folded_commitment_boundary(&public)
@@ -1385,12 +1600,56 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     assert_eq!(
         proof.family_columnar_subproofs.len(),
         0,
-        "SYMBT3-I must stay one top-level proof object, not a table-proof forest"
+        "SYMBT3-I2 must stay one top-level proof object, not a table-proof forest"
+    );
+    assert!(
+        proof.num_vars <= 17,
+        "SYMBT3-J2 must keep the k=2 default profile in the 32-column padded table bucket"
+    );
+    assert_eq!(
+        proof.private_opening_evals.len(),
+        36,
+        "SYMBT3-J2 removes deterministic monomial-witness and representative-residual openings"
+    );
+    let symbt3_base_column_count = 6 + 6 * public.active_count;
+    let projected_opening_eval_idx = symbt3_base_column_count + 6;
+    let projection_residual_eval_idx = symbt3_base_column_count + 7;
+    let range_residual_eval_idx = symbt3_base_column_count + 8;
+    let monomial_residual_eval_idx = symbt3_base_column_count + 9;
+    let manifest_source_eval_idx = symbt3_base_column_count + 10;
+    assert_eq!(
+        manifest_source_eval_idx,
+        28,
+        "SYMBT3-J2 keeps manifest openings after projected/range residual openings, with no committed monomial-witness or representative-residual column"
     );
     assert!(!proof.sumcheck_rounds_4.is_empty());
     assert_eq!(
         <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof),
         Some(true)
+    );
+    let authority_profile =
+        Symbt3AuthorityProfile::authority_candidate_from_relation(&decoded_relation, 128);
+    assert_eq!(
+        WhirSnark::verify_symbt3_authority_profile(&vk, &public, &proof, &authority_profile),
+        Some(false),
+        "a proof made under the current development SYMBT3 profile must be rejected by the authority gate"
+    );
+    let research_profile =
+        Symbt3AuthorityProfile::research_authority_candidate_from_relation(&decoded_relation, 64);
+    assert_eq!(
+        WhirSnark::verify_symbt3_research_authority_candidate(
+            &vk,
+            &public,
+            &proof,
+            &research_profile
+        ),
+        Some(true),
+        "SYMBT3-J2 proofs may pass the explicit non-ZK research authority-candidate gate"
+    );
+    assert_eq!(
+        WhirSnark::verify_symbt3_authority_profile(&vk, &public, &proof, &research_profile),
+        Some(false),
+        "research-only profiles must not pass the ProductAuthority gate"
     );
     let mut bad_source_opening = witness.clone();
     bad_source_opening.source_ajtai_opening_values[0][0] += 1;
@@ -1412,7 +1671,7 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     assert!(
         <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_range_opening)
             .is_none(),
-        "SYMBT3-G folded Ajtai range violations must reject in the development proof"
+        "SYMBT3-J folded Ajtai range violations must reject in the development proof"
     );
     let mut bad_source_assignment = witness.clone();
     bad_source_assignment.source_r1cs_assignment_values[0][0] += 1;
@@ -1431,14 +1690,7 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     bad_message.message_oracles[0][0][0] ^= 1;
     assert!(
         <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_message).is_none(),
-        "SYMBT3-I message oracle coordinate tampering must reject against the public message root"
-    );
-    let mut bad_message_trace = witness.clone();
-    bad_message_trace.message_trace_values[0][0] += 1;
-    assert!(
-        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_message_trace)
-            .is_none(),
-        "SYMBT3-I message-to-trace binding tampering must reject"
+        "SYMBT3-I2 message oracle coordinate tampering must reject against the public message root"
     );
 
     let mut changed_output = public.clone();
@@ -1483,6 +1735,38 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
             &proof
         ),
         Some(false)
+    );
+    let mut changed_norm_range_public = public.clone();
+    changed_norm_range_public.norm_range_public_digest[0] ^= 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_norm_range_public),
+        "SYMBT3-J norm/range public digest must not alter beta"
+    );
+    assert_ne!(
+        derive_symbt3_public_statement_digest(&decoded_relation, &public),
+        derive_symbt3_public_statement_digest(&decoded_relation, &changed_norm_range_public),
+        "SYMBT3-J norm/range public digest must alter proof public digest"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_norm_range_public, &proof),
+        Some(false)
+    );
+    let mut changed_representative_layout = public.clone();
+    changed_representative_layout.representative_layout_digest[0] ^= 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_representative_layout),
+        "SYMBT3-J representative convention/output digest data must not alter beta"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_representative_layout,
+            &proof
+        ),
+        Some(false),
+        "tampering the representative convention digest must reject"
     );
     let mut changed_evaluation = public.clone();
     changed_evaluation.folded_evaluation[0] += 1;
@@ -1589,6 +1873,43 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
         <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_private_eval),
         Some(false)
     );
+    let mut tampered_projected_eval = proof.clone();
+    tampered_projected_eval.private_opening_evals[projected_opening_eval_idx] += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_projected_eval),
+        Some(false),
+        "tampering the projected opening value must reject; it is recomputed by the evaluator"
+    );
+    let mut tampered_projection_residual = proof.clone();
+    tampered_projection_residual.private_opening_evals[projection_residual_eval_idx] +=
+        BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &public,
+            &tampered_projection_residual
+        ),
+        Some(false),
+        "projection residual openings are constrained, not trusted as witness advice"
+    );
+    let mut tampered_range_residual = proof.clone();
+    tampered_range_residual.private_opening_evals[range_residual_eval_idx] += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &tampered_range_residual),
+        Some(false),
+        "range residual openings are constrained by verifier-side range evaluation"
+    );
+    let mut tampered_monomial_residual = proof.clone();
+    tampered_monomial_residual.private_opening_evals[monomial_residual_eval_idx] += BabyBear::ONE;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &public,
+            &tampered_monomial_residual
+        ),
+        Some(false),
+        "monomial/range residual openings are constrained even though the deterministic monomial witness column was removed"
+    );
     let mut tampered_residual_eval = proof.clone();
     let last_eval = tampered_residual_eval
         .private_opening_evals
@@ -1646,6 +1967,26 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
         <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &non_symbt3_proof),
         Some(false),
         "non-SYMBT3 proof payloads must not be accepted as SYMBT3"
+    );
+    assert_eq!(
+        WhirSnark::verify_symbt3_authority_profile(
+            &vk,
+            &public,
+            &non_symbt3_proof,
+            &authority_profile
+        ),
+        Some(false),
+        "SYMBT2/SYMBTC/monolithic-shaped payloads must not be accepted as SYMBT3 authority"
+    );
+    assert_eq!(
+        WhirSnark::verify_symbt3_research_authority_candidate(
+            &vk,
+            &public,
+            &non_symbt3_proof,
+            &research_profile
+        ),
+        Some(false),
+        "non-SYMBT3 payloads must not be accepted as SYMBT3 research authority candidates"
     );
 }
 

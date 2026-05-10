@@ -20,6 +20,7 @@
 //!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_family_columnar_v2_vs_k"
 //!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_family_columnar_poseidon_v2_vs_k"
 //!   cargo bench --bench whir_scaling --features whir -- "public_proof_batched_cp_size_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "symbt3_research_vs_product_verify_vs_k"
 //!   SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
 //!
 //! Reset local Criterion history for this bench:
@@ -44,6 +45,7 @@
 //!   whir_scaling/batched_cp_semantic_family_columnar_v2_vs_k – SYMBT2F family-local residual skeleton
 //!   whir_scaling/batched_cp_semantic_family_columnar_poseidon_v2_vs_k – SYMBT2F Poseidon/BabyBear family-local skeleton
 //!   whir_scaling/public_proof_batched_cp_size_vs_k – structured batched CP public-boundary size only
+//!   whir_scaling/symbt3_research_vs_product_verify_vs_k – opt-in side-by-side product verify_public vs SYMBT3 research-authority-candidate verify
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -52,7 +54,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use symphony::batched_cp::{
     BatchedCpBucket, BatchedCpEvaluator, BatchedCpItem, BatchedCpSemanticConstraintFamily,
     BatchedCpSemanticFamilyColumnarV2Table, BatchedCpSymbt3RelationDescription,
-    BatchedCpSymbt3SetupDescriptor,
+    BatchedCpSymbt3SetupDescriptor, Symbt3AuthorityProfile, Symbt3MessageSemanticLayout,
+    Symbt3ProjectionMode, Symbt3RangeMode,
 };
 use symphony::commitment::{AjtaiParams, Commitment};
 use symphony::cp_backend_api::CpBackend;
@@ -2182,11 +2185,13 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
         );
         let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
             .unwrap_or_else(|| panic!("WHIR exposes {profile} relation"));
-        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
         let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
             relation.context.as_ref().expect("SYMBT3 context"),
         )
         .unwrap_or_else(|_| panic!("{profile} context decodes"));
+        let decoded_relation = symbt3_relation_for_bench_profile(decoded_relation, profile);
+        let relation = decoded_relation.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
         let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
         let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
         let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
@@ -2194,6 +2199,9 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
         let verify_ok = <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof)
             .unwrap_or(false);
         assert!(verify_ok, "{profile} proof must verify for k={k}");
+        let (_, verifier_profile) =
+            WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
+                .unwrap_or_else(|| panic!("{profile} verifier profile"));
         let source_r1cs_claims = public.source_assignment_roots.len()
             * decoded_relation.r1cs_evaluator_layout.num_constraints
             * D;
@@ -2213,23 +2221,28 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
         let message_round_count = decoded_relation.message_semantic_layout.round_count;
         let message_coordinate_count = decoded_relation
             .message_semantic_layout
-            .round_layouts
-            .iter()
-            .map(|round| round.packed_field_len * public.active_count)
-            .sum::<usize>();
+            .view_coordinate_count(public.active_count);
         let message_to_trace_binding_count = decoded_relation
             .message_semantic_layout
-            .round_layouts
-            .iter()
-            .map(|round| {
-                round
-                    .trace_column_bindings
-                    .iter()
-                    .map(|binding| binding.coordinate_len * public.active_count)
-                    .sum::<usize>()
-            })
-            .sum::<usize>();
-        let sumcheck_transition_count = message_coordinate_count;
+            .message_to_trace_binding_count();
+        let sumcheck_transition_count = decoded_relation
+            .message_semantic_layout
+            .semantic_sumcheck_transition_count();
+        let projection_output_len = decoded_relation
+            .ajtai_norm_range_layout
+            .projection_layout
+            .output_len;
+        let monomial_embedding_enabled = decoded_relation.ajtai_norm_range_layout.range_mode
+            == symphony::batched_cp::Symbt3RangeMode::MonomialEmbeddingRangeV1;
+        let monomial_witness_coords = if monomial_embedding_enabled {
+            projection_output_len
+        } else {
+            0
+        };
+        let representative_coords = projection_output_len;
+        let range_residual_coords = projection_output_len;
+        let constraint_family_count = decoded_relation.oracle_layout.constraint_families.len();
+        let oracle_len = 1usize << proof.num_vars;
         eprintln!(
             "[{profile}_vs_k k={k}] verify={} top_level_whir_proof_count=1 \
              family_columnar_subproof_count={} proof_bytes={} public_statement_bytes={} \
@@ -2237,8 +2250,10 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
              transcript_squeezes={} \
              pcs_merkle_opening_proxy={} ajtai_linear_form_claims={} product_law={:?} \
              beta_action={:?} ring_degree={} ajtai_matrix_vector_evaluator={:?} \
-             kappa={} opening_len={} projection_mode={:?} range_mode={:?} bound_b={} \
-             projection_output_len={} monomial_embedding_enabled=false \
+             kappa={} opening_len={} projection_mode={:?} projection_block_len={} \
+             range_mode={:?} bound_b={} projection_output_len={} \
+             monomial_embedding_enabled={} oracle_len={} monomial_witness_coords={} \
+             representative_coords={} range_residual_coords={} constraint_family_count={} \
              manifest_component_count={} manifest_coordinate_count={} membership_challenge_count=1 \
              message_round_count={} message_coordinate_count={} \
              message_to_trace_binding_count={} sumcheck_transition_count={}",
@@ -2267,12 +2282,19 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
                 .ajtai_norm_range_layout
                 .projection_layout
                 .projection_mode,
-            decoded_relation.ajtai_norm_range_layout.range_mode,
-            decoded_relation.ajtai_norm_range_layout.norm_bound,
             decoded_relation
                 .ajtai_norm_range_layout
                 .projection_layout
-                .output_len,
+                .block_len,
+            decoded_relation.ajtai_norm_range_layout.range_mode,
+            decoded_relation.ajtai_norm_range_layout.norm_bound,
+            projection_output_len,
+            monomial_embedding_enabled,
+            oracle_len,
+            monomial_witness_coords,
+            representative_coords,
+            range_residual_coords,
+            constraint_family_count,
             manifest_component_count,
             manifest_coordinate_count,
             message_round_count,
@@ -2284,6 +2306,26 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             "[{profile}_vs_k k={k}] source_r1cs_residual_claims={} \
              folded_gr1cs_boundary_claims={} folded_gr1cs_product_claims={}",
             source_r1cs_claims, folded_gr1cs_claims, folded_gr1cs_product_claims,
+        );
+        eprintln!(
+            "[{profile}_vs_k k={k}] verify_total_ms={:.3} verify_whir_pcs_ms={:.3} \
+             verify_merkle_or_pcs_opening_ms={:.3} verify_transcript_ms={:.3} \
+             verify_sumcheck_rounds_ms={:.3} verify_final_constraint_eval_ms={:.3} \
+             verify_manifest_membership_eval_ms={:.3} verify_message_view_eval_ms={:.3} \
+             verify_projection_eval_ms={:.3} verify_monomial_embedding_eval_ms={:.3} \
+             verify_representative_eval_ms={:.3} verify_ajtai_eval_ms={:.3}",
+            verifier_profile.verify_total_ms,
+            verifier_profile.verify_whir_pcs_ms,
+            verifier_profile.verify_merkle_or_pcs_opening_ms,
+            verifier_profile.verify_transcript_ms,
+            verifier_profile.verify_sumcheck_rounds_ms,
+            verifier_profile.verify_final_constraint_eval_ms,
+            verifier_profile.verify_manifest_membership_eval_ms,
+            verifier_profile.verify_message_view_eval_ms,
+            verifier_profile.verify_projection_eval_ms,
+            verifier_profile.verify_monomial_embedding_eval_ms,
+            verifier_profile.verify_representative_eval_ms,
+            verifier_profile.verify_ajtai_eval_ms,
         );
 
         group.throughput(Throughput::Elements(k as u64));
@@ -2316,6 +2358,109 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
     group.finish();
 }
 
+fn symbt3_relation_for_bench_profile(
+    mut relation: BatchedCpSymbt3RelationDescription,
+    profile: &str,
+) -> BatchedCpSymbt3RelationDescription {
+    match profile {
+        "symbt3_i2" => {
+            symbt3_set_projection_profile(
+                &mut relation,
+                Symbt3ProjectionMode::DirectDevDenseProjectionV1,
+                Symbt3RangeMode::DirectSignedRangeDevV1,
+            );
+        }
+        "symbt3_j_projection_only" => {
+            symbt3_set_projection_profile(
+                &mut relation,
+                Symbt3ProjectionMode::StructuredBlockProjectionV1,
+                Symbt3RangeMode::DirectSignedRangeDevV1,
+            );
+        }
+        "symbt3_j_monomial_only" => {
+            symbt3_set_projection_profile(
+                &mut relation,
+                Symbt3ProjectionMode::DirectDevDenseProjectionV1,
+                Symbt3RangeMode::MonomialEmbeddingRangeV1,
+            );
+        }
+        "symbt3_j" | "symbt3_j_full" => {}
+        _ => {}
+    }
+    relation.message_semantic_layout = Symbt3MessageSemanticLayout::from_shape_and_layouts(
+        &relation.shape,
+        &relation.oracle_layout,
+        &relation.algebra_law,
+        &relation.gr1cs_residual_layout,
+        &relation.ajtai_linear_algebra_layout,
+        &relation.ajtai_norm_range_layout,
+        &relation.batch_manifest_layout,
+        relation.shape.accumulator_shape.digest_scheme,
+    );
+    relation
+}
+
+fn symbt3_set_projection_profile(
+    relation: &mut BatchedCpSymbt3RelationDescription,
+    projection_mode: Symbt3ProjectionMode,
+    range_mode: Symbt3RangeMode,
+) {
+    let input_len = relation.ajtai_norm_range_layout.projection_layout.input_len;
+    let block_len = match projection_mode {
+        Symbt3ProjectionMode::DirectDevDenseProjectionV1 => input_len.max(1),
+        Symbt3ProjectionMode::StructuredBlockProjectionV1 => D.min(input_len.max(1)),
+    };
+    let rows_per_block = 1usize;
+    let output_len = match projection_mode {
+        Symbt3ProjectionMode::DirectDevDenseProjectionV1 => input_len,
+        Symbt3ProjectionMode::StructuredBlockProjectionV1 => {
+            input_len.div_ceil(block_len) * rows_per_block
+        }
+    };
+    relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .projection_mode = projection_mode;
+    relation.ajtai_norm_range_layout.projection_layout.block_len = block_len;
+    relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .rows_per_block = rows_per_block;
+    relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .output_len = output_len;
+    relation.ajtai_norm_range_layout.range_mode = range_mode;
+    relation.ajtai_norm_range_layout.range_layout.range_mode = range_mode;
+    match range_mode {
+        Symbt3RangeMode::DirectSignedRangeDevV1 => {
+            relation.ajtai_norm_range_layout.range_layout.table_digest = None;
+            relation
+                .ajtai_norm_range_layout
+                .range_layout
+                .monomial_embedding_layout_digest = None;
+        }
+        Symbt3RangeMode::MonomialEmbeddingRangeV1 => {
+            let scheme = relation.shape.accumulator_shape.digest_scheme;
+            relation.ajtai_norm_range_layout.range_layout.table_digest = Some(
+                relation
+                    .ajtai_norm_range_layout
+                    .monomial_embedding_layout
+                    .table_polynomial_digest,
+            );
+            relation
+                .ajtai_norm_range_layout
+                .range_layout
+                .monomial_embedding_layout_digest = Some(
+                relation
+                    .ajtai_norm_range_layout
+                    .monomial_embedding_layout
+                    .digest(scheme),
+            );
+        }
+    }
+}
+
 fn bench_symbt3_e_vs_k(c: &mut Criterion) {
     bench_symbt3_profile_vs_k(c, "symbt3_e");
 }
@@ -2334,6 +2479,167 @@ fn bench_symbt3_h_vs_k(c: &mut Criterion) {
 
 fn bench_symbt3_i_vs_k(c: &mut Criterion) {
     bench_symbt3_profile_vs_k(c, "symbt3_i");
+}
+
+fn bench_symbt3_i2_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_i2");
+}
+
+fn bench_symbt3_j_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_j");
+}
+
+fn bench_symbt3_j_projection_only_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_j_projection_only");
+}
+
+fn bench_symbt3_j_monomial_only_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_j_monomial_only");
+}
+
+fn bench_symbt3_j_full_vs_k(c: &mut Criterion) {
+    bench_symbt3_profile_vs_k(c, "symbt3_j_full");
+}
+
+fn bench_verify_symbt3_research_authority_candidate(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/symbt3_research_vs_product_verify_vs_k") {
+        return;
+    }
+
+    let mut group = c.benchmark_group("whir_scaling/symbt3_research_vs_product_verify_vs_k");
+    configure_pipeline_group(&mut group);
+
+    let ks = public_verify_ks();
+    eprintln!(
+        "[symbt3_research_vs_product_verify_vs_k] k_values={ks:?} non_zk_research_only=true product_routing_changed=false"
+    );
+
+    for &k in &ks {
+        let fixture = public_whir_fixture(k);
+        let product_verify_ok =
+            fixture
+                .verifier
+                .verify_public(&fixture.public_inputs, &fixture.proof, &fixture.r1cs);
+        assert!(
+            product_verify_ok,
+            "product verify_public baseline must verify for k={k}"
+        );
+
+        let bucket = batched_cp_bucket_from_fixture(&fixture, k);
+        let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+            bucket.shape.clone(),
+            &fixture.ajtai,
+            &fixture.r1cs,
+            fixture.input_bound,
+        );
+        let symbt3_relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+            .expect("WHIR exposes SYMBT3 research relation");
+        let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+            symbt3_relation.context.as_ref().expect("SYMBT3 context"),
+        )
+        .expect("SYMBT3 context decodes");
+        assert!(
+            decoded_relation.has_symbt3_j_families(),
+            "research authority candidate requires the cumulative J2 family set"
+        );
+        let (symbt3_pk, symbt3_vk) = <WhirSnark as CpBackend>::setup(&symbt3_relation);
+        let symbt3_public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+        let symbt3_witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+        let symbt3_proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(
+            &symbt3_pk,
+            &symbt3_public,
+            &symbt3_witness,
+        )
+        .expect("SYMBT3 research proof");
+        let research_profile = Symbt3AuthorityProfile::research_authority_candidate_from_relation(
+            &decoded_relation,
+            64,
+        );
+        let product_profile =
+            Symbt3AuthorityProfile::authority_candidate_from_relation(&decoded_relation, 128);
+        let research_verify_ok = WhirSnark::verify_symbt3_research_authority_candidate(
+            &symbt3_vk,
+            &symbt3_public,
+            &symbt3_proof,
+            &research_profile,
+        )
+        .unwrap_or(false);
+        let product_authority_ok = WhirSnark::verify_symbt3_authority_profile(
+            &symbt3_vk,
+            &symbt3_public,
+            &symbt3_proof,
+            &product_profile,
+        )
+        .unwrap_or(false);
+        assert!(
+            research_verify_ok,
+            "SYMBT3 research authority candidate must verify for k={k}"
+        );
+        assert!(
+            !product_authority_ok,
+            "SYMBT3 research candidate must not pass ProductAuthority for k={k}"
+        );
+
+        let (_, symbt3_cost) = WhirSnark::profile_symbt3_batched_cp_verifier(
+            &symbt3_vk,
+            &symbt3_public,
+            &symbt3_proof,
+        )
+        .expect("SYMBT3 research verifier profile");
+        eprintln!(
+            "[symbt3_research_vs_product_verify_vs_k k={k}] \
+             product_verify_public_ok={} symbt3_research_ok={} symbt3_product_authority_ok={} \
+             product_public_envelope_bytes={} symbt3_proof_bytes={} \
+             symbt3_public_statement_bytes={} top_level_whir_proof_count=1 \
+             family_columnar_subproof_count={} backend_table_count=1 \
+             symbt3_num_vars={} symbt3_opened_field_elements={} \
+             symbt3_verify_total_ms={:.3} symbt3_verify_whir_pcs_ms={:.3} \
+             symbt3_verify_transcript_ms={:.3} symbt3_verify_final_constraint_eval_ms={:.3} \
+             non_zk_research_only=true product_routing_changed=false",
+            product_verify_ok,
+            research_verify_ok,
+            product_authority_ok,
+            fixture.profile.public_envelope_bytes,
+            canonical_whir_proof_bytes(&symbt3_proof).len(),
+            symbt3_public.canonical_bytes().len(),
+            symbt3_proof.family_columnar_subproofs.len(),
+            symbt3_proof.num_vars,
+            symbt3_proof.private_opening_evals.len(),
+            symbt3_cost.verify_total_ms,
+            symbt3_cost.verify_whir_pcs_ms,
+            symbt3_cost.verify_transcript_ms,
+            symbt3_cost.verify_final_constraint_eval_ms,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("verify_public_product", k), |b| {
+            b.iter(|| {
+                black_box(fixture.verifier.verify_public(
+                    black_box(&fixture.public_inputs),
+                    black_box(&fixture.proof),
+                    black_box(&fixture.r1cs),
+                ));
+            });
+        });
+        group.bench_function(
+            BenchmarkId::new("verify_symbt3_research_authority_candidate", k),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        WhirSnark::verify_symbt3_research_authority_candidate(
+                            black_box(&symbt3_vk),
+                            black_box(&symbt3_public),
+                            black_box(&symbt3_proof),
+                            black_box(&research_profile),
+                        )
+                        .unwrap_or(false),
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
 }
 
 fn hex_digest(digest: &[u8; 32]) -> String {
@@ -2369,6 +2675,12 @@ criterion_group!(
     bench_symbt3_g_vs_k,
     bench_symbt3_h_vs_k,
     bench_symbt3_i_vs_k,
+    bench_symbt3_i2_vs_k,
+    bench_symbt3_j_vs_k,
+    bench_symbt3_j_projection_only_vs_k,
+    bench_symbt3_j_monomial_only_vs_k,
+    bench_symbt3_j_full_vs_k,
+    bench_verify_symbt3_research_authority_candidate,
     bench_public_proof_batched_cp_size_vs_k,
 );
 criterion_main!(benches);
