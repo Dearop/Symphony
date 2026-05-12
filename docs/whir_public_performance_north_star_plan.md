@@ -1,5 +1,24 @@
 # WHIR Public Performance North Star Plan
 
+## Contents
+
+1. [Current Finding](#current-finding)
+2. [Recalibrated Diagnosis](#recalibrated-diagnosis)
+3. [North Star Target](#north-star-target)
+4. [Architectural Diagnosis](#architectural-diagnosis)
+5. [Milestone P1 — Freeze the Measured Baseline](#milestone-p1-freeze-the-measured-baseline)
+6. [Milestone P2 — Compress the Public Boundary](#milestone-p2-compress-the-public-boundary)
+7. [Milestone P3 — Structured Batched CP Relation](#milestone-p3-structured-batched-cp-relation)
+8. [Milestone P4 — WHIR Structured Relation Integration](#milestone-p4-whir-structured-relation-integration)
+9. [Milestone P5 — SYMBT3 CP-Aware WHIR Oracle Relation](#milestone-p5-symbt3-cp-aware-whir-oracle-relation)
+10. [Milestone P6 — Versioned Field-Native Transcript Cleanup](#milestone-p6-versioned-field-native-transcript-cleanup)
+11. [Milestone P7 — Benchmark Against the North Star](#milestone-p7-benchmark-against-the-north-star)
+12. [Non-Goals](#non-goals)
+13. [Immediate Next Step](#immediate-next-step)
+
+---
+
+
 ## Current Finding
 
 The WHIR public verifier is functionally authoritative, but it has not reached
@@ -36,6 +55,9 @@ The performance north star is not "make the current R1CS faster." It is to make
 the public verifier see a compressed CP statement and verify a proof whose
 outer cost is near-constant or logarithmic in the number of folded statements.
 
+---
+
+
 ## Recalibrated Diagnosis
 
 The `SYMBT2F` message-section measurements changed the north star. The problem
@@ -62,13 +84,14 @@ a diagnostic harness, but it is not the Symphony CP-SNARK architecture.
 
 The new implementation rule is:
 
-```text
-If a check only proves that byte encodings, transcript bodies, or hash inputs
-were formed correctly, do not assume it belongs inside pi_cp.
-```
+> If a check only proves that byte encodings, transcript bodies, or hash inputs
+> were formed correctly, do not assume it belongs inside pi_cp.
 
 The next architecture target is therefore `SYMBT3`: a CP-aware WHIR oracle
 relation, not more `SYMBT2F` table splitting.
+
+---
+
 
 ## North Star Target
 
@@ -94,6 +117,9 @@ The target public verifier should have:
 The witness/prover side may remain linear in `k`. The public verifier and public
 proof boundary should not.
 
+---
+
+
 ## Architectural Diagnosis
 
 Current `verify_public` still receives `ProofBundleV2.fs_commitments: Vec<Vec<u8>>`.
@@ -113,11 +139,14 @@ materialization, but the remaining large blocks are semantically real in the
 current design. Further local row reductions will improve constants, not the
 asymptotic story.
 
+---
+
+
 ## Milestone P1 - Freeze the Measured Baseline
 
-Goal: make the current linear cost model impossible to misread.
+**Goal.** make the current linear cost model impossible to misread.
 
-Implementation requirements:
+**Implementation requirements**
 
 - Record clean `k = 1, 2` numbers in `docs/whir.md`.
 - Add an explicit "linear typed CP baseline" note next to
@@ -126,21 +155,24 @@ Implementation requirements:
   `SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2`.
 - Keep the default benchmark at `k = 1` for developer turnaround.
 
-Acceptance criteria:
+**Acceptance criteria**
 
 - `public_verify_v2_vs_k` verifies and times `k = 1, 2`.
 - Docs state that current public verification is authoritative but linear.
 - No proof format or security-boundary changes.
 
-Status: implemented. `docs/whir.md` records the `k = 1, 2` public verifier
+**Status.** implemented. `docs/whir.md` records the `k = 1, 2` public verifier
 baseline and explicitly labels the current cost model as an authoritative
 linear typed-CP baseline.
 
+---
+
+
 ## Milestone P2 - Compress the Public Boundary
 
-Goal: remove linear public fields before changing the CP proof architecture.
+**Goal.** remove linear public fields before changing the CP proof architecture.
 
-Implementation requirements:
+**Implementation requirements**
 
 - Replace public `fs_commitments: Vec<Vec<u8>>` at the product boundary with a
   fixed digest/root plus a versioned compressed transcript commitment object.
@@ -151,14 +183,14 @@ Implementation requirements:
   commitments as public inputs.
 - Version the public proof envelope because this changes public wire shape.
 
-Acceptance criteria:
+**Acceptance criteria**
 
 - Public envelope size grows sublinearly in `k`.
 - `verify_public` no longer hashes a public vector of all FS commitments.
 - Typed CP still proves every FS commitment opening/message against `fs_root`.
 - Public tampering/splicing tests cover the new compressed boundary.
 
-Status: in progress. A version-2 compressed public envelope has been added as a
+**Status.** in progress. A version-2 compressed public envelope has been added as a
 roadmap wire shape. It omits the public `fs_commitments` vector and keeps only
 the roots/digests plus backend proof payloads. The typed CP R1CS builder now
 also has a compressed-FS development mode where FS commitment digest outputs are
@@ -179,13 +211,16 @@ dominated by the monolithic typed CP proof. V2 removes the public linear FS
 commitment vector from the wire shape, but P3/P4 are still required to compress
 the CP proof itself.
 
+---
+
+
 ## Milestone P3 - Structured Batched CP Relation
 
-Goal: replace the flat monolithic typed CP relation with a same-shape
+**Goal.** replace the flat monolithic typed CP relation with a same-shape
 product-domain relation, not with `k` independent WHIR proofs and not with an
 appended R1CS containing `k` copied circuits.
 
-Implementation requirements:
+**Implementation requirements**
 
 - Define `CpAccumulatorShape` as the canonical local CP accumulator object
   shape: local public layout, witness layout, CP round/message layout,
@@ -205,7 +240,7 @@ Implementation requirements:
   invariant: accepting the batch implies every active item satisfies the local
   CP accumulator relation.
 
-Acceptance criteria:
+**Acceptance criteria**
 
 - Exact same-shape objects batch; shape mismatch rejects.
 - Manifest tampering, omitted item, duplicate item, reordered item, wrong
@@ -214,7 +249,7 @@ Acceptance criteria:
 - The implementation exposes product-domain witness/message oracles `W(T,V)`
   and `M_i(T,U_i)` and does not construct an appended typed CP R1CS.
 
-Status: implemented as a non-authoritative foundation. The repo now has
+**Status.** implemented as a non-authoritative foundation. The repo now has
 `CpAccumulatorShape`, `BatchedCpStatementShape`, exact-shape bucketing, batch
 manifest commitments, per-round batch message commitments, batch challenge
 digests, product-domain witness/message oracle objects, canonical public
@@ -240,12 +275,15 @@ that P4 must replace with one structured WHIR verification object.
 The product verifier still verifies the authoritative monolithic typed CP
 proof. No structured batched CP proof is accepted by public routing yet.
 
+---
+
+
 ## Milestone P4 - WHIR Structured Relation Integration
 
-Goal: make WHIR consume `BatchedCpStatementShape` directly and produce one
+**Goal.** make WHIR consume `BatchedCpStatementShape` directly and produce one
 WHIR-backed CP proof per exact same-shape bucket.
 
-Implementation requirements:
+**Implementation requirements**
 
 - Add a WHIR-facing structured relation path for product-domain evaluators.
 - WHIR setup must receive product-domain dimensions and evaluator metadata, not
@@ -255,7 +293,7 @@ Implementation requirements:
 - Product public routing stays on monolithic typed CP until structured proof
   semantics, negative tests, and benchmarks are green.
 
-Acceptance criteria:
+**Acceptance criteria**
 
 - `k = 1` structured path matches monolithic typed CP semantics.
 - `k = 2, 4` verify with one structured proof per same-shape bucket.
@@ -265,12 +303,14 @@ Acceptance criteria:
   slower than the current monolithic baseline, or the measured blocker is
   documented.
 
-Status: in progress. WHIR now exposes a non-authoritative structured batched CP
+**Status.** in progress. WHIR now exposes a non-authoritative structured batched CP
 relation description for `BatchedCpStatementShape`. The context has a dedicated
 `SYMBTC1` marker, stable relation id, public statement byte size, product-domain
 size, witness-oracle row length, and per-round message-oracle lengths. Its
 `RelationDescription` deliberately reports `num_constraints = 0` because this
 is not a flattened/appended R1CS relation.
+
+### P4 — `SYMBTC1` product-domain oracle proof
 
 WHIR also now produces and verifies a `SYMBTC1` product-domain oracle proof:
 the prover commits with WHIR to one canonical batch oracle built from
@@ -283,6 +323,7 @@ bytes, item/round indices, active markers, inactive padding lengths,
 digest-body framing, public manifest digest bytes, public round-message
 commitment bytes, and the final byte-length sentinel. Private
 witness/message/public-item chunks are not opened.
+
 This is a real WHIR-backed product-domain proof object, but it is not yet
 CP-authoritative: it proves oracle possession/public-framing binding, not the
 full structured CP predicate or complete Poseidon hash authority over the
@@ -293,6 +334,8 @@ digest-body bytes opened from the same committed oracle, and folded-output
 contribution bytes in active witness rows must match the folded-output
 accumulator body carried in the same oracle. Product routing therefore remains
 on the current authoritative monolithic typed CP path.
+
+### P4 — `SYMBTC1` clarification (oracle vs CP-semantic)
 
 Current P4 status clarification: `SYMBTC1` is a WHIR-backed product-domain
 oracle proof, not a CP-semantic proof. It binds the canonical batch oracle,
@@ -368,6 +411,8 @@ not complete proximity-style semantic authority, and product routing must
 remain on the authoritative monolithic typed CP proof until the full CP
 predicate and negative tests pass.
 
+### P4 — `SYMBTC2` full-selection candidate
+
 `SYMBTC2` now exists as the versioned P4 candidate context. It wraps the
 same `BatchedCpSemanticRelationDescription` with an explicit v2 layout carrying
 the canonical product-oracle byte length, packed BabyBear field length,
@@ -389,6 +434,8 @@ heavy candidate audit; the default tests cover stable context serialization and
 non-R1CS routing. Product public routing remains on the authoritative
 monolithic typed CP proof.
 
+### P4 — `SYMBT2C` columnar skeleton
+
 The first columnar SYMBTC2 skeleton is available under a separate `SYMBT2C`
 context. It commits to a typed semantic table and derives bounded
 transcript-bound residual openings. The current columnar residual model supports
@@ -406,6 +453,8 @@ tampering coverage for every family. The bounded WHIR proof-profile test for
 `k = 1` passes but is marked ignored because it is a heavy audit path in the
 test profile. This path is still development-only and sampled/proximity-style,
 not product-authoritative.
+
+### P4 — `SYMBT2F` family-local columnar candidate
 
 `SYMBT2F` is the family-local columnar candidate. It keeps the same residual
 equations as `SYMBT2C`, but each instantiated residual family gets its own
@@ -506,12 +555,10 @@ architecture.
 
 `SYMBT2F` is now calibrated as:
 
-```text
-development-only diagnostic path
-oracle layout sanity checker
-negative-test harness
-byte/table over-materialization warning system
-```
+- development-only diagnostic path
+- oracle layout sanity checker
+- negative-test harness
+- byte/table over-materialization warning system
 
 It should not be treated as the route to the production CP proof. Further
 splitting of `ManifestMembership`, folded-output contribution binding, or
@@ -519,6 +566,8 @@ message sections is useful only when it improves diagnostics. The next
 production-oriented P4/P5 work should pivot to a CP-aware WHIR relation where
 message oracles are committed objects queried directly by the proof system and
 the proven constraints are the folding algebra itself.
+
+### P4 — `SYMBTC1` product-oracle measurements
 
 Initial `SYMBTC1` product-oracle measurements:
 
@@ -536,12 +585,15 @@ round-message, manifest, and challenge digest-body frames. The public-known
 opening strategy is deliberately simple and will need compression before this
 becomes the production fast path.
 
+---
+
+
 ## Milestone P5 - SYMBT3 CP-Aware WHIR Oracle Relation
 
-Goal: replace byte/table emulation of CP with one CP-aware WHIR proof object per
+**Goal.** replace byte/table emulation of CP with one CP-aware WHIR proof object per
 same-shape bucket.
 
-Implementation requirements:
+**Implementation requirements**
 
 - Treat each CP round message `M_i(T, U_i)` as a committed WHIR/BCS oracle, not
   as bytes that must be re-proved through separate equality tables.
@@ -567,7 +619,7 @@ Implementation requirements:
 - Keep product public routing on the authoritative monolithic typed CP proof
   until `SYMBT3` has equivalent negative coverage and benchmark data.
 
-Current submilestone:
+**Current submilestone**
 
 - `SYMBT3-J` extends the non-authoritative cumulative profile with a
   production-shaped Ajtai norm/range layer. The cumulative development profile
@@ -654,6 +706,8 @@ Current submilestone:
   zero-knowledge masking, and final WHIR/Σ-IOP soundness analysis are future
   SYMBT3 blocks.
 
+### P5 — Architecture benchmark (`symbt3_c_vs_k`, 2026-05-06)
+
 Architecture benchmark baseline, recorded on 2026-05-06 with:
 
 ```text
@@ -673,6 +727,8 @@ family-columnar subproofs for every tested `k`.
 Criterion history should still be interpreted carefully; reset
 `target/criterion/whir_scaling` when comparing fresh before/after numbers.
 
+### P5 — SYMBT3-D baseline (2026-05-07)
+
 SYMBT3-D architecture benchmark baseline, recorded on 2026-05-07 with:
 
 ```text
@@ -683,6 +739,8 @@ SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features w
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 1 | 1 | 0 | 330,836 | 4.7096 ms | 5.3228 ms | 14 | 14 | 14 | 12 | 64 | 384 |
 | 2 | 1 | 0 | 404,215 | 7.0489 ms | 7.0847 ms | 20 | 20 | 20 | 13 | 128 | 384 |
+
+### P5 — SYMBT3-D2 folded product residual
 
 SYMBT3-D2 added the direct folded product residual benchmark target:
 
@@ -709,6 +767,8 @@ above:
 These are architecture/proof-shape numbers for a non-authoritative
 development path, not product public-verifier performance claims.
 
+### P5 — SYMBT3-E algebra-law profile
+
 SYMBT3-E replaces the default product law with ring negacyclic convolution and
 adds the algebra-law profile benchmark:
 
@@ -727,6 +787,8 @@ above:
 These numbers remain architecture/proof-shape measurements for a
 non-authoritative development path, not product public-verifier performance
 claims.
+
+### P5 — SYMBT3-K authority profile gate
 
 SYMBT3-K adds an authority soundness profile gate. `Symbt3AuthorityProfileV1`
 is canonical profile metadata binding the enabled A/B/D/D2/E/F/G/H/I2/J2
@@ -750,6 +812,43 @@ SYMBT3-K2 splits the authority-style gates:
 
 Product `verify_public` still does not route through SYMBT3.
 
+K2a is implemented as structural accumulator scaffolding only. The SYMBT3
+public statement binds `old_accumulator_digest` and `new_accumulator_digest`,
+and typed accumulator instance/witness wrappers provide stable digesting and
+public-statement conversion. The accumulator transition family, `rho_acc`, and
+`old_accumulator -> new_accumulator` proof remain K2b work.
+K2b adds the constant-size accumulator transition profile and
+`AccumulatorTransitionConsistency`: `rho_acc` is derived under
+`SYMBT3_ACC_TRANSITION`, remains separate from folding beta, and binds
+shape/relation metadata, the transition profile, `old_accumulator_digest`, and
+the folded batch boundary. The benchmark CSV reports
+`accumulator_transition_claims=1`; this counter must remain constant as `k`
+changes.
+K3 adds semantic profile versioning and the
+`AccumulatorSoundnessAuthorityCandidateV1` gate for the current NonZK research
+soundness profile. K4 adds the explicit research public accumulator API:
+`prove_public_symbt3_accumulator_research_non_zk(...)` and
+`verify_public_symbt3_accumulator_research_non_zk(...)`. The K4 API takes
+`Symbt3AccumulatorInstance` public input, rejects ProductAuthority and
+`product_eligible` profiles, requires the K3 gate, and delegates to the
+existing single-proof SYMBT3 verifier. It is not product routing and not a
+zkSNARK; K5 masking/ZK and K6 product promotion remain future work.
+K4.5/K3b adds verifier-side evaluator compression for source R1CS residuals.
+The verifier now opens the source residual column at a domain-separated
+`SYMBT3_SOURCE_R1CS_RESIDUAL_BATCH` batching point instead of treating the
+logical `64*k` residual coordinates as individual verifier checks. Benchmarks
+report both `source_r1cs_residual_claims` and
+`source_r1cs_residual_verifier_evaluations`; the latter is `1` for the current
+nonempty SYMBT3 profiles.
+K4.6 adds compressed public accumulator boundary canonicalization. The K4
+benchmark `public_statement_bytes` now measures
+`Symbt3AccumulatorInstance::canonical_bytes()` with expanded batch item,
+source-root, source-opening-root, and message-root vectors replaced by digest
+commitments. Expanded vectors remain present only for the current
+research/dev conversion path and are checked against the digest commitments
+before verification. This targets public-boundary size only; it does not
+promote SYMBT3 to product routing.
+
 Opt-in comparison command:
 
 ```text
@@ -760,6 +859,60 @@ This benchmark reports product `verify_public` and
 `verify_symbt3_research_authority_candidate` side by side. It requires the
 `ResearchAuthorityCandidate` profile, does not require `ProductAuthority`, and
 keeps the research verifier explicitly non-ZK/research-only/product-ineligible.
+The K4-specific research accumulator route is benchmarked separately:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4,8 cargo bench --bench whir_scaling --features whir -- "symbt3_accumulator_research_vs_k"
+```
+
+That benchmark calls the public accumulator research API, not the lower-level
+development hook, and reports proof shape, accumulator transition claims,
+manifest/source materialization counters, public accumulator bytes, and verifier
+cost attribution, including source residual logical claims versus verifier
+evaluations.
+K6a adds the opt-in NonZK integrity product benchmark:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4,8 cargo bench --bench whir_scaling --features whir -- "symbt3_accumulator_authority_vs_k"
+```
+
+This benchmark calls the explicit SYMBT3 ProductAuthority NonZK integrity API,
+not monolithic typed CP and not the K4 research verifier. It reports
+`route_kind=symbt3_non_zk_integrity_product`,
+`product_route_selected=true`, and `monolithic_fallback_used=false`, alongside
+the K4.5/K4.6 proof-shape and public-boundary counters. The default product
+`verify_public` benchmark remains the monolithic typed-CP route.
+
+K6b adds the consolidated side-by-side reporter:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4,8 cargo bench --bench whir_scaling --features whir -- "product_route_comparison_vs_k"
+```
+
+The reporter emits `PRODUCT_COMPARISON_CSV` rows joining the existing
+monolithic typed-CP product route with the explicit SYMBT3 K6a NonZK integrity
+route. Monolithic proof bytes are `cp_proof_bytes + output_proof_bytes`;
+monolithic public bytes are the compressed public envelope with proof payloads
+omitted. SYMBT3 proof bytes are the single SYMBT3 WHIR proof bytes; SYMBT3
+public bytes are the compressed accumulator instance canonical bytes.
+
+### K6b: Product Route Comparison
+
+| k | monolithic verify_ms | SYMBT3 K6a verify_ms | verify speedup | monolithic proof bytes | SYMBT3 proof bytes | proof size ratio | monolithic public bytes | SYMBT3 public bytes | notes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 2,109.052 | 17.656 | 119.45x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | K6a selected, no fallback |
+| 2 | 6,232.810 | 24.180 | 257.77x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | K6a selected, no fallback |
+| 4 | 13,326.962 | 24.348 | 547.36x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | K6a selected, no fallback |
+| 8 | 51,182.449 | 30.702 | 1,667.09x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | K6a selected, no fallback |
+
+These rows are one-shot route measurements emitted by the comparison reporter;
+the individual `public_verify_v2_vs_k` and
+`symbt3_accumulator_authority_vs_k` suites remain the repeated Criterion
+timing sources. SYMBT3 K6a is NonZK integrity only, explicit opt-in, not default
+product routing, does not implement K5 masking, and does not support private
+manifest membership.
+
+### P5 — SYMBT3-F Ajtai linear-algebra layout
 
 SYMBT3-F adds the explicit Ajtai commitment/opening linear-algebra layout and
 profile benchmark:
@@ -780,6 +933,8 @@ These numbers remain architecture/proof-shape measurements for a
 non-authoritative development path, not product public-verifier performance
 claims.
 
+### P5 — SYMBT3-G folded Ajtai projection/range
+
 SYMBT3-G adds the folded Ajtai projection/range development layout and profile
 benchmark:
 
@@ -798,6 +953,8 @@ above:
 These numbers remain architecture/proof-shape measurements for a
 non-authoritative development path, not product public-verifier performance
 claims.
+
+### P5 — SYMBT3-H manifest/source membership
 
 SYMBT3-H adds the typed manifest/source membership development layout and
 profile benchmark:
@@ -828,6 +985,8 @@ These numbers remain architecture/proof-shape measurements for a
 non-authoritative development path, not product public-verifier performance
 claims. The manifest membership table is intentionally typed algebraic/oracle
 boundary data; it does not reintroduce byte transcript reconstruction.
+
+### P5 — SYMBT3-I2 native message-oracle views
 
 SYMBT3-I2 adds native CP message-oracle views and a profile benchmark:
 
@@ -864,6 +1023,8 @@ SYMBT3-I2 is a semantic coverage benchmark for the non-authoritative
 development path. It is not a product public-verifier benchmark, and it does
 not reintroduce byte transcript/hash/opening reconstruction.
 
+### P5 — SYMBT3-J structured projection / monomial range
+
 SYMBT3-J adds the production-shaped structured projection and monomial
 embedding norm/range profile:
 
@@ -894,6 +1055,8 @@ SYMBT3-J is a semantic coverage benchmark for the non-authoritative
 development path. It replaces the default direct development projection/range
 scaffold, but it is not a final integer/mod-q lattice soundness claim and is
 not a product public-verifier benchmark.
+
+### P5 — SYMBT3-J2 verifier-cost attribution
 
 SYMBT3-J2 adds verifier-cost attribution and range-evaluator compression while
 keeping the same default J semantics. The deterministic monomial-witness and
@@ -930,7 +1093,108 @@ profile reported approximately 22.1 ms total, 7.5 ms in WHIR/PCS opening
 verification, 2.0 ms in transcript/public-statement work, and 12.6 ms in the
 combined sumcheck/final-constraint evaluator.
 
-Acceptance criteria:
+### P5 — SYMBT3-K0/J3 virtual/succinct evaluator refactor
+
+SYMBT3-K0/J3 begins the virtual/succinct evaluator refactor before any further
+authority promotion. Manifest/source membership is no longer materialized as
+three backend table columns (`manifest_source`, `manifest_value`, and
+`manifest_residual`), and `manifest_coordinate_count` is no longer part of the
+backend row-domain maximum. The manifest root, source-column layout, and typed
+manifest rows remain input-side beta-bound data; active manifest/source
+tampering still rejects before proof construction or at public-statement
+verification. The verifier profile now attributes the generic final evaluator
+to manifest, source R1CS, folded-boundary, product-residual, Ajtai, range, and
+message-view buckets. The benchmark harness enforces the K0/J3 structural gate
+that backend `oracle_len` grows by at most 2x when `k` doubles. Source R1CS
+residual bundling is the next succinct-evaluator target if the new attribution
+shows it dominates the remaining final evaluator cost.
+
+### P5 — SYMBT3-K1 compressed research public manifest
+
+SYMBT3-K1 compresses the research public manifest boundary. The canonical
+SYMBT3 development public statement now contains short boundary objects:
+`batch_manifest_root`, manifest/source layout digests, input public-boundary
+digest, source assignment boundary digest, source Ajtai commitment boundary
+digest, message oracle roots, folded-output boundary data, and semantic layout
+digests. It no longer serializes every active public/source coordinate matrix,
+every source assignment root, or every source Ajtai opening root. The verifier
+therefore binds the manifest root/layout as input-side data and does not
+reconstruct/hash the full logical manifest. This is a research-only compressed
+public statement; product `verify_public` remains on the monolithic
+authoritative typed CP path.
+
+K1b adds the research `ManifestEvaluationClaim` on top of this compressed
+boundary. The public statement now carries a canonical BabyBear
+`manifest_eval_claim`, and the single top-level SYMBT3 WHIR proof opens the
+source and manifest membership columns at a verifier-derived
+`manifest_membership_challenge`. This keeps `family_columnar_subproofs = 0` and
+`top_level_whir_proof_count = 1`, but increases the current opened-field count
+by two relative to the K0/J3/K1a measurements below.
+K1c changes the verifier-side evaluator to stream the source-side membership
+claim directly from the compressed public statement instead of reconstructing
+the full manifest row matrix. Prover-side row reconstruction remains only a
+sanity check.
+The K1 verifier additionally recomputes the canonical manifest oracle root
+from that same streamed public source boundary and requires it to equal
+`manifest_oracle_root`; a root-linked but non-canonical manifest root therefore
+fails before claim verification while preserving one top-level WHIR proof and
+zero family subproofs.
+K1e.2 removes both the dense manifest-oracle evaluation column and the
+materialized source-view column from the backend table. The public statement
+keeps the legacy `manifest_eval_claim` field as non-semantic data, but
+verification derives both `ManifestView(zeta)` and virtual `SourceView(zeta)`
+from compressed public boundary data. The benchmark reports
+`source_view_backend_column_count = 0`,
+`source_view_materialized_coordinate_count = 0`,
+`manifest_backend_column_count = 0`, and
+`manifest_materialized_coordinate_count = 0`.
+
+The K0/J3/K1 `symbt3_j_vs_k` scaling run, recorded on 2026-05-10 with
+`SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4,8,16,32,64`, reported:
+
+| k | proof bytes | prove mean | verify mean | opened fields | num_vars | oracle_len | manifest coordinates | message_to_trace_binding_count |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 398,442 | 8.060 ms | 7.042 ms | 21 | 13 | 8,192 | 1,218 | 0 |
+| 2 | 397,646 | 8.878 ms | 7.109 ms | 21 | 13 | 8,192 | 2,436 | 0 |
+| 4 | 404,432 | 11.687 ms | 6.955 ms | 21 | 13 | 8,192 | 4,872 | 0 |
+| 8 | 428,092 | 17.461 ms | 7.838 ms | 21 | 14 | 16,384 | 9,744 | 0 |
+| 16 | 649,445 | 30.010 ms | 10.536 ms | 21 | 15 | 32,768 | 19,488 | 0 |
+| 32 | 681,418 | 52.673 ms | 12.871 ms | 21 | 16 | 65,536 | 38,976 | 0 |
+| 64 | 700,328 | 97.545 ms | 16.197 ms | 21 | 17 | 131,072 | 77,952 | 0 |
+
+The proof remains one top-level WHIR object with zero family-columnar subproofs
+and one backend table. The backend oracle length no longer jumps by 4x at
+`k=16`: the sequence is 8,192, 8,192, 8,192, 16,384, 32,768, 65,536, 131,072,
+so the hard K0/J3 gate of at most 2x growth per k doubling passes for this run.
+`public_statement_bytes` is flat at 10,256 for all measured `k`, while
+`manifest_coordinate_count` remains a logical coverage counter. The generated
+scaling summary reports log-log slopes of about 0.223 for verify time, 0.621
+for prove time, 0.167 for proof bytes, 0.000 for public statement bytes, and
+0.714 for oracle length. These are still non-authoritative, non-ZK development
+numbers and not product public-verifier claims.
+
+### P5 — Asymptotic scaling CSV and plot dashboard
+
+The asymptotic-scaling benchmark suite writes a machine-readable CSV and plot
+dashboard:
+
+```text
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4,8,16,32,64 \
+  cargo bench --bench whir_scaling --features whir -- "symbt3_j_vs_k"
+python3 scripts/plot_symbt3_scaling.py benchmarks/symbt3_scaling.csv plots/symbt3
+```
+
+The benchmark writes `benchmarks/symbt3_scaling.csv` directly and also prints
+`SYMBT3_CSV,...` rows for shell collection. The plotting script uses
+pandas/matplotlib when available and otherwise emits dependency-free SVG plots,
+`doubling_ratios.csv`, and `summary.md`. The summary reports empirical log-log
+slopes for verify/prove time, proof bytes, public statement bytes, oracle
+length, opened fields, transcript squeezes, source R1CS claims, manifest
+coordinates, and message coordinates. The guardrail plot tracks one top-level
+WHIR proof, zero family subproofs, one backend table, and zero
+message-to-trace bindings.
+
+**Acceptance criteria**
 
 - `SYMBT3` verifies honest `k = 1, 2, 4` same-shape batches with one CP proof
   object per bucket.
@@ -949,11 +1213,14 @@ Acceptance criteria:
 - Benchmark output shows a small constant number of WHIR proof objects and a
   proof size/verifier time trajectory consistent with the CP-SNARK north star.
 
+---
+
+
 ## Milestone P6 - Versioned Field-Native Transcript Cleanup
 
-Goal: reduce constant factors only after the CP-aware architecture is in place.
+**Goal.** reduce constant factors only after the CP-aware architecture is in place.
 
-Implementation requirements:
+**Implementation requirements**
 
 - Keep the existing exact-byte Poseidon2/BabyBear path as compatibility and
   diagnostic version 1.
@@ -964,18 +1231,21 @@ Implementation requirements:
   documented.
 - Do not prove SHA-256 or legacy exact-byte transcript machinery inside WHIR.
 
-Acceptance criteria:
+**Acceptance criteria**
 
 - `SYMBT3` keeps the same security boundary while reducing byte/packing
   overhead.
 - Public proof versioning makes v1/v2 semantics unambiguous.
 - Compatibility tests remain green or are explicitly scoped as legacy.
 
+---
+
+
 ## Milestone P7 - Benchmark Against the North Star
 
-Goal: prove the cost model has changed, not just the implementation.
+**Goal.** prove the cost model has changed, not just the implementation.
 
-Required benchmark curves:
+**Required benchmark curves**
 
 ```text
 SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
@@ -1014,6 +1284,7 @@ opening span back to its residual family. Tests use that profile to tamper one
 sampled opening per instantiated family, and the benchmarks print residual
 counts, sampled checks, and private eval counts by family. This profiling data
 is intentionally not part of the public proof format.
+
 The `batched_cp_semantic_family_columnar_*` groups measure the `SYMBT2F`
 family-local diagnostic path. They print per-family row counts, local table
 sizes, subproof indices, local domain sizes, total internal subproof count,
@@ -1022,12 +1293,15 @@ over-materialization and to support negative tests; they are not the production
 performance target. The production comparison point for the next architecture
 is the future `SYMBT3` CP-aware WHIR oracle relation.
 
-Acceptance criteria:
+**Acceptance criteria**
 
 - Public verification grows much slower than the current near-linear baseline.
 - Public envelope size is constant or logarithmic in `k`.
 - Typed output verification remains negligible.
 - The docs report both absolute times and scaling ratios.
+
+---
+
 
 ## Non-Goals
 
@@ -1037,6 +1311,9 @@ Acceptance criteria:
 - Do not change Poseidon2/BabyBear semantics without proof-envelope versioning.
 - Do not remove current authoritative typed CP tests until the new compressed
   architecture has equivalent negative coverage.
+
+---
+
 
 ## Immediate Next Step
 

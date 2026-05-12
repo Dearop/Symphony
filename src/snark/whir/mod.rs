@@ -428,12 +428,21 @@ pub struct Symbt3VerifierCostProfile {
     pub verify_transcript_ms: f64,
     pub verify_sumcheck_rounds_ms: f64,
     pub verify_final_constraint_eval_ms: f64,
+    pub verify_final_eval_manifest_ms: f64,
+    pub verify_final_eval_source_r1cs_ms: f64,
+    pub verify_final_eval_folded_boundary_ms: f64,
+    pub verify_final_eval_product_residual_ms: f64,
+    pub verify_final_eval_ajtai_ms: f64,
+    pub verify_final_eval_range_ms: f64,
+    pub verify_final_eval_message_view_ms: f64,
     pub verify_manifest_membership_eval_ms: f64,
     pub verify_message_view_eval_ms: f64,
     pub verify_projection_eval_ms: f64,
     pub verify_monomial_embedding_eval_ms: f64,
     pub verify_representative_eval_ms: f64,
     pub verify_ajtai_eval_ms: f64,
+    pub source_r1cs_residual_claims: usize,
+    pub source_r1cs_residual_verifier_evaluations: usize,
 }
 
 /// Private opening slice for one structured batched-CP semantic block.
@@ -972,6 +981,7 @@ struct Symbt3CClaims {
     z_eval: BabyBear,
     num_vars: usize,
     product_sumcheck_rounds: Vec<[BabyBear; 4]>,
+    eval_profile: Symbt3VerifierCostProfile,
 }
 
 fn symbt3_c_table_and_claims(
@@ -982,6 +992,7 @@ fn symbt3_c_table_and_claims(
     claimed_override: Option<&[BabyBear]>,
     product_sumcheck_rounds_override: Option<&[[BabyBear; 4]]>,
 ) -> Option<Symbt3CClaims> {
+    let mut eval_profile = Symbt3VerifierCostProfile::default();
     if !statement.matches_relation(relation) || !relation.has_symbt3_i_families() {
         return None;
     }
@@ -1003,6 +1014,8 @@ fn symbt3_c_table_and_claims(
     let r1cs_residual_len = statement.source_assignment_roots.len()
         * relation.r1cs_evaluator_layout.num_constraints
         * D;
+    eval_profile.source_r1cs_residual_claims = r1cs_residual_len;
+    eval_profile.source_r1cs_residual_verifier_evaluations = usize::from(r1cs_residual_len > 0);
     let gr1cs_residual_len = relation
         .gr1cs_residual_layout
         .folded_evaluation_coordinate_count
@@ -1012,40 +1025,28 @@ fn symbt3_c_table_and_claims(
         .ajtai_norm_range_layout
         .projection_layout
         .output_len;
-    let manifest_len = relation
-        .batch_manifest_layout
-        .source_column_layout
-        .coordinate_count
-        * statement.active_count;
-    let message_semantic_len = relation
-        .message_semantic_layout
-        .view_coordinate_count(statement.active_count);
     let row_len = commitment_len
         .max(opening_len)
         .max(r1cs_residual_len)
         .max(gr1cs_residual_len)
         .max(product_residual_len)
-        .max(projection_len)
-        .max(manifest_len)
-        .max(message_semantic_len);
+        .max(projection_len);
     let row_count = row_len.next_power_of_two().max(1);
     let row_vars = row_count.trailing_zeros() as usize;
-    let base_column_count = 6 + 6 * statement.active_count;
-    let source_r1cs_residual_col = base_column_count;
+    let acted_commitment_sum_col: usize = 1;
+    let commitment_wrap_col = 2;
+    let folded_opening_col = 3;
+    let acted_opening_sum_col = 4;
+    let opening_wrap_col = 5;
+    let ajtai_actual_col = 6;
+    let source_r1cs_residual_col = 7;
     let folded_gr1cs_residual_col = source_r1cs_residual_col + 1;
-    let product_l_col = folded_gr1cs_residual_col + 1;
-    let product_r_col = product_l_col + 1;
-    let product_o_col = product_r_col + 1;
-    let product_residual_col = product_o_col + 1;
+    let product_residual_col = folded_gr1cs_residual_col + 1;
     let projected_opening_col = product_residual_col + 1;
     let projection_residual_col = projected_opening_col + 1;
     let range_residual_col = projection_residual_col + 1;
     let monomial_residual_col = range_residual_col + 1;
-    let manifest_source_col = monomial_residual_col + 1;
-    let manifest_value_col = manifest_source_col + 1;
-    let manifest_residual_col = manifest_value_col + 1;
-    let message_value_col = manifest_residual_col + 1;
-    let column_count = base_column_count + 14;
+    let column_count: usize = monomial_residual_col + 1;
     let padded_column_count = column_count.next_power_of_two().max(1);
     let col_vars = padded_column_count.trailing_zeros() as usize;
     let num_vars = row_vars + col_vars;
@@ -1072,6 +1073,26 @@ fn symbt3_c_table_and_claims(
         .zip(beta_rings.iter())
         .map(|(value, beta)| value.ring_scalar_mul(beta, relation.ring_module_layout.modulus))
         .collect::<Vec<_>>();
+    let acted_commitment_sum = symbt3_sum_ring_vectors_flat(&acted_commitments);
+    let public_manifest_view_eval = BabyBear::from_u32(
+        crate::batched_cp::symbt3_canonical_manifest_view_eval_for_statement(
+            relation,
+            statement,
+            &statement.manifest_oracle_root,
+        )?,
+    );
+    let public_source_view_eval = BabyBear::from_u32(
+        crate::batched_cp::symbt3_virtual_source_view_eval_for_statement(
+            relation,
+            statement,
+            &statement.manifest_oracle_root,
+        )?,
+    );
+    // SYMBT3-K1e.2 treats SourceView as a virtual public-boundary evaluator.
+    // The verifier derives both sides from compressed public boundary data
+    // instead of committing a dense source-view column in the WHIR table.
+    eval_profile.verify_manifest_membership_eval_ms += 0.0;
+    eval_profile.verify_final_eval_manifest_ms += 0.0;
     let (mut product_l_values, mut product_r_values, mut product_o_values) =
         symbt3_folded_gr1cs_product_columns(relation, statement)?;
     let mut product_residual_values = symbt3_folded_gr1cs_product_residual_values(
@@ -1096,7 +1117,6 @@ fn symbt3_c_table_and_claims(
             || witness.folded_ajtai_opening_values.len() != opening_len
             || witness.source_r1cs_assignment_values.len()
                 != statement.source_assignment_roots.len()
-            || witness.manifest_source_values.len() != statement.active_count
             || witness.message_oracles.len() != relation.oracle_layout.message_oracles.len()
             || witness
                 .source_ajtai_opening_values
@@ -1106,13 +1126,6 @@ fn symbt3_c_table_and_claims(
                 .source_r1cs_assignment_values
                 .iter()
                 .any(|row| row.len() != relation.r1cs_evaluator_layout.num_variables * D)
-            || witness.manifest_source_values.iter().any(|row| {
-                row.len()
-                    != relation
-                        .batch_manifest_layout
-                        .source_column_layout
-                        .coordinate_count
-            })
         {
             return Vec::new();
         }
@@ -1131,14 +1144,6 @@ fn symbt3_c_table_and_claims(
             {
                 return Vec::new();
             }
-        }
-        if crate::batched_cp::symbt3_batch_manifest_root_from_rows(
-            relation.shape.accumulator_shape.digest_scheme,
-            relation,
-            &witness.manifest_source_values,
-        ) != statement.batch_manifest_root
-        {
-            return Vec::new();
         }
         for (row, root) in witness
             .source_r1cs_assignment_values
@@ -1207,6 +1212,7 @@ fn symbt3_c_table_and_claims(
             .zip(beta_rings.iter())
             .map(|(value, beta)| value.ring_scalar_mul(beta, relation.ring_module_layout.modulus))
             .collect::<Vec<_>>();
+        let acted_opening_sum = symbt3_sum_ring_vectors_flat(&acted_openings);
         let ajtai_actual = symbt3_ajtai_mul(
             &relation.ajtai_matrix,
             &folded_opening,
@@ -1215,89 +1221,32 @@ fn symbt3_c_table_and_claims(
         let source_r1cs_residuals =
             symbt3_source_r1cs_residual_values(relation, &witness.source_r1cs_assignment_values);
         let folded_gr1cs_residuals = symbt3_folded_gr1cs_residual_values(relation, statement);
-        let Some(public_manifest_source_values) =
-            crate::batched_cp::symbt3_manifest_rows_for_statement(relation, statement)
-        else {
-            return Vec::new();
-        };
-        let manifest_source_values = public_manifest_source_values
-            .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect::<Vec<_>>();
-        let manifest_values = witness
-            .manifest_source_values
-            .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect::<Vec<_>>();
-        let manifest_residual_values =
-            symbt3_manifest_membership_residual_values(&manifest_source_values, &manifest_values);
-        if manifest_residual_values
-            .iter()
-            .any(|&value| value != BabyBear::ZERO)
-        {
-            return Vec::new();
-        }
-        let Some(message_values) =
-            crate::batched_cp::symbt3_message_view_flat_values(relation, &witness.message_oracles)
-        else {
-            return Vec::new();
-        };
-
         let mut table = vec![BabyBear::ZERO; row_count * padded_column_count];
         symbt3_write_flat_column(&mut table, row_count, 0, &statement.folded_ajtai_commitment);
-        for item in 0..statement.active_count {
-            symbt3_write_flat_column(
-                &mut table,
-                row_count,
-                1 + item,
-                &statement.input_commitment_values[item],
-            );
-            symbt3_write_flat_column(
-                &mut table,
-                row_count,
-                1 + statement.active_count + item,
-                &symbt3_ring_vector_to_flat(&acted_commitments[item]),
-            );
-            symbt3_write_beta_column(
-                &mut table,
-                row_count,
-                1 + 2 * statement.active_count + item,
-                &beta_rings[item],
-            );
-        }
-        let commitment_wrap_col = 1 + 3 * statement.active_count;
+        symbt3_write_flat_column(
+            &mut table,
+            row_count,
+            acted_commitment_sum_col,
+            &acted_commitment_sum,
+        );
         symbt3_write_flat_column(&mut table, row_count, commitment_wrap_col, &commitment_wrap);
-        let folded_opening_col = commitment_wrap_col + 1;
         symbt3_write_flat_column(
             &mut table,
             row_count,
             folded_opening_col,
             &witness.folded_ajtai_opening_values,
         );
-        for item in 0..statement.active_count {
-            symbt3_write_flat_column(
-                &mut table,
-                row_count,
-                folded_opening_col + 1 + item,
-                witness
-                    .source_ajtai_opening_values
-                    .get(item)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-            );
-            symbt3_write_flat_column(
-                &mut table,
-                row_count,
-                folded_opening_col + 1 + statement.active_count + item,
-                &symbt3_ring_vector_to_flat(&acted_openings[item]),
-            );
-        }
-        let opening_wrap_col = folded_opening_col + 1 + 2 * statement.active_count;
+        symbt3_write_flat_column(
+            &mut table,
+            row_count,
+            acted_opening_sum_col,
+            &acted_opening_sum,
+        );
         symbt3_write_flat_column(&mut table, row_count, opening_wrap_col, &opening_wrap);
         symbt3_write_flat_column(
             &mut table,
             row_count,
-            opening_wrap_col + 1,
+            ajtai_actual_col,
             &symbt3_ring_vector_to_flat(&ajtai_actual),
         );
         symbt3_write_bb_column(
@@ -1312,9 +1261,6 @@ fn symbt3_c_table_and_claims(
             folded_gr1cs_residual_col,
             &folded_gr1cs_residuals,
         );
-        symbt3_write_bb_column(&mut table, row_count, product_l_col, &product_l_values);
-        symbt3_write_bb_column(&mut table, row_count, product_r_col, &product_r_values);
-        symbt3_write_bb_column(&mut table, row_count, product_o_col, &product_o_values);
         symbt3_write_bb_column(
             &mut table,
             row_count,
@@ -1345,20 +1291,6 @@ fn symbt3_c_table_and_claims(
             monomial_residual_col,
             &monomial_residual_values,
         );
-        symbt3_write_flat_column(
-            &mut table,
-            row_count,
-            manifest_source_col,
-            &manifest_source_values,
-        );
-        symbt3_write_flat_column(&mut table, row_count, manifest_value_col, &manifest_values);
-        symbt3_write_bb_column(
-            &mut table,
-            row_count,
-            manifest_residual_col,
-            &manifest_residual_values,
-        );
-        symbt3_write_flat_column(&mut table, row_count, message_value_col, &message_values);
         table
     });
     if table.as_ref().is_some_and(Vec::is_empty) {
@@ -1375,7 +1307,10 @@ fn symbt3_c_table_and_claims(
     let row_point = (0..row_vars)
         .map(|idx| derive_challenge(&transcript, idx, b"symbt3-c-row-point"))
         .collect::<Vec<_>>();
+    let source_r1cs_residual_row_point =
+        symbt3_source_r1cs_residual_batching_point(seed, relation, statement, row_vars);
 
+    let product_sumcheck_start = std::time::Instant::now();
     let (product_sumcheck_rounds, product_challenges, product_final_claim) = if let Some(rounds) =
         product_sumcheck_rounds_override
     {
@@ -1404,22 +1339,22 @@ fn symbt3_c_table_and_claims(
         let final_claim = final_eq * (final_l * final_r - final_o);
         (rounds, challenges, final_claim)
     };
+    eval_profile.verify_sumcheck_rounds_ms += elapsed_ms(product_sumcheck_start);
     let product_row_point = sumcheck_point_to_mle_point(&product_challenges, row_vars);
 
-    let mut points = Vec::with_capacity(column_count + 4);
+    let mut points = Vec::with_capacity(column_count + 1);
     for column in 0..column_count {
-        let mut point = row_point.clone();
+        let mut point = if column == source_r1cs_residual_col {
+            source_r1cs_residual_row_point.clone()
+        } else {
+            row_point.clone()
+        };
         for bit in 0..col_vars {
             point.push(BabyBear::from_u32(((column >> bit) & 1) as u32));
         }
         points.push(point);
     }
-    for column in [
-        product_l_col,
-        product_r_col,
-        product_o_col,
-        product_residual_col,
-    ] {
+    for column in [product_residual_col] {
         let mut point = product_row_point.clone();
         for bit in 0..col_vars {
             point.push(BabyBear::from_u32(((column >> bit) & 1) as u32));
@@ -1427,7 +1362,7 @@ fn symbt3_c_table_and_claims(
         points.push(point);
     }
     let claimed = if let Some(claimed) = claimed_override {
-        if claimed.len() != column_count + 4 {
+        if claimed.len() != column_count + 1 {
             return None;
         }
         claimed.to_vec()
@@ -1446,27 +1381,12 @@ fn symbt3_c_table_and_claims(
         0,
         &statement.folded_ajtai_commitment,
     );
-    for item in 0..statement.active_count {
-        symbt3_write_flat_column(
-            &mut public_table,
-            row_count,
-            1 + item,
-            &statement.input_commitment_values[item],
-        );
-        symbt3_write_flat_column(
-            &mut public_table,
-            row_count,
-            1 + statement.active_count + item,
-            &symbt3_ring_vector_to_flat(&acted_commitments[item]),
-        );
-        symbt3_write_beta_column(
-            &mut public_table,
-            row_count,
-            1 + 2 * statement.active_count + item,
-            &beta_rings[item],
-        );
-    }
-    let commitment_wrap_col = 1 + 3 * statement.active_count;
+    symbt3_write_flat_column(
+        &mut public_table,
+        row_count,
+        acted_commitment_sum_col,
+        &acted_commitment_sum,
+    );
     symbt3_write_flat_column(
         &mut public_table,
         row_count,
@@ -1482,46 +1402,14 @@ fn symbt3_c_table_and_claims(
     symbt3_write_bb_column(
         &mut public_table,
         row_count,
-        product_l_col,
-        &product_l_values,
-    );
-    symbt3_write_bb_column(
-        &mut public_table,
-        row_count,
-        product_r_col,
-        &product_r_values,
-    );
-    symbt3_write_bb_column(
-        &mut public_table,
-        row_count,
-        product_o_col,
-        &product_o_values,
-    );
-    symbt3_write_bb_column(
-        &mut public_table,
-        row_count,
         product_residual_col,
         &product_residual_values,
     );
-    if let Some(public_manifest_source_values) =
-        crate::batched_cp::symbt3_manifest_rows_for_statement(relation, statement)
-    {
-        let manifest_source_values = public_manifest_source_values
-            .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect::<Vec<_>>();
-        symbt3_write_flat_column(
-            &mut public_table,
-            row_count,
-            manifest_source_col,
-            &manifest_source_values,
-        );
-    }
     let public_expected = points
         .iter()
         .map(|point| mle_eval_bb_fast(&public_table, point))
         .collect::<Vec<_>>();
-    for idx in 0..=(commitment_wrap_col) {
+    for idx in 0..=commitment_wrap_col {
         if claimed[idx] != public_expected[idx] {
             return None;
         }
@@ -1529,41 +1417,41 @@ fn symbt3_c_table_and_claims(
     if claimed[folded_gr1cs_residual_col] != public_expected[folded_gr1cs_residual_col] {
         return None;
     }
-    for idx in column_count..column_count + 4 {
+    for idx in column_count..column_count + 1 {
         if claimed[idx] != public_expected[idx] {
             return None;
         }
     }
-    if claimed[manifest_source_col] != public_expected[manifest_source_col] {
-        return None;
-    }
-
+    let folded_boundary_start = std::time::Instant::now();
     let folded_commitment_eval = claimed[0];
-    let folded_opening_col = commitment_wrap_col + 1;
     let folded_opening_eval = claimed[folded_opening_col];
-    let mut weighted_commitment_eval = BabyBear::ZERO;
-    let mut weighted_opening_eval = BabyBear::ZERO;
-    for item in 0..statement.active_count {
-        weighted_commitment_eval += claimed[1 + statement.active_count + item];
-        weighted_opening_eval += claimed[folded_opening_col + 1 + statement.active_count + item];
-    }
-    let opening_wrap_col = folded_opening_col + 1 + 2 * statement.active_count;
-    let ajtai_actual_eval = claimed[opening_wrap_col + 1];
+    let weighted_commitment_eval = claimed[acted_commitment_sum_col];
+    let weighted_opening_eval = claimed[acted_opening_sum_col];
+    let ajtai_actual_eval = claimed[ajtai_actual_col];
+    eval_profile.verify_final_eval_folded_boundary_ms += elapsed_ms(folded_boundary_start);
+    let source_r1cs_start = std::time::Instant::now();
     let source_r1cs_residual_eval = claimed[source_r1cs_residual_col];
+    eval_profile.verify_final_eval_source_r1cs_ms += elapsed_ms(source_r1cs_start);
+    let folded_gr1cs_start = std::time::Instant::now();
     let folded_gr1cs_residual_eval = claimed[folded_gr1cs_residual_col];
-    let product_l_final = claimed[column_count];
-    let product_r_final = claimed[column_count + 1];
-    let product_o_final = claimed[column_count + 2];
-    let product_residual_final = claimed[column_count + 3];
+    eval_profile.verify_final_eval_folded_boundary_ms += elapsed_ms(folded_gr1cs_start);
+    let product_eval_start = std::time::Instant::now();
+    let product_residual_final = claimed[column_count];
     let product_eq_final = mle_eval_bb_fast(&product_eq_table, &product_row_point);
     let product_final_residual = product_final_claim - product_eq_final * product_residual_final;
-    let _opened_product_columns = (product_l_final, product_r_final, product_o_final);
+    eval_profile.verify_final_eval_product_residual_ms += elapsed_ms(product_eval_start);
+    let manifest_eval_start = std::time::Instant::now();
+    let manifest_residual = public_source_view_eval - public_manifest_view_eval;
+    eval_profile.verify_manifest_membership_eval_ms += elapsed_ms(manifest_eval_start);
+    eval_profile.verify_final_eval_manifest_ms += elapsed_ms(manifest_eval_start);
+    let range_eval_start = std::time::Instant::now();
     let projection_residual_eval = claimed[projection_residual_col];
     let range_residual_eval = claimed[range_residual_col];
     let monomial_residual_eval = claimed[monomial_residual_col];
-    let manifest_source_eval = claimed[manifest_source_col];
-    let manifest_value_eval = claimed[manifest_value_col];
-    let manifest_residual_eval = claimed[manifest_residual_col];
+    eval_profile.verify_projection_eval_ms += elapsed_ms(range_eval_start);
+    eval_profile.verify_monomial_embedding_eval_ms += elapsed_ms(range_eval_start);
+    eval_profile.verify_representative_eval_ms += elapsed_ms(range_eval_start);
+    eval_profile.verify_final_eval_range_ms += elapsed_ms(range_eval_start);
     let q_eval = BabyBear::from_u32(
         (relation.ring_module_layout.modulus % BabyBear::ORDER_U32 as u64) as u32,
     );
@@ -1571,15 +1459,17 @@ fn symbt3_c_table_and_claims(
         folded_commitment_eval - weighted_commitment_eval + claimed[commitment_wrap_col] * q_eval;
     let opening_residual =
         folded_opening_eval - weighted_opening_eval + claimed[opening_wrap_col] * q_eval;
+    let ajtai_eval_start = std::time::Instant::now();
     let ajtai_residual = ajtai_actual_eval - folded_commitment_eval
         + source_r1cs_residual_eval
         + folded_gr1cs_residual_eval
         + product_final_residual
+        + manifest_residual
         + projection_residual_eval
         + range_residual_eval
-        + monomial_residual_eval
-        + (manifest_source_eval - manifest_value_eval)
-        + manifest_residual_eval;
+        + monomial_residual_eval;
+    eval_profile.verify_ajtai_eval_ms += elapsed_ms(ajtai_eval_start);
+    eval_profile.verify_final_eval_ajtai_ms += elapsed_ms(ajtai_eval_start);
     Some(Symbt3CClaims {
         table,
         points,
@@ -1588,6 +1478,7 @@ fn symbt3_c_table_and_claims(
         z_eval: folded_commitment_eval,
         num_vars,
         product_sumcheck_rounds,
+        eval_profile,
     })
 }
 
@@ -1600,18 +1491,6 @@ fn symbt3_write_flat_column(
     let offset = column * row_count;
     for (row, &value) in values.iter().take(row_count).enumerate() {
         table[offset + row] = BabyBear::from_i64(value);
-    }
-}
-
-fn symbt3_write_beta_column(
-    table: &mut [BabyBear],
-    row_count: usize,
-    column: usize,
-    beta: &RingElement,
-) {
-    let offset = column * row_count;
-    for row in 0..row_count {
-        table[offset + row] = BabyBear::from_i64(beta.coeffs[row % D]);
     }
 }
 
@@ -1667,6 +1546,30 @@ fn symbt3_source_r1cs_residual_values(
         }
     }
     out
+}
+
+fn symbt3_source_r1cs_residual_batching_point(
+    seed: &[u8; 32],
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    row_vars: usize,
+) -> Vec<BabyBear> {
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(b"SYMBT3_SOURCE_R1CS_RESIDUAL_BATCH");
+    transcript.extend_from_slice(seed);
+    transcript.extend_from_slice(&relation.relation_id());
+    transcript.extend_from_slice(&statement.shape_id);
+    transcript.extend_from_slice(&statement.source_assignment_boundary_digest);
+    transcript.extend_from_slice(&statement.source_column_layout_digest);
+    transcript.extend_from_slice(&statement.r1cs_evaluator_layout_digest);
+    transcript.extend_from_slice(&statement.folded_gr1cs_boundary_digest);
+    transcript.extend_from_slice(&statement.whir_parameter_digest);
+    transcript.extend_from_slice(&crate::batched_cp::derive_symbt3_public_statement_digest(
+        relation, statement,
+    ));
+    (0..row_vars)
+        .map(|idx| derive_challenge(&transcript, idx, b"symbt3-source-r1cs-residual-row"))
+        .collect()
 }
 
 fn symbt3_r1cs_linear_ring(
@@ -1921,16 +1824,6 @@ fn symbt3_monomial_embedding_residual_values(
     )
 }
 
-fn symbt3_manifest_membership_residual_values(source: &[i64], manifest: &[i64]) -> Vec<BabyBear> {
-    let len = source.len().max(manifest.len());
-    (0..len)
-        .map(|idx| {
-            BabyBear::from_i64(source.get(idx).copied().unwrap_or_default())
-                - BabyBear::from_i64(manifest.get(idx).copied().unwrap_or_default())
-        })
-        .collect()
-}
-
 fn symbt3_negacyclic_mul_bb(left: &[BabyBear], right: &[BabyBear]) -> [BabyBear; D] {
     let mut out = [BabyBear::ZERO; D];
     for i in 0..D {
@@ -1990,6 +1883,21 @@ fn symbt3_ring_vector_to_flat(value: &crate::ring::RingVector) -> Vec<i64> {
         .iter()
         .flat_map(|elem| elem.coeffs.iter().copied())
         .collect()
+}
+
+fn symbt3_sum_ring_vectors_flat(values: &[crate::ring::RingVector]) -> Vec<i64> {
+    let Some(first) = values.first() else {
+        return Vec::new();
+    };
+    let mut out = vec![0i64; first.elements.len() * D];
+    for value in values {
+        for (elem_idx, elem) in value.elements.iter().enumerate() {
+            for coeff_idx in 0..D {
+                out[elem_idx * D + coeff_idx] += elem.coeffs[coeff_idx];
+            }
+        }
+    }
+    out
 }
 
 fn symbt3_ring_fold_with_wrap(
@@ -3000,6 +2908,207 @@ impl WhirSnark {
         }
         verify_symbt3_batched_cp_with_profile(vk, statement, proof, None)
     }
+
+    /// Research-only SYMBT3 K3 accumulator-soundness authority-candidate gate helper.
+    ///
+    /// This enforces the semantic-profile-version-1 K1/K2/K3 policy and
+    /// soundness metadata gate, but it remains separate from ProductAuthority
+    /// and does not alter product `verify_public` routing. It still verifies
+    /// an existing SYMBT3 public statement and proof; it is not the K4 public
+    /// accumulator API because it does not accept a `Symbt3AccumulatorInstance`
+    /// boundary directly.
+    #[must_use]
+    pub fn verify_symbt3_accumulator_soundness_authority_candidate(
+        vk: &WhirVerifyingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        proof: &WhirProof,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+    ) -> Option<bool> {
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            vk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        if !profile
+            .accepts_statement_for_accumulator_soundness_authority_candidate(&relation, statement)
+        {
+            return Some(false);
+        }
+        verify_symbt3_batched_cp_with_profile(vk, statement, proof, None)
+    }
+
+    /// NonZK: may reveal WHIR-queried private coordinates at query positions.
+    ///
+    /// Not a zkSNARK. Research-only accumulator soundness path. Requires
+    /// `routing_status=ResearchOnly`, `product_eligible=false`, and the K3
+    /// `AccumulatorSoundnessAuthorityCandidateV1` profile gate. This is not
+    /// product `verify_public` routing.
+    #[must_use]
+    pub fn prove_public_symbt3_accumulator_research_non_zk(
+        pk: &WhirProvingKey,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+        accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+        witness: &crate::batched_cp::Symbt3AccumulatorWitness,
+    ) -> Option<WhirProof> {
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            pk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        let statement = symbt3_accumulator_research_statement_for_relation(
+            profile,
+            accumulator_instance,
+            &relation,
+        )?;
+        let witness = witness.to_symbt3_witness(&relation)?;
+        <WhirSnark as crate::cp_backend_api::CpBackend>::prove_symbt3_batched_cp(
+            pk, &statement, &witness,
+        )
+    }
+
+    /// NonZK: may reveal WHIR-queried private coordinates at query positions.
+    ///
+    /// Not a zkSNARK. Research-only accumulator soundness path. Requires
+    /// `routing_status=ResearchOnly`, `product_eligible=false`, and the K3
+    /// `AccumulatorSoundnessAuthorityCandidateV1` profile gate. This is not
+    /// product `verify_public` routing.
+    #[must_use]
+    pub fn verify_public_symbt3_accumulator_research_non_zk(
+        vk: &WhirVerifyingKey,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+        accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+        proof: &WhirProof,
+    ) -> bool {
+        let Some(relation) = vk.relation.context.as_ref().and_then(|context| {
+            crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(context).ok()
+        }) else {
+            return false;
+        };
+        let Some(statement) = symbt3_accumulator_research_statement_for_relation(
+            profile,
+            accumulator_instance,
+            &relation,
+        ) else {
+            return false;
+        };
+        verify_symbt3_batched_cp_with_profile(vk, &statement, proof, None).unwrap_or(false)
+    }
+
+    /// NonZK: may reveal WHIR-queried private coordinates at query positions.
+    ///
+    /// Not a zkSNARK. Explicit opt-in product-integrity SYMBT3 accumulator
+    /// route. This requires `routing_status=ProductAuthority`,
+    /// `product_eligible=true`, `zk_status=NonZkIntegrityOnly`, and the K6a
+    /// NonZK product policy. It does not alter the monolithic typed-CP
+    /// `verify_public` route and it must not be used as a privacy-preserving
+    /// proof.
+    #[must_use]
+    pub fn prove_public_symbt3_accumulator_non_zk_integrity(
+        pk: &WhirProvingKey,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+        accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+        witness: &crate::batched_cp::Symbt3AccumulatorWitness,
+    ) -> Option<WhirProof> {
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            pk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        let statement = symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+            profile,
+            accumulator_instance,
+            &relation,
+        )?;
+        let witness = witness.to_symbt3_witness(&relation)?;
+        <WhirSnark as crate::cp_backend_api::CpBackend>::prove_symbt3_batched_cp(
+            pk, &statement, &witness,
+        )
+    }
+
+    /// NonZK: may reveal WHIR-queried private coordinates at query positions.
+    ///
+    /// Not a zkSNARK. Explicit opt-in product-integrity SYMBT3 accumulator
+    /// route. The proof-kind discriminator must be
+    /// `ProductProofKind::Symbt3AccumulatorNonZkIntegrity`; wrong or legacy
+    /// proof kinds fail closed with no monolithic fallback.
+    #[must_use]
+    pub fn verify_public_symbt3_accumulator_non_zk_integrity(
+        vk: &WhirVerifyingKey,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+        accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+        proof_kind: crate::batched_cp::ProductProofKind,
+        proof: &WhirProof,
+    ) -> bool {
+        if proof_kind != crate::batched_cp::ProductProofKind::Symbt3AccumulatorNonZkIntegrity {
+            return false;
+        }
+        if proof.is_output
+            || !proof.sumcheck_rounds_3.is_empty()
+            || !proof.linear_checks.is_empty()
+            || !proof.family_columnar_subproofs.is_empty()
+        {
+            return false;
+        }
+        let Some(relation) = vk.relation.context.as_ref().and_then(|context| {
+            crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(context).ok()
+        }) else {
+            return false;
+        };
+        let Some(statement) = symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+            profile,
+            accumulator_instance,
+            &relation,
+        ) else {
+            return false;
+        };
+        verify_symbt3_batched_cp_with_profile(vk, &statement, proof, None).unwrap_or(false)
+    }
+}
+
+fn symbt3_accumulator_research_statement_for_relation(
+    profile: &crate::batched_cp::Symbt3AuthorityProfile,
+    accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+) -> Option<crate::batched_cp::BatchedCpSymbt3PublicStatement> {
+    if profile.routing_status != crate::batched_cp::Symbt3RoutingStatus::ResearchOnly
+        || profile.product_eligible
+        || !profile.research_only
+        || profile.zk_status != crate::batched_cp::Symbt3ZkStatus::NonZkDevelopment
+        || profile.semantic_profile_version < 1
+        || !crate::batched_cp::profile_meets_accumulator_soundness_authority(profile)
+        || !profile.accepts_relation_for_accumulator_soundness_authority_candidate(relation)
+        || !accumulator_instance.matches_profile_and_relation(profile, relation)
+    {
+        return None;
+    }
+    let statement = accumulator_instance.to_public_statement();
+    if !profile
+        .accepts_statement_for_accumulator_soundness_authority_candidate(relation, &statement)
+    {
+        return None;
+    }
+    Some(statement)
+}
+
+fn symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+    profile: &crate::batched_cp::Symbt3AuthorityProfile,
+    accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+) -> Option<crate::batched_cp::BatchedCpSymbt3PublicStatement> {
+    if profile.routing_status != crate::batched_cp::Symbt3RoutingStatus::ProductAuthority
+        || !profile.product_eligible
+        || profile.research_only
+        || profile.zk_status != crate::batched_cp::Symbt3ZkStatus::NonZkIntegrityOnly
+        || profile.semantic_profile_version < 1
+        || !crate::batched_cp::product_policy_accepts_non_zk(profile)
+        || !crate::batched_cp::profile_meets_accumulator_soundness_non_zk_integrity_product(profile)
+        || !profile.accepts_relation_for_non_zk_integrity_product_authority(relation)
+        || !accumulator_instance.matches_profile_and_relation(profile, relation)
+    {
+        return None;
+    }
+    let statement = accumulator_instance.to_public_statement();
+    if !profile.accepts_statement_for_non_zk_integrity_product_authority(relation, &statement) {
+        return None;
+    }
+    Some(statement)
 }
 
 fn elapsed_ms(start: std::time::Instant) -> f64 {
@@ -3061,13 +3170,30 @@ fn verify_symbt3_batched_cp_with_profile(
     if let Some(profile) = profile.as_deref_mut() {
         let elapsed = elapsed_ms(constraint_start);
         profile.verify_final_constraint_eval_ms += elapsed;
-        profile.verify_sumcheck_rounds_ms += elapsed;
-        profile.verify_manifest_membership_eval_ms += 0.0;
-        profile.verify_message_view_eval_ms += 0.0;
-        profile.verify_projection_eval_ms += 0.0;
-        profile.verify_monomial_embedding_eval_ms += 0.0;
-        profile.verify_representative_eval_ms += 0.0;
-        profile.verify_ajtai_eval_ms += 0.0;
+        profile.verify_sumcheck_rounds_ms += claims.eval_profile.verify_sumcheck_rounds_ms;
+        profile.verify_final_eval_manifest_ms += claims.eval_profile.verify_final_eval_manifest_ms;
+        profile.verify_final_eval_source_r1cs_ms +=
+            claims.eval_profile.verify_final_eval_source_r1cs_ms;
+        profile.verify_final_eval_folded_boundary_ms +=
+            claims.eval_profile.verify_final_eval_folded_boundary_ms;
+        profile.verify_final_eval_product_residual_ms +=
+            claims.eval_profile.verify_final_eval_product_residual_ms;
+        profile.verify_final_eval_ajtai_ms += claims.eval_profile.verify_final_eval_ajtai_ms;
+        profile.verify_final_eval_range_ms += claims.eval_profile.verify_final_eval_range_ms;
+        profile.verify_final_eval_message_view_ms +=
+            claims.eval_profile.verify_final_eval_message_view_ms;
+        profile.verify_manifest_membership_eval_ms +=
+            claims.eval_profile.verify_manifest_membership_eval_ms;
+        profile.verify_message_view_eval_ms += claims.eval_profile.verify_message_view_eval_ms;
+        profile.verify_projection_eval_ms += claims.eval_profile.verify_projection_eval_ms;
+        profile.verify_monomial_embedding_eval_ms +=
+            claims.eval_profile.verify_monomial_embedding_eval_ms;
+        profile.verify_representative_eval_ms += claims.eval_profile.verify_representative_eval_ms;
+        profile.verify_ajtai_eval_ms += claims.eval_profile.verify_ajtai_eval_ms;
+        profile.source_r1cs_residual_claims = claims.eval_profile.source_r1cs_residual_claims;
+        profile.source_r1cs_residual_verifier_evaluations = claims
+            .eval_profile
+            .source_r1cs_residual_verifier_evaluations;
     }
     if proof.num_vars != claims.num_vars
         || proof.evaluations != claims.evaluations

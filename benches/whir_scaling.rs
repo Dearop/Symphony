@@ -21,6 +21,9 @@
 //!   cargo bench --bench whir_scaling --features whir -- "batched_cp_semantic_family_columnar_poseidon_v2_vs_k"
 //!   cargo bench --bench whir_scaling --features whir -- "public_proof_batched_cp_size_vs_k"
 //!   cargo bench --bench whir_scaling --features whir -- "symbt3_research_vs_product_verify_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "symbt3_accumulator_research_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "symbt3_accumulator_authority_vs_k"
+//!   cargo bench --bench whir_scaling --features whir -- "product_route_comparison_vs_k"
 //!   SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
 //!
 //! Reset local Criterion history for this bench:
@@ -46,15 +49,21 @@
 //!   whir_scaling/batched_cp_semantic_family_columnar_poseidon_v2_vs_k – SYMBT2F Poseidon/BabyBear family-local skeleton
 //!   whir_scaling/public_proof_batched_cp_size_vs_k – structured batched CP public-boundary size only
 //!   whir_scaling/symbt3_research_vs_product_verify_vs_k – opt-in side-by-side product verify_public vs SYMBT3 research-authority-candidate verify
+//!   whir_scaling/symbt3_accumulator_research_vs_k – K4 NonZK research public accumulator API vs k
+//!   whir_scaling/symbt3_accumulator_authority_vs_k – K6a opt-in NonZK integrity product route vs k
+//!   whir_scaling/product_route_comparison_vs_k – K6b side-by-side monolithic product vs K6a NonZK integrity product route
 
 use std::hint::black_box;
+use std::io::Write;
+use std::sync::Once;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use symphony::batched_cp::{
     BatchedCpBucket, BatchedCpEvaluator, BatchedCpItem, BatchedCpSemanticConstraintFamily,
     BatchedCpSemanticFamilyColumnarV2Table, BatchedCpSymbt3RelationDescription,
-    BatchedCpSymbt3SetupDescriptor, Symbt3AuthorityProfile, Symbt3MessageSemanticLayout,
+    BatchedCpSymbt3SetupDescriptor, ProductProofKind, Symbt3AccumulatorInstance,
+    Symbt3AccumulatorWitness, Symbt3AuthorityProfile, Symbt3MessageSemanticLayout,
     Symbt3ProjectionMode, Symbt3RangeMode,
 };
 use symphony::commitment::{AjtaiParams, Commitment};
@@ -94,11 +103,15 @@ use symphony::{
     WhirSnark, WhirVerifyingKey,
 };
 
+static SYMBT3_SCALING_CSV_INIT: Once = Once::new();
+static PRODUCT_ROUTE_COMPARISON_CSV_INIT: Once = Once::new();
+
 const WHIR_CP_NUM_MESSAGES: usize = 8;
 const WHIR_CP_WITNESS_SIZES: &[usize] = &[256, 512, 1024, 2048, 4096];
 const FOLDING_KS: &[usize] = &[2, 4, 8, 16, 32];
 const WHIR_PIPELINE_KS: &[usize] = &[2, 4, 8];
 const DEFAULT_WHIR_PUBLIC_VERIFY_KS: &[usize] = &[1];
+const DEFAULT_PRODUCT_ROUTE_COMPARISON_KS: &[usize] = &[1, 2, 4, 8];
 
 fn public_verify_ks() -> Vec<usize> {
     let Some(raw) = std::env::var("SYMPHONY_WHIR_PUBLIC_VERIFY_KS")
@@ -131,6 +144,261 @@ fn public_verify_ks() -> Vec<usize> {
     values.sort_unstable();
     values.dedup();
     values
+}
+
+fn product_route_comparison_ks() -> Vec<usize> {
+    if std::env::var("SYMPHONY_WHIR_PUBLIC_VERIFY_KS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some()
+    {
+        public_verify_ks()
+    } else {
+        DEFAULT_PRODUCT_ROUTE_COMPARISON_KS.to_vec()
+    }
+}
+
+struct Symbt3ScalingCsvRow<'a> {
+    profile: &'a str,
+    route_kind: &'a str,
+    k: usize,
+    proof_bytes: usize,
+    public_statement_bytes: usize,
+    prove_ms: f64,
+    verify_ms: f64,
+    whir_num_vars: usize,
+    oracle_len: usize,
+    opened_field_elements: usize,
+    sumcheck_rounds: usize,
+    transcript_squeezes: usize,
+    pcs_merkle_opening_proxy: usize,
+    top_level_whir_proof_count: usize,
+    family_columnar_subproof_count: usize,
+    backend_table_count: usize,
+    verify_whir_pcs_ms: f64,
+    verify_transcript_ms: f64,
+    verify_sumcheck_rounds_ms: f64,
+    verify_final_constraint_eval_ms: f64,
+    verify_manifest_membership_eval_ms: f64,
+    verify_message_view_eval_ms: f64,
+    verify_projection_eval_ms: f64,
+    verify_monomial_embedding_eval_ms: f64,
+    verify_representative_eval_ms: f64,
+    verify_ajtai_eval_ms: f64,
+    source_r1cs_residual_claims: usize,
+    source_r1cs_residual_verifier_evaluations: usize,
+    folded_gr1cs_boundary_claims: usize,
+    folded_gr1cs_product_claims: usize,
+    manifest_public_bytes: usize,
+    manifest_logical_coordinates: usize,
+    manifest_coordinate_count: usize,
+    source_view_backend_column_count: usize,
+    source_view_materialized_coordinate_count: usize,
+    manifest_backend_column_count: usize,
+    manifest_materialized_coordinate_count: usize,
+    accumulator_transition_claims: usize,
+    message_view_coordinates: usize,
+    message_coordinate_count: usize,
+    message_to_trace_binding_count: usize,
+    verify_final_eval_manifest_ms: f64,
+    verify_final_eval_source_r1cs_ms: f64,
+    verify_final_eval_folded_boundary_ms: f64,
+    verify_final_eval_product_residual_ms: f64,
+    verify_final_eval_ajtai_ms: f64,
+    verify_final_eval_range_ms: f64,
+    verify_final_eval_message_view_ms: f64,
+    product_route_selected: bool,
+    monolithic_fallback_used: bool,
+}
+
+fn write_symbt3_scaling_csv_row(row: &Symbt3ScalingCsvRow<'_>) {
+    const HEADER: &str = concat!(
+        "profile,route_kind,k,proof_bytes,public_statement_bytes,prove_ms,verify_ms,",
+        "whir_num_vars,oracle_len,opened_field_elements,sumcheck_rounds,",
+        "transcript_squeezes,pcs_merkle_opening_proxy,top_level_whir_proof_count,",
+        "family_columnar_subproof_count,backend_table_count,verify_whir_pcs_ms,",
+        "verify_transcript_ms,verify_sumcheck_rounds_ms,verify_final_constraint_eval_ms,",
+        "verify_manifest_membership_eval_ms,verify_message_view_eval_ms,",
+        "verify_projection_eval_ms,verify_monomial_embedding_eval_ms,",
+        "verify_representative_eval_ms,verify_ajtai_eval_ms,source_r1cs_residual_claims,",
+        "source_r1cs_residual_verifier_evaluations,",
+        "folded_gr1cs_boundary_claims,folded_gr1cs_product_claims,",
+        "manifest_public_bytes,manifest_logical_coordinates,",
+        "manifest_coordinate_count,source_view_backend_column_count,",
+        "source_view_materialized_coordinate_count,manifest_backend_column_count,",
+        "manifest_materialized_coordinate_count,",
+        "accumulator_transition_claims,message_view_coordinates,",
+        "message_coordinate_count,message_to_trace_binding_count,",
+        "verify_final_eval_manifest_ms,verify_final_eval_source_r1cs_ms,",
+        "verify_final_eval_folded_boundary_ms,verify_final_eval_product_residual_ms,",
+        "verify_final_eval_ajtai_ms,verify_final_eval_range_ms,",
+        "verify_final_eval_message_view_ms,product_route_selected,",
+        "monolithic_fallback_used\n"
+    );
+    SYMBT3_SCALING_CSV_INIT.call_once(|| {
+        std::fs::create_dir_all("benchmarks").expect("create benchmarks directory");
+        std::fs::write("benchmarks/symbt3_scaling.csv", HEADER)
+            .expect("write SYMBT3 scaling CSV header");
+    });
+
+    let fields = [
+        row.profile.to_string(),
+        row.route_kind.to_string(),
+        row.k.to_string(),
+        row.proof_bytes.to_string(),
+        row.public_statement_bytes.to_string(),
+        format!("{:.6}", row.prove_ms),
+        format!("{:.6}", row.verify_ms),
+        row.whir_num_vars.to_string(),
+        row.oracle_len.to_string(),
+        row.opened_field_elements.to_string(),
+        row.sumcheck_rounds.to_string(),
+        row.transcript_squeezes.to_string(),
+        row.pcs_merkle_opening_proxy.to_string(),
+        row.top_level_whir_proof_count.to_string(),
+        row.family_columnar_subproof_count.to_string(),
+        row.backend_table_count.to_string(),
+        format!("{:.6}", row.verify_whir_pcs_ms),
+        format!("{:.6}", row.verify_transcript_ms),
+        format!("{:.6}", row.verify_sumcheck_rounds_ms),
+        format!("{:.6}", row.verify_final_constraint_eval_ms),
+        format!("{:.6}", row.verify_manifest_membership_eval_ms),
+        format!("{:.6}", row.verify_message_view_eval_ms),
+        format!("{:.6}", row.verify_projection_eval_ms),
+        format!("{:.6}", row.verify_monomial_embedding_eval_ms),
+        format!("{:.6}", row.verify_representative_eval_ms),
+        format!("{:.6}", row.verify_ajtai_eval_ms),
+        row.source_r1cs_residual_claims.to_string(),
+        row.source_r1cs_residual_verifier_evaluations.to_string(),
+        row.folded_gr1cs_boundary_claims.to_string(),
+        row.folded_gr1cs_product_claims.to_string(),
+        row.manifest_public_bytes.to_string(),
+        row.manifest_logical_coordinates.to_string(),
+        row.manifest_coordinate_count.to_string(),
+        row.source_view_backend_column_count.to_string(),
+        row.source_view_materialized_coordinate_count.to_string(),
+        row.manifest_backend_column_count.to_string(),
+        row.manifest_materialized_coordinate_count.to_string(),
+        row.accumulator_transition_claims.to_string(),
+        row.message_view_coordinates.to_string(),
+        row.message_coordinate_count.to_string(),
+        row.message_to_trace_binding_count.to_string(),
+        format!("{:.6}", row.verify_final_eval_manifest_ms),
+        format!("{:.6}", row.verify_final_eval_source_r1cs_ms),
+        format!("{:.6}", row.verify_final_eval_folded_boundary_ms),
+        format!("{:.6}", row.verify_final_eval_product_residual_ms),
+        format!("{:.6}", row.verify_final_eval_ajtai_ms),
+        format!("{:.6}", row.verify_final_eval_range_ms),
+        format!("{:.6}", row.verify_final_eval_message_view_ms),
+        row.product_route_selected.to_string(),
+        row.monolithic_fallback_used.to_string(),
+    ];
+    let line = format!("{}\n", fields.join(","));
+    print!("SYMBT3_CSV,{line}");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open("benchmarks/symbt3_scaling.csv")
+        .expect("open SYMBT3 scaling CSV");
+    file.write_all(line.as_bytes())
+        .expect("append SYMBT3 scaling CSV row");
+}
+
+struct ProductRouteComparisonCsvRow {
+    k: usize,
+    monolithic_verify_ms: f64,
+    symbt3_verify_ms: f64,
+    monolithic_prove_ms: f64,
+    symbt3_prove_ms: f64,
+    monolithic_proof_bytes: usize,
+    symbt3_proof_bytes: usize,
+    monolithic_public_statement_bytes: usize,
+    symbt3_public_statement_bytes: usize,
+    symbt3_whir_num_vars: usize,
+    symbt3_oracle_len: usize,
+    symbt3_opened_field_elements: usize,
+    symbt3_top_level_whir_proof_count: usize,
+    symbt3_family_columnar_subproof_count: usize,
+    symbt3_backend_table_count: usize,
+    symbt3_accumulator_transition_claims: usize,
+    symbt3_source_r1cs_residual_verifier_evaluations: usize,
+    symbt3_product_route_selected: bool,
+    symbt3_monolithic_fallback_used: bool,
+}
+
+fn ratio(numerator: f64, denominator: f64) -> f64 {
+    if denominator == 0.0 {
+        0.0
+    } else {
+        numerator / denominator
+    }
+}
+
+fn write_product_route_comparison_csv_row(row: &ProductRouteComparisonCsvRow) {
+    const HEADER: &str = concat!(
+        "k,monolithic_verify_ms,symbt3_verify_ms,verify_speedup,",
+        "monolithic_prove_ms,symbt3_prove_ms,prove_speedup,",
+        "monolithic_proof_bytes,symbt3_proof_bytes,proof_size_ratio,",
+        "monolithic_public_statement_bytes,symbt3_public_statement_bytes,",
+        "public_size_ratio,symbt3_whir_num_vars,symbt3_oracle_len,",
+        "symbt3_opened_field_elements,symbt3_top_level_whir_proof_count,",
+        "symbt3_family_columnar_subproof_count,symbt3_backend_table_count,",
+        "symbt3_accumulator_transition_claims,",
+        "symbt3_source_r1cs_residual_verifier_evaluations,",
+        "symbt3_product_route_selected,symbt3_monolithic_fallback_used\n"
+    );
+    PRODUCT_ROUTE_COMPARISON_CSV_INIT.call_once(|| {
+        std::fs::create_dir_all("benchmarks").expect("create benchmarks directory");
+        std::fs::write("benchmarks/product_route_comparison.csv", HEADER)
+            .expect("write product route comparison CSV header");
+    });
+
+    let verify_speedup = ratio(row.monolithic_verify_ms, row.symbt3_verify_ms);
+    let prove_speedup = ratio(row.monolithic_prove_ms, row.symbt3_prove_ms);
+    let proof_size_ratio = ratio(
+        row.symbt3_proof_bytes as f64,
+        row.monolithic_proof_bytes as f64,
+    );
+    let public_size_ratio = ratio(
+        row.symbt3_public_statement_bytes as f64,
+        row.monolithic_public_statement_bytes as f64,
+    );
+    let fields = [
+        row.k.to_string(),
+        format!("{:.6}", row.monolithic_verify_ms),
+        format!("{:.6}", row.symbt3_verify_ms),
+        format!("{:.6}", verify_speedup),
+        format!("{:.6}", row.monolithic_prove_ms),
+        format!("{:.6}", row.symbt3_prove_ms),
+        format!("{:.6}", prove_speedup),
+        row.monolithic_proof_bytes.to_string(),
+        row.symbt3_proof_bytes.to_string(),
+        format!("{:.6}", proof_size_ratio),
+        row.monolithic_public_statement_bytes.to_string(),
+        row.symbt3_public_statement_bytes.to_string(),
+        format!("{:.6}", public_size_ratio),
+        row.symbt3_whir_num_vars.to_string(),
+        row.symbt3_oracle_len.to_string(),
+        row.symbt3_opened_field_elements.to_string(),
+        row.symbt3_top_level_whir_proof_count.to_string(),
+        row.symbt3_family_columnar_subproof_count.to_string(),
+        row.symbt3_backend_table_count.to_string(),
+        row.symbt3_accumulator_transition_claims.to_string(),
+        row.symbt3_source_r1cs_residual_verifier_evaluations
+            .to_string(),
+        row.symbt3_product_route_selected.to_string(),
+        row.symbt3_monolithic_fallback_used.to_string(),
+    ];
+    let line = format!("{}\n", fields.join(","));
+    print!("PRODUCT_COMPARISON_CSV,{line}");
+    std::io::stdout()
+        .flush()
+        .expect("flush product route comparison CSV row");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open("benchmarks/product_route_comparison.csv")
+        .expect("open product route comparison CSV");
+    file.write_all(line.as_bytes())
+        .expect("append product route comparison CSV row");
 }
 
 fn top_family_columnar_tables(tables: &[BatchedCpSemanticFamilyColumnarV2Table]) -> String {
@@ -603,6 +871,15 @@ fn configure_pipeline_group(
     group.noise_threshold(0.05);
 }
 
+fn configure_reporter_group(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+) {
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(100));
+    group.measurement_time(Duration::from_secs(1));
+    group.noise_threshold(0.05);
+}
+
 #[derive(Clone)]
 struct TypedCpProfile {
     public_inputs: usize,
@@ -625,6 +902,7 @@ struct PublicWhirBenchFixture {
     r1cs: R1CSMatrices,
     public_inputs: Vec<Vec<i64>>,
     proof: PublicProofBundle<WhirSnark, WhirSnark>,
+    prove_ms: f64,
     cp_statement: symphony::CpPublicStatement,
     cp_witness: symphony::CpWitnessBundle,
     verifier: symphony::proof_orchestrator::Verifier<WhirSnark, WhirSnark>,
@@ -816,7 +1094,9 @@ fn public_whir_fixture(k: usize) -> PublicWhirBenchFixture {
         .collect();
     let public_inputs: Vec<Vec<i64>> = statements.iter().map(|(_, pi, _)| pi.clone()).collect();
 
+    let prove_start = std::time::Instant::now();
     let full_proof = prover.prove(&statements, &r1cs);
+    let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
     let proof = full_proof.to_v2();
     verifier
         .verify_public_attribution(&public_inputs, &proof, &r1cs)
@@ -876,6 +1156,7 @@ fn public_whir_fixture(k: usize) -> PublicWhirBenchFixture {
         r1cs,
         public_inputs,
         proof,
+        prove_ms,
         cp_statement,
         cp_witness: full_proof.witness_bundle,
         verifier,
@@ -2174,6 +2455,7 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
     let mut group = c.benchmark_group(group_name);
     let ks = public_verify_ks();
     let base_fixture = public_whir_fixture(1);
+    let mut previous_oracle_len: Option<(usize, usize)> = None;
 
     for &k in &ks {
         let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
@@ -2194,10 +2476,14 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
         let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
         let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
         let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+        let prove_start = std::time::Instant::now();
         let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
             .unwrap_or_else(|| panic!("{profile} proof"));
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+        let verify_start = std::time::Instant::now();
         let verify_ok = <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof)
             .unwrap_or(false);
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
         assert!(verify_ok, "{profile} proof must verify for k={k}");
         let (_, verifier_profile) =
             WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
@@ -2218,6 +2504,10 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             .source_column_layout
             .coordinate_count
             * public.active_count;
+        let source_view_backend_column_count = 0usize;
+        let source_view_materialized_coordinate_count = 0usize;
+        let manifest_backend_column_count = 0usize;
+        let manifest_materialized_coordinate_count = 0usize;
         let message_round_count = decoded_relation.message_semantic_layout.round_count;
         let message_coordinate_count = decoded_relation
             .message_semantic_layout
@@ -2243,6 +2533,15 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
         let range_residual_coords = projection_output_len;
         let constraint_family_count = decoded_relation.oracle_layout.constraint_families.len();
         let oracle_len = 1usize << proof.num_vars;
+        if let Some((previous_k, previous_len)) = previous_oracle_len {
+            if k == previous_k * 2 {
+                assert!(
+                    oracle_len <= previous_len * 2,
+                    "{profile} K0/J3 backend oracle length must not grow faster than 2x per k doubling: k={previous_k}->{k}, {previous_len}->{oracle_len}"
+                );
+            }
+        }
+        previous_oracle_len = Some((k, oracle_len));
         eprintln!(
             "[{profile}_vs_k k={k}] verify={} top_level_whir_proof_count=1 \
              family_columnar_subproof_count={} proof_bytes={} public_statement_bytes={} \
@@ -2254,7 +2553,10 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
              range_mode={:?} bound_b={} projection_output_len={} \
              monomial_embedding_enabled={} oracle_len={} monomial_witness_coords={} \
              representative_coords={} range_residual_coords={} constraint_family_count={} \
-             manifest_component_count={} manifest_coordinate_count={} membership_challenge_count=1 \
+             manifest_component_count={} manifest_coordinate_count={} \
+             source_view_backend_column_count={} \
+             source_view_materialized_coordinate_count={} manifest_backend_column_count={} \
+             manifest_materialized_coordinate_count={} membership_challenge_count=1 \
              message_round_count={} message_coordinate_count={} \
              message_to_trace_binding_count={} sumcheck_transition_count={}",
             verify_ok,
@@ -2297,6 +2599,10 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             constraint_family_count,
             manifest_component_count,
             manifest_coordinate_count,
+            source_view_backend_column_count,
+            source_view_materialized_coordinate_count,
+            manifest_backend_column_count,
+            manifest_materialized_coordinate_count,
             message_round_count,
             message_coordinate_count,
             message_to_trace_binding_count,
@@ -2304,13 +2610,22 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
         );
         eprintln!(
             "[{profile}_vs_k k={k}] source_r1cs_residual_claims={} \
+             source_r1cs_residual_verifier_evaluations={} \
              folded_gr1cs_boundary_claims={} folded_gr1cs_product_claims={}",
-            source_r1cs_claims, folded_gr1cs_claims, folded_gr1cs_product_claims,
+            source_r1cs_claims,
+            verifier_profile.source_r1cs_residual_verifier_evaluations,
+            folded_gr1cs_claims,
+            folded_gr1cs_product_claims,
         );
         eprintln!(
             "[{profile}_vs_k k={k}] verify_total_ms={:.3} verify_whir_pcs_ms={:.3} \
              verify_merkle_or_pcs_opening_ms={:.3} verify_transcript_ms={:.3} \
              verify_sumcheck_rounds_ms={:.3} verify_final_constraint_eval_ms={:.3} \
+             verify_final_eval_manifest_ms={:.3} verify_final_eval_source_r1cs_ms={:.3} \
+             verify_final_eval_folded_boundary_ms={:.3} \
+             verify_final_eval_product_residual_ms={:.3} \
+             verify_final_eval_ajtai_ms={:.3} verify_final_eval_range_ms={:.3} \
+             verify_final_eval_message_view_ms={:.3} \
              verify_manifest_membership_eval_ms={:.3} verify_message_view_eval_ms={:.3} \
              verify_projection_eval_ms={:.3} verify_monomial_embedding_eval_ms={:.3} \
              verify_representative_eval_ms={:.3} verify_ajtai_eval_ms={:.3}",
@@ -2320,6 +2635,13 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             verifier_profile.verify_transcript_ms,
             verifier_profile.verify_sumcheck_rounds_ms,
             verifier_profile.verify_final_constraint_eval_ms,
+            verifier_profile.verify_final_eval_manifest_ms,
+            verifier_profile.verify_final_eval_source_r1cs_ms,
+            verifier_profile.verify_final_eval_folded_boundary_ms,
+            verifier_profile.verify_final_eval_product_residual_ms,
+            verifier_profile.verify_final_eval_ajtai_ms,
+            verifier_profile.verify_final_eval_range_ms,
+            verifier_profile.verify_final_eval_message_view_ms,
             verifier_profile.verify_manifest_membership_eval_ms,
             verifier_profile.verify_message_view_eval_ms,
             verifier_profile.verify_projection_eval_ms,
@@ -2327,6 +2649,64 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             verifier_profile.verify_representative_eval_ms,
             verifier_profile.verify_ajtai_eval_ms,
         );
+        write_symbt3_scaling_csv_row(&Symbt3ScalingCsvRow {
+            profile,
+            route_kind: "lower_level_symbt3_development",
+            k,
+            proof_bytes: canonical_whir_proof_bytes(&proof).len(),
+            public_statement_bytes: public.canonical_bytes().len(),
+            prove_ms,
+            verify_ms,
+            whir_num_vars: proof.num_vars,
+            oracle_len,
+            opened_field_elements: proof.private_opening_evals.len(),
+            sumcheck_rounds: proof.sumcheck_rounds_4.len(),
+            transcript_squeezes: proof.private_opening_evals.len(),
+            pcs_merkle_opening_proxy: proof.private_opening_evals.len(),
+            top_level_whir_proof_count: 1,
+            family_columnar_subproof_count: proof.family_columnar_subproofs.len(),
+            backend_table_count: 1,
+            verify_whir_pcs_ms: verifier_profile.verify_whir_pcs_ms,
+            verify_transcript_ms: verifier_profile.verify_transcript_ms,
+            verify_sumcheck_rounds_ms: verifier_profile.verify_sumcheck_rounds_ms,
+            verify_final_constraint_eval_ms: verifier_profile.verify_final_constraint_eval_ms,
+            verify_manifest_membership_eval_ms: verifier_profile.verify_manifest_membership_eval_ms,
+            verify_message_view_eval_ms: verifier_profile.verify_message_view_eval_ms,
+            verify_projection_eval_ms: verifier_profile.verify_projection_eval_ms,
+            verify_monomial_embedding_eval_ms: verifier_profile.verify_monomial_embedding_eval_ms,
+            verify_representative_eval_ms: verifier_profile.verify_representative_eval_ms,
+            verify_ajtai_eval_ms: verifier_profile.verify_ajtai_eval_ms,
+            source_r1cs_residual_claims: source_r1cs_claims,
+            source_r1cs_residual_verifier_evaluations: verifier_profile
+                .source_r1cs_residual_verifier_evaluations,
+            folded_gr1cs_boundary_claims: folded_gr1cs_claims,
+            folded_gr1cs_product_claims,
+            manifest_public_bytes: decoded_relation
+                .batch_manifest_layout
+                .digest(decoded_relation.shape.accumulator_shape.digest_scheme)
+                .len(),
+            manifest_logical_coordinates: manifest_coordinate_count,
+            manifest_coordinate_count,
+            source_view_backend_column_count,
+            source_view_materialized_coordinate_count,
+            manifest_backend_column_count,
+            manifest_materialized_coordinate_count,
+            accumulator_transition_claims: 1,
+            message_view_coordinates: message_coordinate_count,
+            message_coordinate_count,
+            message_to_trace_binding_count,
+            verify_final_eval_manifest_ms: verifier_profile.verify_final_eval_manifest_ms,
+            verify_final_eval_source_r1cs_ms: verifier_profile.verify_final_eval_source_r1cs_ms,
+            verify_final_eval_folded_boundary_ms: verifier_profile
+                .verify_final_eval_folded_boundary_ms,
+            verify_final_eval_product_residual_ms: verifier_profile
+                .verify_final_eval_product_residual_ms,
+            verify_final_eval_ajtai_ms: verifier_profile.verify_final_eval_ajtai_ms,
+            verify_final_eval_range_ms: verifier_profile.verify_final_eval_range_ms,
+            verify_final_eval_message_view_ms: verifier_profile.verify_final_eval_message_view_ms,
+            product_route_selected: false,
+            monolithic_fallback_used: false,
+        });
 
         group.throughput(Throughput::Elements(k as u64));
         group.bench_function(BenchmarkId::new(format!("prove_{profile}"), k), |b| {
@@ -2595,6 +2975,13 @@ fn bench_verify_symbt3_research_authority_candidate(c: &mut Criterion) {
              symbt3_num_vars={} symbt3_opened_field_elements={} \
              symbt3_verify_total_ms={:.3} symbt3_verify_whir_pcs_ms={:.3} \
              symbt3_verify_transcript_ms={:.3} symbt3_verify_final_constraint_eval_ms={:.3} \
+             symbt3_verify_final_eval_manifest_ms={:.3} \
+             symbt3_verify_final_eval_source_r1cs_ms={:.3} \
+             symbt3_verify_final_eval_folded_boundary_ms={:.3} \
+             symbt3_verify_final_eval_product_residual_ms={:.3} \
+             symbt3_verify_final_eval_ajtai_ms={:.3} \
+             symbt3_verify_final_eval_range_ms={:.3} \
+             symbt3_verify_final_eval_message_view_ms={:.3} \
              non_zk_research_only=true product_routing_changed=false",
             product_verify_ok,
             research_verify_ok,
@@ -2609,6 +2996,13 @@ fn bench_verify_symbt3_research_authority_candidate(c: &mut Criterion) {
             symbt3_cost.verify_whir_pcs_ms,
             symbt3_cost.verify_transcript_ms,
             symbt3_cost.verify_final_constraint_eval_ms,
+            symbt3_cost.verify_final_eval_manifest_ms,
+            symbt3_cost.verify_final_eval_source_r1cs_ms,
+            symbt3_cost.verify_final_eval_folded_boundary_ms,
+            symbt3_cost.verify_final_eval_product_residual_ms,
+            symbt3_cost.verify_final_eval_ajtai_ms,
+            symbt3_cost.verify_final_eval_range_ms,
+            symbt3_cost.verify_final_eval_message_view_ms,
         );
 
         group.throughput(Throughput::Elements(k as u64));
@@ -2637,6 +3031,645 @@ fn bench_verify_symbt3_research_authority_candidate(c: &mut Criterion) {
                 });
             },
         );
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_accumulator_research_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/symbt3_accumulator_research_vs_k") {
+        return;
+    }
+
+    let mut group = c.benchmark_group("whir_scaling/symbt3_accumulator_research_vs_k");
+    configure_pipeline_group(&mut group);
+
+    let ks = public_verify_ks();
+    let base_fixture = public_whir_fixture(1);
+    eprintln!(
+        "[symbt3_accumulator_research_vs_k] k_values={ks:?} non_zk_research_only=true product_routing_changed=false"
+    );
+
+    for &k in &ks {
+        let bucket = batched_cp_bucket_from_fixture(&base_fixture, k);
+        let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+            bucket.shape.clone(),
+            &base_fixture.ajtai,
+            &base_fixture.r1cs,
+            base_fixture.input_bound,
+        );
+        let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+            .expect("WHIR exposes SYMBT3 accumulator relation");
+        let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+            relation.context.as_ref().expect("SYMBT3 context"),
+        )
+        .expect("SYMBT3 context decodes");
+        let decoded_relation = symbt3_relation_for_bench_profile(decoded_relation, "symbt3_j");
+        let relation = decoded_relation.to_relation_description();
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+        let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+        let profile =
+            Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+                &decoded_relation,
+                64,
+            );
+        let profile_digest = profile.digest(decoded_relation.shape.accumulator_shape.digest_scheme);
+        let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+            bucket.shape.accumulator_shape.digest_scheme,
+            profile_digest,
+            public.old_accumulator_digest,
+            public.new_accumulator_digest,
+            &public,
+        );
+        let accumulator_witness =
+            Symbt3AccumulatorWitness::from_symbt3_witness(&decoded_relation, &witness);
+        let prove_start = std::time::Instant::now();
+        let proof = WhirSnark::prove_public_symbt3_accumulator_research_non_zk(
+            &pk,
+            &profile,
+            &accumulator_instance,
+            &accumulator_witness,
+        )
+        .unwrap_or_else(|| panic!("K4 SYMBT3 accumulator research proof for k={k}"));
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+        let verify_start = std::time::Instant::now();
+        let verify_ok = WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &profile,
+            &accumulator_instance,
+            &proof,
+        );
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
+        assert!(
+            verify_ok,
+            "K4 SYMBT3 accumulator research proof must verify for k={k}"
+        );
+        assert_eq!(proof.family_columnar_subproofs.len(), 0);
+        assert_eq!(
+            decoded_relation
+                .message_semantic_layout
+                .message_to_trace_binding_count(),
+            0
+        );
+
+        let (_, verifier_profile) =
+            WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
+                .expect("K4 SYMBT3 verifier profile");
+        let source_r1cs_claims = public.source_assignment_roots.len()
+            * decoded_relation.r1cs_evaluator_layout.num_constraints
+            * D;
+        let folded_gr1cs_claims = decoded_relation
+            .gr1cs_residual_layout
+            .folded_evaluation_coordinate_count;
+        let folded_gr1cs_product_claims = decoded_relation
+            .gr1cs_residual_layout
+            .folded_evaluation_coordinate_count
+            / 3;
+        let manifest_logical_coordinates = decoded_relation
+            .batch_manifest_layout
+            .source_column_layout
+            .coordinate_count
+            * public.active_count;
+        let source_view_backend_column_count = 0usize;
+        let source_view_materialized_coordinate_count = 0usize;
+        let manifest_backend_column_count = 0usize;
+        let manifest_materialized_coordinate_count = 0usize;
+        let message_view_coordinates = decoded_relation
+            .message_semantic_layout
+            .view_coordinate_count(public.active_count);
+        let message_to_trace_binding_count = decoded_relation
+            .message_semantic_layout
+            .message_to_trace_binding_count();
+        let oracle_len = 1usize << proof.num_vars;
+        let proof_bytes = canonical_whir_proof_bytes(&proof).len();
+        let public_statement_bytes = accumulator_instance.canonical_bytes().len();
+        let manifest_public_bytes = public.batch_manifest_root.len()
+            + public.manifest_oracle_root.len()
+            + public.batch_manifest_layout_digest.len();
+
+        eprintln!(
+            "[symbt3_accumulator_research_vs_k k={k}] verify={} profile=K4_NonZK_research \
+             proof_bytes={} public_statement_bytes={} prove_ms={:.3} verify_ms={:.3} \
+             whir_num_vars={} oracle_len={} opened_field_elements={} sumcheck_rounds={} \
+             transcript_squeezes={} pcs_merkle_opening_proxy={} top_level_whir_proof_count=1 \
+             family_columnar_subproof_count={} backend_table_count=1 \
+             message_to_trace_binding_count={} accumulator_transition_claims=1 \
+             source_view_backend_column_count={} source_view_materialized_coordinate_count={} \
+             manifest_backend_column_count={} manifest_materialized_coordinate_count={} \
+             manifest_public_bytes={} manifest_logical_coordinates={} \
+             message_view_coordinates={} source_r1cs_residual_claims={} \
+             source_r1cs_residual_verifier_evaluations={} \
+             verify_whir_pcs_ms={:.3} verify_transcript_ms={:.3} \
+             verify_final_constraint_eval_ms={:.3} product_routing_changed=false",
+            verify_ok,
+            proof_bytes,
+            public_statement_bytes,
+            prove_ms,
+            verify_ms,
+            proof.num_vars,
+            oracle_len,
+            proof.private_opening_evals.len(),
+            proof.sumcheck_rounds_4.len(),
+            proof.private_opening_evals.len(),
+            proof.private_opening_evals.len(),
+            proof.family_columnar_subproofs.len(),
+            message_to_trace_binding_count,
+            source_view_backend_column_count,
+            source_view_materialized_coordinate_count,
+            manifest_backend_column_count,
+            manifest_materialized_coordinate_count,
+            manifest_public_bytes,
+            manifest_logical_coordinates,
+            message_view_coordinates,
+            source_r1cs_claims,
+            verifier_profile.source_r1cs_residual_verifier_evaluations,
+            verifier_profile.verify_whir_pcs_ms,
+            verifier_profile.verify_transcript_ms,
+            verifier_profile.verify_final_constraint_eval_ms,
+        );
+
+        write_symbt3_scaling_csv_row(&Symbt3ScalingCsvRow {
+            profile: "symbt3_accumulator_research",
+            route_kind: "symbt3_accumulator_research_non_zk",
+            k,
+            proof_bytes,
+            public_statement_bytes,
+            prove_ms,
+            verify_ms,
+            whir_num_vars: proof.num_vars,
+            oracle_len,
+            opened_field_elements: proof.private_opening_evals.len(),
+            sumcheck_rounds: proof.sumcheck_rounds_4.len(),
+            transcript_squeezes: proof.private_opening_evals.len(),
+            pcs_merkle_opening_proxy: proof.private_opening_evals.len(),
+            top_level_whir_proof_count: 1,
+            family_columnar_subproof_count: proof.family_columnar_subproofs.len(),
+            backend_table_count: 1,
+            verify_whir_pcs_ms: verifier_profile.verify_whir_pcs_ms,
+            verify_transcript_ms: verifier_profile.verify_transcript_ms,
+            verify_sumcheck_rounds_ms: verifier_profile.verify_sumcheck_rounds_ms,
+            verify_final_constraint_eval_ms: verifier_profile.verify_final_constraint_eval_ms,
+            verify_manifest_membership_eval_ms: verifier_profile.verify_manifest_membership_eval_ms,
+            verify_message_view_eval_ms: verifier_profile.verify_message_view_eval_ms,
+            verify_projection_eval_ms: verifier_profile.verify_projection_eval_ms,
+            verify_monomial_embedding_eval_ms: verifier_profile.verify_monomial_embedding_eval_ms,
+            verify_representative_eval_ms: verifier_profile.verify_representative_eval_ms,
+            verify_ajtai_eval_ms: verifier_profile.verify_ajtai_eval_ms,
+            source_r1cs_residual_claims: source_r1cs_claims,
+            source_r1cs_residual_verifier_evaluations: verifier_profile
+                .source_r1cs_residual_verifier_evaluations,
+            folded_gr1cs_boundary_claims: folded_gr1cs_claims,
+            folded_gr1cs_product_claims,
+            manifest_public_bytes,
+            manifest_logical_coordinates,
+            manifest_coordinate_count: manifest_logical_coordinates,
+            source_view_backend_column_count,
+            source_view_materialized_coordinate_count,
+            manifest_backend_column_count,
+            manifest_materialized_coordinate_count,
+            accumulator_transition_claims: 1,
+            message_view_coordinates,
+            message_coordinate_count: message_view_coordinates,
+            message_to_trace_binding_count,
+            verify_final_eval_manifest_ms: verifier_profile.verify_final_eval_manifest_ms,
+            verify_final_eval_source_r1cs_ms: verifier_profile.verify_final_eval_source_r1cs_ms,
+            verify_final_eval_folded_boundary_ms: verifier_profile
+                .verify_final_eval_folded_boundary_ms,
+            verify_final_eval_product_residual_ms: verifier_profile
+                .verify_final_eval_product_residual_ms,
+            verify_final_eval_ajtai_ms: verifier_profile.verify_final_eval_ajtai_ms,
+            verify_final_eval_range_ms: verifier_profile.verify_final_eval_range_ms,
+            verify_final_eval_message_view_ms: verifier_profile.verify_final_eval_message_view_ms,
+            product_route_selected: false,
+            monolithic_fallback_used: false,
+        });
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(
+            BenchmarkId::new("prove_public_symbt3_accumulator_research_non_zk", k),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        WhirSnark::prove_public_symbt3_accumulator_research_non_zk(
+                            black_box(&pk),
+                            black_box(&profile),
+                            black_box(&accumulator_instance),
+                            black_box(&accumulator_witness),
+                        )
+                        .expect("K4 SYMBT3 accumulator research proof"),
+                    );
+                });
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new("verify_public_symbt3_accumulator_research_non_zk", k),
+            |b| {
+                b.iter(|| {
+                    black_box(WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+                        black_box(&vk),
+                        black_box(&profile),
+                        black_box(&accumulator_instance),
+                        black_box(&proof),
+                    ));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+struct MonolithicProductRouteMeasurement {
+    fixture: PublicWhirBenchFixture,
+    verify_ms: f64,
+    proof_bytes: usize,
+    public_statement_bytes: usize,
+}
+
+fn monolithic_product_route_measurement(k: usize) -> MonolithicProductRouteMeasurement {
+    let fixture = public_whir_fixture(k);
+    let verify_start = std::time::Instant::now();
+    let verify_ok =
+        fixture
+            .verifier
+            .verify_public(&fixture.public_inputs, &fixture.proof, &fixture.r1cs);
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
+    assert!(
+        verify_ok,
+        "monolithic typed CP product proof must verify for k={k}"
+    );
+
+    let proof_bytes = fixture.profile.cp_proof_bytes + fixture.profile.output_proof_bytes;
+    let public_statement_bytes = fixture
+        .proof
+        .canonical_compressed_public_envelope_bytes(
+            <WhirSnark as BackendSnark>::public_digest_scheme(),
+            &fixture.public_inputs,
+            &fixture.r1cs,
+            &[],
+            &[],
+        )
+        .len();
+
+    MonolithicProductRouteMeasurement {
+        fixture,
+        verify_ms,
+        proof_bytes,
+        public_statement_bytes,
+    }
+}
+
+struct Symbt3AuthorityRouteMeasurement {
+    pk: WhirProvingKey,
+    vk: WhirVerifyingKey,
+    profile: Symbt3AuthorityProfile,
+    accumulator_instance: Symbt3AccumulatorInstance,
+    accumulator_witness: Symbt3AccumulatorWitness,
+    csv: Symbt3ScalingCsvRow<'static>,
+    proof: WhirProof,
+}
+
+fn symbt3_authority_route_measurement(
+    base_fixture: &PublicWhirBenchFixture,
+    k: usize,
+) -> Symbt3AuthorityRouteMeasurement {
+    let bucket = batched_cp_bucket_from_fixture(base_fixture, k);
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &base_fixture.ajtai,
+        &base_fixture.r1cs,
+        base_fixture.input_bound,
+    );
+    let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+        .expect("WHIR exposes SYMBT3 accumulator relation");
+    let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+        relation.context.as_ref().expect("SYMBT3 context"),
+    )
+    .expect("SYMBT3 context decodes");
+    let decoded_relation = symbt3_relation_for_bench_profile(decoded_relation, "symbt3_j");
+    let relation = decoded_relation.to_relation_description();
+    let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+    let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+    let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+    let profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &decoded_relation,
+            64,
+        );
+    let profile_digest = profile.digest(decoded_relation.shape.accumulator_shape.digest_scheme);
+    let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        bucket.shape.accumulator_shape.digest_scheme,
+        profile_digest,
+        public.old_accumulator_digest,
+        public.new_accumulator_digest,
+        &public,
+    );
+    let accumulator_witness =
+        Symbt3AccumulatorWitness::from_symbt3_witness(&decoded_relation, &witness);
+    let prove_start = std::time::Instant::now();
+    let proof = WhirSnark::prove_public_symbt3_accumulator_non_zk_integrity(
+        &pk,
+        &profile,
+        &accumulator_instance,
+        &accumulator_witness,
+    )
+    .unwrap_or_else(|| panic!("K6a SYMBT3 accumulator authority proof for k={k}"));
+    let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+    let verify_start = std::time::Instant::now();
+    let verify_ok = WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+        &vk,
+        &profile,
+        &accumulator_instance,
+        ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+        &proof,
+    );
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
+    assert!(
+        verify_ok,
+        "K6a SYMBT3 accumulator authority proof must verify for k={k}"
+    );
+    assert_eq!(proof.family_columnar_subproofs.len(), 0);
+    assert_eq!(
+        decoded_relation
+            .message_semantic_layout
+            .message_to_trace_binding_count(),
+        0
+    );
+
+    let (_, verifier_profile) = WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
+        .expect("K6a SYMBT3 verifier profile");
+    let source_r1cs_claims = public.source_assignment_roots.len()
+        * decoded_relation.r1cs_evaluator_layout.num_constraints
+        * D;
+    let folded_gr1cs_claims = decoded_relation
+        .gr1cs_residual_layout
+        .folded_evaluation_coordinate_count;
+    let folded_gr1cs_product_claims = decoded_relation
+        .gr1cs_residual_layout
+        .folded_evaluation_coordinate_count
+        / 3;
+    let manifest_logical_coordinates = decoded_relation
+        .batch_manifest_layout
+        .source_column_layout
+        .coordinate_count
+        * public.active_count;
+    let source_view_backend_column_count = 0usize;
+    let source_view_materialized_coordinate_count = 0usize;
+    let manifest_backend_column_count = 0usize;
+    let manifest_materialized_coordinate_count = 0usize;
+    let message_view_coordinates = decoded_relation
+        .message_semantic_layout
+        .view_coordinate_count(public.active_count);
+    let message_to_trace_binding_count = decoded_relation
+        .message_semantic_layout
+        .message_to_trace_binding_count();
+    let oracle_len = 1usize << proof.num_vars;
+    let proof_bytes = canonical_whir_proof_bytes(&proof).len();
+    let public_statement_bytes = accumulator_instance.canonical_bytes().len();
+    let manifest_public_bytes = public.batch_manifest_root.len()
+        + public.manifest_oracle_root.len()
+        + public.batch_manifest_layout_digest.len();
+
+    Symbt3AuthorityRouteMeasurement {
+        pk,
+        vk,
+        profile,
+        accumulator_instance,
+        accumulator_witness,
+        csv: Symbt3ScalingCsvRow {
+            profile: "symbt3_accumulator_authority",
+            route_kind: "symbt3_non_zk_integrity_product",
+            k,
+            proof_bytes,
+            public_statement_bytes,
+            prove_ms,
+            verify_ms,
+            whir_num_vars: proof.num_vars,
+            oracle_len,
+            opened_field_elements: proof.private_opening_evals.len(),
+            sumcheck_rounds: proof.sumcheck_rounds_4.len(),
+            transcript_squeezes: proof.private_opening_evals.len(),
+            pcs_merkle_opening_proxy: proof.private_opening_evals.len(),
+            top_level_whir_proof_count: 1,
+            family_columnar_subproof_count: proof.family_columnar_subproofs.len(),
+            backend_table_count: 1,
+            verify_whir_pcs_ms: verifier_profile.verify_whir_pcs_ms,
+            verify_transcript_ms: verifier_profile.verify_transcript_ms,
+            verify_sumcheck_rounds_ms: verifier_profile.verify_sumcheck_rounds_ms,
+            verify_final_constraint_eval_ms: verifier_profile.verify_final_constraint_eval_ms,
+            verify_manifest_membership_eval_ms: verifier_profile.verify_manifest_membership_eval_ms,
+            verify_message_view_eval_ms: verifier_profile.verify_message_view_eval_ms,
+            verify_projection_eval_ms: verifier_profile.verify_projection_eval_ms,
+            verify_monomial_embedding_eval_ms: verifier_profile.verify_monomial_embedding_eval_ms,
+            verify_representative_eval_ms: verifier_profile.verify_representative_eval_ms,
+            verify_ajtai_eval_ms: verifier_profile.verify_ajtai_eval_ms,
+            source_r1cs_residual_claims: source_r1cs_claims,
+            source_r1cs_residual_verifier_evaluations: verifier_profile
+                .source_r1cs_residual_verifier_evaluations,
+            folded_gr1cs_boundary_claims: folded_gr1cs_claims,
+            folded_gr1cs_product_claims,
+            manifest_public_bytes,
+            manifest_logical_coordinates,
+            manifest_coordinate_count: manifest_logical_coordinates,
+            source_view_backend_column_count,
+            source_view_materialized_coordinate_count,
+            manifest_backend_column_count,
+            manifest_materialized_coordinate_count,
+            accumulator_transition_claims: 1,
+            message_view_coordinates,
+            message_coordinate_count: message_view_coordinates,
+            message_to_trace_binding_count,
+            verify_final_eval_manifest_ms: verifier_profile.verify_final_eval_manifest_ms,
+            verify_final_eval_source_r1cs_ms: verifier_profile.verify_final_eval_source_r1cs_ms,
+            verify_final_eval_folded_boundary_ms: verifier_profile
+                .verify_final_eval_folded_boundary_ms,
+            verify_final_eval_product_residual_ms: verifier_profile
+                .verify_final_eval_product_residual_ms,
+            verify_final_eval_ajtai_ms: verifier_profile.verify_final_eval_ajtai_ms,
+            verify_final_eval_range_ms: verifier_profile.verify_final_eval_range_ms,
+            verify_final_eval_message_view_ms: verifier_profile.verify_final_eval_message_view_ms,
+            product_route_selected: true,
+            monolithic_fallback_used: false,
+        },
+        proof,
+    }
+}
+
+fn bench_symbt3_accumulator_authority_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/symbt3_accumulator_authority_vs_k") {
+        return;
+    }
+
+    let mut group = c.benchmark_group("whir_scaling/symbt3_accumulator_authority_vs_k");
+    configure_pipeline_group(&mut group);
+
+    let ks = public_verify_ks();
+    let base_fixture = public_whir_fixture(1);
+    eprintln!(
+        "[symbt3_accumulator_authority_vs_k] k_values={ks:?} non_zk_integrity_product_opt_in=true monolithic_fallback_used=false"
+    );
+
+    for &k in &ks {
+        let measurement = symbt3_authority_route_measurement(&base_fixture, k);
+        let row = &measurement.csv;
+        eprintln!(
+            "[symbt3_accumulator_authority_vs_k k={k}] verify={} profile=K6a_NonZK_integrity_product \
+             route_kind=Symbt3AccumulatorNonZkIntegrity product_route_selected=true \
+             monolithic_fallback_used=false proof_bytes={} public_statement_bytes={} \
+             prove_ms={:.3} verify_ms={:.3} whir_num_vars={} oracle_len={} \
+             opened_field_elements={} sumcheck_rounds={} transcript_squeezes={} \
+             pcs_merkle_opening_proxy={} top_level_whir_proof_count=1 \
+             family_columnar_subproof_count={} backend_table_count=1 \
+             message_to_trace_binding_count={} accumulator_transition_claims=1 \
+             source_view_backend_column_count={} source_view_materialized_coordinate_count={} \
+             manifest_backend_column_count={} manifest_materialized_coordinate_count={} \
+             source_r1cs_residual_claims={} source_r1cs_residual_verifier_evaluations={} \
+             verify_whir_pcs_ms={:.3} verify_transcript_ms={:.3} \
+             verify_final_constraint_eval_ms={:.3}",
+            true,
+            row.proof_bytes,
+            row.public_statement_bytes,
+            row.prove_ms,
+            row.verify_ms,
+            row.whir_num_vars,
+            row.oracle_len,
+            row.opened_field_elements,
+            row.sumcheck_rounds,
+            row.transcript_squeezes,
+            row.pcs_merkle_opening_proxy,
+            row.family_columnar_subproof_count,
+            row.message_to_trace_binding_count,
+            row.source_view_backend_column_count,
+            row.source_view_materialized_coordinate_count,
+            row.manifest_backend_column_count,
+            row.manifest_materialized_coordinate_count,
+            row.source_r1cs_residual_claims,
+            row.source_r1cs_residual_verifier_evaluations,
+            row.verify_whir_pcs_ms,
+            row.verify_transcript_ms,
+            row.verify_final_constraint_eval_ms,
+        );
+
+        write_symbt3_scaling_csv_row(row);
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(
+            BenchmarkId::new("prove_public_symbt3_accumulator_non_zk_integrity", k),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        WhirSnark::prove_public_symbt3_accumulator_non_zk_integrity(
+                            black_box(&measurement.pk),
+                            black_box(&measurement.profile),
+                            black_box(&measurement.accumulator_instance),
+                            black_box(&measurement.accumulator_witness),
+                        )
+                        .expect("K6a SYMBT3 accumulator authority proof"),
+                    );
+                });
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new("verify_public_symbt3_accumulator_non_zk_integrity", k),
+            |b| {
+                b.iter(|| {
+                    black_box(
+                        WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+                            black_box(&measurement.vk),
+                            black_box(&measurement.profile),
+                            black_box(&measurement.accumulator_instance),
+                            black_box(ProductProofKind::Symbt3AccumulatorNonZkIntegrity),
+                            black_box(&measurement.proof),
+                        ),
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_product_route_comparison_vs_k(c: &mut Criterion) {
+    if !criterion_filter_allows("whir_scaling/product_route_comparison_vs_k") {
+        return;
+    }
+
+    let mut group = c.benchmark_group("whir_scaling/product_route_comparison_vs_k");
+    configure_reporter_group(&mut group);
+
+    let ks = product_route_comparison_ks();
+    let symbt3_base_fixture = public_whir_fixture(1);
+    eprintln!(
+        "[product_route_comparison_vs_k] k_values={ks:?} monolithic=current_product_authoritative_typed_cp symbt3=explicit_opt_in_non_zk_integrity not_default_product_route=true"
+    );
+
+    for &k in &ks {
+        let monolithic = monolithic_product_route_measurement(k);
+        let symbt3 = symbt3_authority_route_measurement(&symbt3_base_fixture, k);
+        let row = ProductRouteComparisonCsvRow {
+            k,
+            monolithic_verify_ms: monolithic.verify_ms,
+            symbt3_verify_ms: symbt3.csv.verify_ms,
+            monolithic_prove_ms: monolithic.fixture.prove_ms,
+            symbt3_prove_ms: symbt3.csv.prove_ms,
+            monolithic_proof_bytes: monolithic.proof_bytes,
+            symbt3_proof_bytes: symbt3.csv.proof_bytes,
+            monolithic_public_statement_bytes: monolithic.public_statement_bytes,
+            symbt3_public_statement_bytes: symbt3.csv.public_statement_bytes,
+            symbt3_whir_num_vars: symbt3.csv.whir_num_vars,
+            symbt3_oracle_len: symbt3.csv.oracle_len,
+            symbt3_opened_field_elements: symbt3.csv.opened_field_elements,
+            symbt3_top_level_whir_proof_count: symbt3.csv.top_level_whir_proof_count,
+            symbt3_family_columnar_subproof_count: symbt3.csv.family_columnar_subproof_count,
+            symbt3_backend_table_count: symbt3.csv.backend_table_count,
+            symbt3_accumulator_transition_claims: symbt3.csv.accumulator_transition_claims,
+            symbt3_source_r1cs_residual_verifier_evaluations: symbt3
+                .csv
+                .source_r1cs_residual_verifier_evaluations,
+            symbt3_product_route_selected: symbt3.csv.product_route_selected,
+            symbt3_monolithic_fallback_used: symbt3.csv.monolithic_fallback_used,
+        };
+        eprintln!(
+            "[product_route_comparison_vs_k k={k}] monolithic_verify_ms={:.3} \
+             symbt3_verify_ms={:.3} verify_speedup={:.3} monolithic_proof_bytes={} \
+             symbt3_proof_bytes={} proof_size_ratio={:.3} \
+             monolithic_public_statement_bytes={} symbt3_public_statement_bytes={} \
+             public_size_ratio={:.3} symbt3_product_route_selected={} \
+             symbt3_monolithic_fallback_used={}",
+            row.monolithic_verify_ms,
+            row.symbt3_verify_ms,
+            ratio(row.monolithic_verify_ms, row.symbt3_verify_ms),
+            row.monolithic_proof_bytes,
+            row.symbt3_proof_bytes,
+            ratio(
+                row.symbt3_proof_bytes as f64,
+                row.monolithic_proof_bytes as f64
+            ),
+            row.monolithic_public_statement_bytes,
+            row.symbt3_public_statement_bytes,
+            ratio(
+                row.symbt3_public_statement_bytes as f64,
+                row.monolithic_public_statement_bytes as f64
+            ),
+            row.symbt3_product_route_selected,
+            row.symbt3_monolithic_fallback_used,
+        );
+        write_product_route_comparison_csv_row(&row);
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("emit_joined_csv_row", k), |b| {
+            b.iter(|| {
+                black_box((
+                    row.k,
+                    row.monolithic_verify_ms,
+                    row.symbt3_verify_ms,
+                    row.symbt3_product_route_selected,
+                    row.symbt3_monolithic_fallback_used,
+                ));
+            });
+        });
     }
 
     group.finish();
@@ -2681,6 +3714,9 @@ criterion_group!(
     bench_symbt3_j_monomial_only_vs_k,
     bench_symbt3_j_full_vs_k,
     bench_verify_symbt3_research_authority_candidate,
+    bench_symbt3_accumulator_research_vs_k,
+    bench_symbt3_accumulator_authority_vs_k,
+    bench_product_route_comparison_vs_k,
     bench_public_proof_batched_cp_size_vs_k,
 );
 criterion_main!(benches);

@@ -706,6 +706,89 @@ The first `symbt3_d2_vs_k` benchmark preserved the same proof-shape guard while
 adding the direct folded GR1CS product-residual sumcheck: `k=1` measured
 394,767 proof bytes, 6.2087 ms prove mean, and 6.4224 ms verify mean; `k=2`
 measured 401,147 proof bytes, 7.4955 ms prove mean, and 7.2242 ms verify mean.
+`SYMBT3-K2a` is implemented as a structural accumulator API only: typed
+`Symbt3AccumulatorInstance` / `Symbt3AccumulatorWitness` wrappers exist, the
+public statement binds `old_accumulator_digest` and `new_accumulator_digest`,
+and the accumulator instance has stable canonical digesting and
+`to_public_statement()` conversion. These digests are not part of the folding
+beta input-side challenge; they are bound through the public-statement/proof
+transcript, and K2b's accumulator-update challenge will bind the old/new
+boundary for transition checking. K2a does not add
+`AccumulatorTransitionConsistency`, `rho_acc`, or accumulator-transition WHIR
+constraints; those remain K2b.
+`SYMBT3-K2b` adds `AccumulatorTransitionConsistency` and the domain-separated
+`SYMBT3_ACC_TRANSITION` challenge. The transition profile is profile-bound,
+and the verifier checks the constant-size accumulator boundary law
+`new[i] = rho_acc * old[i] + (1 - rho_acc) * folded_batch[i]` without looping
+over batch leaves or manifest rows. Folding beta remains input-side-only.
+`SYMBT3-K3` hardens the authority profile gate without promoting SYMBT3 to the
+product route. Version `0` remains the existing research authority-candidate
+profile; version `1` is the research-only
+`AccumulatorSoundnessAuthorityCandidateV1` profile requiring K1 manifest
+evaluation, K2 accumulator transition consistency, public-canonical manifest
+binding, production-shaped norm/range policy, populated policy digests, and a
+union-bound effective soundness floor. ProductAuthority still rejects the
+current NonZK profile, and product `verify_public` remains unchanged. The K3
+verifier helper is only a profile-gate helper over the existing SYMBT3 public
+statement/proof shape.
+`SYMBT3-K4` adds the named NonZK research public accumulator API:
+`prove_public_symbt3_accumulator_research_non_zk(...)` and
+`verify_public_symbt3_accumulator_research_non_zk(...)`. This route takes a
+`Symbt3AccumulatorInstance` as the public accumulator boundary, checks
+`AccumulatorSoundnessAuthorityCandidateV1` / semantic profile version 1, rejects
+`ProductAuthority` and `product_eligible` profiles, converts to the existing
+`BatchedCpSymbt3PublicStatement`, and delegates to the same one-proof SYMBT3
+WHIR verifier. It is not a zkSNARK, may reveal WHIR-queried private
+coordinates, and does not alter product `verify_public`; K6 product route
+promotion remains future work.
+`SYMBT3-K4.5/K3b` compresses verifier-side source R1CS residual evaluation:
+the verifier derives a domain-separated `SYMBT3_SOURCE_R1CS_RESIDUAL_BATCH`
+point bound to source assignment boundary, source layout, R1CS evaluator layout,
+folded GR1CS boundary, relation/profile statement digest, and WHIR parameters.
+The logical `source_r1cs_residual_claims` count remains visible for audit, but
+the benchmark/profile counter `source_r1cs_residual_verifier_evaluations` is
+`1` for the current nonempty profiles. Proof shape and product routing remain
+unchanged.
+`SYMBT3-K4.6` compresses the public accumulator boundary bytes used by the K4
+research API. `Symbt3AccumulatorInstance::canonical_bytes()` now commits to
+expanded batch-item/source/message boundary data by digest (`batch_items_digest`,
+`public_source_boundary_digest`, `source_assignment_roots_digest`,
+`source_ajtai_opening_roots_digest`, and `message_oracle_roots_digest`) instead
+of serializing the expanded vectors directly. The expanded vectors remain
+available to the current research prover/dev adapter and are consistency-checked
+against those digests before delegation. Product `verify_public` remains
+unchanged.
+`SYMBT3-K6a` adds an explicit opt-in ProductAuthority NonZK integrity route:
+`prove_public_symbt3_accumulator_non_zk_integrity(...)` and
+`verify_public_symbt3_accumulator_non_zk_integrity(...)`. This route requires
+`ProductProofKind::Symbt3AccumulatorNonZkIntegrity`,
+`Symbt3ProductPolicy::Symbt3NonZkIntegrityOptIn`,
+`zk_status=NonZkIntegrityOnly`, `product_eligible=true`, semantic profile
+version 1, the K3 accumulator-soundness gate, and the K1/K2 proof shape
+guards. It rejects research profiles, ZK-required profiles, legacy SYMBT2F /
+SYMBT2C / SYMBTC / monolithic proof-kind markers, and failed gates without
+falling back to monolithic typed CP. It is product-integrity only, not a
+zkSNARK route, and the default monolithic product `verify_public` path remains
+unchanged.
+`SYMBT3-K6b` adds a side-by-side product route comparison benchmark:
+`product_route_comparison_vs_k`. The benchmark joins the current monolithic
+typed-CP product route (`public_verify_v2_vs_k`) with the explicit opt-in
+SYMBT3 K6a NonZK integrity route (`symbt3_accumulator_authority_vs_k`) and
+emits `PRODUCT_COMPARISON_CSV` rows. The monolithic public-byte column is the
+compressed public envelope with backend proof payloads omitted; the SYMBT3
+public-byte column is `Symbt3AccumulatorInstance::canonical_bytes()`.
+
+| k | monolithic verify | SYMBT3 K6a verify | verify speedup | monolithic proof bytes | SYMBT3 proof bytes | proof ratio | monolithic public bytes | SYMBT3 public bytes | notes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 2,109.052 ms | 17.656 ms | 119.45x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | one-shot comparison row |
+| 2 | 6,232.810 ms | 24.180 ms | 257.77x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | one-shot comparison row |
+| 4 | 13,326.962 ms | 24.348 ms | 547.36x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | one-shot comparison row |
+| 8 | 51,182.449 ms | 30.702 ms | 1,667.09x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | one-shot comparison row |
+
+K6b is a reporting/regression milestone only. SYMBT3 K6a remains NonZK
+integrity only, explicit opt-in, and not the default `verify_public` route. It
+does not implement K5 masking and does not support private manifest
+membership.
 The first `symbt3_e_vs_k` benchmark preserved the one-proof guard while
 switching the default product law to `RqNegacyclicConvolutionV1` and beta action
 to `RingCoefficientActionV1`: `k=1` measured 395,418 proof bytes, 6.4393 ms
@@ -749,14 +832,69 @@ structured block projection and monomial-embedding range metadata while
 preserving the same proof-shape guard. After the J2 range-column compression it
 measured `k=1` at 735,444 proof bytes, 27.255 ms prove mean, and 14.270 ms
 verify mean; `k=2` at 801,392 proof bytes, 49.314 ms prove mean, and
-20.919 ms verify mean. It reports
+20.919 ms verify mean. After the K0/J3 manifest/source-view refactor, the same
+`symbt3_j_vs_k` profile keeps per-item source, manifest, and message views out
+of the backend table.
+`SYMBT3-K1` additionally compresses the research public boundary: the
+canonical SYMBT3 development public statement now serializes the manifest root,
+layout digests, boundary digests, message roots, and folded output boundary,
+but not every active manifest/source coordinate or per-source private root. The
+verifier no longer reconstructs the full typed manifest from public data.
+K1a adds the root-linking layer for that boundary: `manifest_oracle_root` is
+public, `batch_manifest_root` is recomputed as
+`H("SYMBT3_MANIFEST", batch_manifest_layout_digest, manifest_oracle_root)`, and
+the authority profile binds the selected manifest commitment policy digest.
+K1b adds the research `ManifestEvaluationClaim`: the public statement carries a
+canonical BabyBear `manifest_eval_claim`, the verifier derives a distinct
+`manifest_membership_challenge`, and the one top-level SYMBT3 WHIR proof opens
+manifest/source membership columns at that point. Mutating the claim,
+manifest-oracle root, manifest layout, source layout, or stale proof data now
+rejects.
+K1c removes full manifest-row reconstruction from the verifier side of this
+membership check: the verifier now streams the canonical source coordinates
+from the compressed public statement to derive the source evaluation claim, and
+only the prover-side sanity path reconstructs complete manifest rows.
+K1 authority also checks that `manifest_oracle_root` is exactly the canonical
+manifest root streamed from the public source boundary before any transcript or
+claim derivation, so relinking `batch_manifest_root` to an arbitrary manifest
+root fails closed without adding a second WHIR proof or
+`family_columnar_subproof`.
+K1e.2 keeps this manifest binding out of the backend table entirely. The
+verifier computes `ManifestView(zeta)` and the matching virtual
+`SourceView(zeta)` from compressed public boundary data; no source-view column
+or full source-view vector is committed to WHIR. There is no dense
+manifest-oracle column, no source-view backend column, no manifest residual
+column, no trusted `manifest_eval_claim` fact, and no private manifest witness
+component under the `PublicCanonicalManifestViewV1` policy. The SYMBT3 proof
+shape remains one top-level WHIR proof, one backend table, and zero family
+subproofs.
+
+The 2026-05-10 `k=1,2,4,8,16,32,64` run measured `k=64` at 700,328 proof
+bytes, 97.545 ms prove mean, and 16.197 ms verify mean. It reports
 `StructuredBlockProjectionV1`, `MonomialEmbeddingRangeV1`, monomial embedding
-enabled, projection output length 3, `message_to_trace_binding_count=0`, and
-`k=2 num_vars=17`. The single-shot verifier attribution for `k=2` was about
-21.7 ms total, with about 7.4 ms in WHIR/PCS opening verification and about
-12.4 ms in the combined sumcheck/final-constraint evaluator. These are
-semantic-coverage architecture numbers for the development path, not product
-public-verifier performance claims.
+enabled, projection output length 3, `message_to_trace_binding_count=0`, flat
+`opened_field_elements=21`, and flat `public_statement_bytes=10,256` for all
+measured `k`. Backend `oracle_len` is 8,192, 8,192, 8,192, 16,384, 32,768,
+65,536, 131,072 for `k=1,2,4,8,16,32,64`, so the K0/J3 structural gate passes
+with at most 2x growth per k doubling. The generated scaling summary reports
+log-log slopes of about 0.223 for verify time, 0.621 for prove time, 0.167 for
+proof bytes, 0.000 for public statement bytes, and 0.714 for oracle length.
+These are semantic-coverage architecture numbers for the development path, not
+product public-verifier performance claims.
+SYMBT3-K0/J3 is the current evaluator-succinctness refactor. The first slice
+keeps manifest/source membership as a typed root/layout/public-boundary
+evaluator check instead of materializing manifest source/value/residual columns
+inside the WHIR backend table. The batch manifest root and source-column layout
+remain beta-bound input-side data, but `manifest_coordinate_count` no longer
+chooses the backend table row domain. The verifier profile now breaks the
+combined final evaluator into family buckets:
+`verify_final_eval_manifest_ms`, `verify_final_eval_source_r1cs_ms`,
+`verify_final_eval_folded_boundary_ms`,
+`verify_final_eval_product_residual_ms`, `verify_final_eval_ajtai_ms`,
+`verify_final_eval_range_ms`, and `verify_final_eval_message_view_ms`. The
+benchmark guard requires the backend oracle length to grow by at most 2x when
+`k` doubles. Source R1CS residual compression remains the next K0/J3 target if
+the new attribution shows it dominates the final evaluator.
 WHIR can now prove and verify a `SYMBTC1` product-domain oracle proof for this
 context: one WHIR commitment to the canonical batch oracle and one
 transcript-bound opening, plus openings for all verifier-known packed oracle

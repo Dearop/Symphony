@@ -12,18 +12,26 @@ use symphony::batched_cp::{
 };
 #[cfg(feature = "whir")]
 use symphony::batched_cp::{
-    derive_symbt3_batch_challenge_digest, derive_symbt3_beta_coefficients,
-    derive_symbt3_beta_ring_elements, derive_symbt3_public_statement_digest,
-    derive_symbt3_round_challenges, symbt3_batch_manifest_root_from_rows,
-    symbt3_manifest_rows_for_statement, BatchedCpSemanticColumnarV2Description,
-    BatchedCpSemanticFamilyColumnarV2Description, BatchedCpSemanticFamilyTraceV2,
-    BatchedCpSemanticRelationV2Description, BatchedCpSemanticTraceV2,
-    BatchedCpSymbt3RelationDescription, BatchedCpSymbt3SetupDescriptor, Symbt3AuthorityProfile,
+    derive_symbt3_accumulator_transition_challenge, derive_symbt3_batch_challenge_digest,
+    derive_symbt3_beta_coefficients, derive_symbt3_beta_ring_elements,
+    derive_symbt3_manifest_membership_challenge, derive_symbt3_public_statement_digest,
+    derive_symbt3_round_challenges, symbt3_accumulator_coordinates_digest,
+    symbt3_accumulator_transition_profile_digest, symbt3_batch_manifest_root_from_oracle_root,
+    symbt3_batch_manifest_root_from_rows, symbt3_canonical_manifest_view_eval_for_statement,
+    symbt3_manifest_commitment_policy_digest, symbt3_manifest_oracle_root_for_statement,
+    symbt3_manifest_oracle_root_from_rows, symbt3_manifest_rows_for_statement,
+    symbt3_manifest_source_eval_claim_for_statement, symbt3_manifest_source_values_for_statement,
+    symbt3_norm_range_policy_digest, symbt3_virtual_source_view_eval_for_statement,
+    BatchedCpSemanticColumnarV2Description, BatchedCpSemanticFamilyColumnarV2Description,
+    BatchedCpSemanticFamilyTraceV2, BatchedCpSemanticRelationV2Description,
+    BatchedCpSemanticTraceV2, BatchedCpSymbt3ConstraintFamily, BatchedCpSymbt3RelationDescription,
+    BatchedCpSymbt3SetupDescriptor, ManifestCommitmentPolicy, ProductProofKind,
+    Symbt3AccumulatorInstance, Symbt3AccumulatorWitness, Symbt3AuthorityProfile,
     Symbt3AuthorityStatus, Symbt3BetaActionId, Symbt3CanonicalRepPolicy,
     Symbt3FieldExtensionPolicy, Symbt3MessageSectionKind, Symbt3MessageSemanticMode,
-    Symbt3ProductLawId, Symbt3ProjectionEntryDistribution, Symbt3ProjectionMode, Symbt3RangeMode,
-    Symbt3RingActionSide, Symbt3RoutingStatus, Symbt3SoundnessStatus,
-    Symbt3SumcheckChallengePolicy, Symbt3ZkStatus,
+    Symbt3ProductLawId, Symbt3ProductPolicy, Symbt3ProjectionEntryDistribution,
+    Symbt3ProjectionMode, Symbt3RangeMode, Symbt3RingActionSide, Symbt3RoutingStatus,
+    Symbt3SoundnessStatus, Symbt3SumcheckChallengePolicy, Symbt3TypedMessageOracle, Symbt3ZkStatus,
 };
 use symphony::commitment::Commitment;
 #[cfg(feature = "whir")]
@@ -863,7 +871,16 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     let item_a = items.remove(0);
     let item_b = items.remove(0);
     let params_digest = whir_parameter_digest();
+    let bucket_one = BatchedCpBucket::new(vec![item_a.clone()], params_digest).unwrap();
     let bucket = BatchedCpBucket::new(vec![item_a, item_b], params_digest).unwrap();
+    let descriptor_one = BatchedCpSymbt3SetupDescriptor::new(
+        bucket_one.shape.clone(),
+        &prover.ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    );
+    let relation_one = descriptor_one.relation_description();
+    let public_one = bucket_one.symbt3_public_statement_for_relation(&relation_one);
     let descriptor = BatchedCpSymbt3SetupDescriptor::new(
         bucket.shape.clone(),
         &prover.ajtai,
@@ -874,6 +891,163 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     let public = bucket.symbt3_public_statement_for_relation(&relation);
 
     assert!(public.matches_relation(&relation));
+    assert_ne!(public.old_accumulator_digest, [0u8; 32]);
+    assert_ne!(public.new_accumulator_digest, [0u8; 32]);
+    assert_eq!(
+        public.old_accumulator_coordinates.len(),
+        relation.symbt3_accumulator_coordinate_len()
+    );
+    assert_eq!(
+        public.new_accumulator_coordinates.len(),
+        relation.symbt3_accumulator_coordinate_len()
+    );
+    assert_eq!(
+        public.old_accumulator_digest,
+        symbt3_accumulator_coordinates_digest(
+            bucket.shape.accumulator_shape.digest_scheme,
+            b"old",
+            &vec![0; relation.symbt3_accumulator_coordinate_len()],
+        )
+    );
+    assert_eq!(
+        public.new_accumulator_digest,
+        symbt3_accumulator_coordinates_digest(
+            bucket.shape.accumulator_shape.digest_scheme,
+            b"new",
+            &public.new_accumulator_coordinates,
+        )
+    );
+    let rho_acc = derive_symbt3_accumulator_transition_challenge(&relation, &public);
+    assert_ne!(
+        rho_acc,
+        derive_symbt3_beta_coefficients(&relation, &public)[0] as u32,
+        "SYMBT3-K2b rho_acc is domain-separated from folding beta"
+    );
+    assert_eq!(
+        public.new_accumulator_coordinates,
+        symphony::batched_cp::symbt3_accumulator_transition_coordinates(&relation, &public)
+            .expect("K2b transition coordinates")
+    );
+    assert!(relation.oracle_layout.constraint_families.contains(
+        &symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::AccumulatorTransitionConsistency
+    ));
+    assert!(relation.has_symbt3_k2_families());
+    let transition_profile_digest = symbt3_accumulator_transition_profile_digest(
+        bucket.shape.accumulator_shape.digest_scheme,
+        &relation,
+    );
+    let mut changed_old_for_rho = public.clone();
+    changed_old_for_rho.old_accumulator_digest[0] ^= 1;
+    assert_ne!(
+        rho_acc,
+        derive_symbt3_accumulator_transition_challenge(&relation, &changed_old_for_rho),
+        "rho_acc must bind old_accumulator_digest"
+    );
+    let mut changed_folded_for_rho = public.clone();
+    changed_folded_for_rho.folded_accumulator_coordinates[0] += 1;
+    assert_ne!(
+        rho_acc,
+        derive_symbt3_accumulator_transition_challenge(&relation, &changed_folded_for_rho),
+        "rho_acc must bind folded batch accumulator boundary"
+    );
+    let mut changed_shape_for_rho = public.clone();
+    changed_shape_for_rho.shape_id[0] ^= 1;
+    assert_ne!(
+        rho_acc,
+        derive_symbt3_accumulator_transition_challenge(&relation, &changed_shape_for_rho),
+        "rho_acc must bind shape/profile boundary"
+    );
+    let mut changed_transition_profile_relation = relation.clone();
+    changed_transition_profile_relation
+        .algebra_law
+        .module_layout = "coordinatewise-ring-module-k2b-test";
+    assert_ne!(
+        transition_profile_digest,
+        symbt3_accumulator_transition_profile_digest(
+            bucket.shape.accumulator_shape.digest_scheme,
+            &changed_transition_profile_relation,
+        )
+    );
+    assert_ne!(
+        rho_acc,
+        derive_symbt3_accumulator_transition_challenge(
+            &changed_transition_profile_relation,
+            &public
+        ),
+        "rho_acc must bind the accumulator transition profile"
+    );
+    let profile = Symbt3AuthorityProfile::research_authority_candidate_from_relation(&relation, 64);
+    let profile_digest = profile.digest(bucket.shape.accumulator_shape.digest_scheme);
+    let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        bucket.shape.accumulator_shape.digest_scheme,
+        profile_digest,
+        public.old_accumulator_digest,
+        public.new_accumulator_digest,
+        &public,
+    );
+    assert_eq!(accumulator_instance.to_public_statement(), public);
+    assert_eq!(
+        accumulator_instance.digest(bucket.shape.accumulator_shape.digest_scheme),
+        Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+            bucket.shape.accumulator_shape.digest_scheme,
+            profile_digest,
+            public.old_accumulator_digest,
+            public.new_accumulator_digest,
+            &public,
+        )
+        .digest(bucket.shape.accumulator_shape.digest_scheme)
+    );
+    for mutate in [
+        "profile", "old", "new", "shape", "capacity", "manifest", "message",
+    ] {
+        let mut changed = accumulator_instance.clone();
+        match mutate {
+            "profile" => changed.profile_digest[0] ^= 1,
+            "old" => changed.old_accumulator_digest[0] ^= 1,
+            "new" => changed.new_accumulator_digest[0] ^= 1,
+            "shape" => changed.shape_id[0] ^= 1,
+            "capacity" => changed.batch_capacity += 1,
+            "manifest" => changed.manifest_root[0] ^= 1,
+            "message" => changed.message_oracle_roots[0][0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert_ne!(
+            accumulator_instance.digest(bucket.shape.accumulator_shape.digest_scheme),
+            changed.digest(bucket.shape.accumulator_shape.digest_scheme),
+            "K2a accumulator digest must bind {mutate}"
+        );
+    }
+    let public_statement_digest = derive_symbt3_public_statement_digest(&relation, &public);
+    let mut changed_old_accumulator = public.clone();
+    changed_old_accumulator.old_accumulator_digest[0] ^= 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&relation, &public),
+        derive_symbt3_batch_challenge_digest(&relation, &changed_old_accumulator),
+        "K2a old accumulator digest is proof/update boundary data and must not enter folding beta"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_old_accumulator)
+    );
+    let mut changed_new_accumulator = public.clone();
+    changed_new_accumulator.new_accumulator_digest[0] ^= 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&relation, &public),
+        derive_symbt3_batch_challenge_digest(&relation, &changed_new_accumulator),
+        "K2a new accumulator digest must not enter folding beta; K2b rho_acc will own update binding"
+    );
+    assert_ne!(
+        public_statement_digest,
+        derive_symbt3_public_statement_digest(&relation, &changed_new_accumulator)
+    );
+    let symbt3_witness = bucket.symbt3_witness_for_relation(&relation);
+    let accumulator_witness: Symbt3AccumulatorWitness =
+        Symbt3AccumulatorWitness::from_symbt3_witness(&relation, &symbt3_witness);
+    let _: &Vec<Symbt3TypedMessageOracle> = &accumulator_witness.message_oracles;
+    assert_eq!(
+        accumulator_witness.message_oracles.len(),
+        bucket.shape.accumulator_shape.num_rounds
+    );
     assert_eq!(
         public.message_oracle_roots.len(),
         bucket.shape.accumulator_shape.num_rounds
@@ -881,6 +1055,15 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert_eq!(
         public.canonical_bytes().len(),
         relation.public_statement_bytes()
+    );
+    assert_eq!(
+        public_one.canonical_bytes().len(),
+        relation_one.public_statement_bytes()
+    );
+    assert_eq!(
+        public_one.canonical_bytes().len(),
+        public.canonical_bytes().len(),
+        "SYMBT3-K1 compressed research public statements bind roots/digests, not every manifest/source coordinate"
     );
     assert_eq!(
         public.folded_commitment.len(),
@@ -1009,13 +1192,76 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
         ))));
     let manifest_rows =
         symbt3_manifest_rows_for_statement(&relation, &public).expect("SYMBT3-H manifest rows");
+    let manifest_oracle_root = symbt3_manifest_oracle_root_from_rows(
+        bucket.shape.accumulator_shape.digest_scheme,
+        &relation,
+        &manifest_rows,
+    );
+    assert_eq!(public.manifest_oracle_root, manifest_oracle_root);
+    assert_eq!(
+        symbt3_manifest_oracle_root_for_statement(&relation, &public)
+            .expect("SYMBT3-K1 public manifest root"),
+        public.manifest_oracle_root,
+        "K1 authoritative verifier root must be the canonical source-boundary manifest root"
+    );
+    assert_eq!(
+        public.batch_manifest_root,
+        symbt3_batch_manifest_root_from_oracle_root(
+            bucket.shape.accumulator_shape.digest_scheme,
+            ManifestCommitmentPolicy::PublicCanonicalManifestViewV1,
+            &public.batch_manifest_layout_digest,
+            &manifest_oracle_root
+        )
+    );
     assert_eq!(
         public.batch_manifest_root,
         symbt3_batch_manifest_root_from_rows(
             bucket.shape.accumulator_shape.digest_scheme,
             &relation,
             &manifest_rows
+        ),
+        "row helper must derive the K1a linked product root"
+    );
+    assert_eq!(
+        public.manifest_eval_claim, 0,
+        "K1e does not trust a public manifest_eval_claim fact"
+    );
+    assert_eq!(
+        symbt3_manifest_source_values_for_statement(&relation, &public)
+            .expect("SYMBT3-K1c streaming source values"),
+        manifest_rows
+            .iter()
+            .flat_map(|row| row.iter().copied())
+            .collect::<Vec<_>>(),
+        "K1c verifier source evaluator must match the canonical manifest row order without requiring row reconstruction"
+    );
+    assert_eq!(
+        symbt3_canonical_manifest_view_eval_for_statement(
+            &relation,
+            &public,
+            &public.manifest_oracle_root
         )
+        .expect("SYMBT3-K1e manifest view eval claim"),
+        symbt3_manifest_source_eval_claim_for_statement(
+            &relation,
+            &public,
+            &public.manifest_oracle_root
+        )
+        .expect("SYMBT3-K1c streaming source eval claim"),
+        "K1e ManifestView and SourceView use the same canonical public evaluator"
+    );
+    assert_eq!(
+        symbt3_canonical_manifest_view_eval_for_statement(
+            &relation,
+            &public,
+            &public.manifest_oracle_root
+        ),
+        symbt3_virtual_source_view_eval_for_statement(
+            &relation,
+            &public,
+            &public.manifest_oracle_root
+        ),
+        "K1e.2 SourceView is a virtual evaluator, not a backend vector"
     );
     assert_eq!(
         public.projection_layout_digest,
@@ -1162,12 +1408,242 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert!(research_profile.research_only);
     assert!(research_profile.matches_relation_metadata(&relation));
     assert!(
+        relation.oracle_layout.constraint_families.contains(
+            &symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::ManifestEvaluationClaim
+        ),
+        "SYMBT3-K1b manifest evaluation claim must be in the backend family set"
+    );
+    assert!(
         research_profile.accepts_relation_for_research_authority_candidate(&relation),
         "SYMBT3-J2 can pass a non-ZK research authority-candidate gate when all semantic families are enabled"
     );
     assert!(
         !research_profile.accepts_relation_for_product_authority(&relation),
         "research-only non-ZK profiles must not be product-authority eligible"
+    );
+    assert_eq!(
+        research_profile.semantic_profile_version, 0,
+        "K3 keeps the existing research authority candidate as semantic_profile_version=0"
+    );
+    assert!(
+        !research_profile.accepts_relation_for_accumulator_soundness_authority_candidate(&relation),
+        "K3 accumulator soundness authority must reject version-0 research profiles"
+    );
+    let accumulator_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &relation, 64,
+        );
+    assert_eq!(accumulator_profile.semantic_profile_version, 1);
+    assert!(accumulator_profile.matches_relation_metadata(&relation));
+    assert!(
+        accumulator_profile.accepts_relation_for_accumulator_soundness_authority_candidate(
+            &relation
+        ),
+        "K3 version-1 accumulator soundness candidate must pass with K1/K2 families and production-shaped policies"
+    );
+    assert!(
+        accumulator_profile.effective_soundness_bits() >= accumulator_profile.soundness_bound_bits,
+        "K3 effective soundness must use union-bound accounting over failure terms"
+    );
+    assert!(
+        !accumulator_profile.accepts_relation_for_research_authority_candidate(&relation),
+        "K3 version-1 accumulator authority is intentionally separate from the version-0 research gate"
+    );
+    assert!(
+        !accumulator_profile.accepts_relation_for_product_authority(&relation),
+        "ProductAuthority must still reject the NonZK K3 accumulator profile until an explicit NonZK integrity policy is added"
+    );
+    let mut missing_manifest_eval_accumulator_profile = accumulator_profile.clone();
+    missing_manifest_eval_accumulator_profile
+        .enabled_families
+        .retain(|family| {
+            *family
+                != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::ManifestEvaluationClaim
+        });
+    assert!(
+        !missing_manifest_eval_accumulator_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(&relation),
+        "K3 must reject an accumulator profile missing ManifestEvaluationClaim"
+    );
+    let mut missing_transition_accumulator_profile = accumulator_profile.clone();
+    missing_transition_accumulator_profile
+        .enabled_families
+        .retain(|family| {
+            *family
+                != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::AccumulatorTransitionConsistency
+        });
+    assert!(
+        !missing_transition_accumulator_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(&relation),
+        "K3 must reject an accumulator profile missing AccumulatorTransitionConsistency"
+    );
+    let mut zero_policy_digest_profile = accumulator_profile.clone();
+    zero_policy_digest_profile.norm_range_policy_digest = [0u8; 32];
+    assert!(
+        !zero_policy_digest_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(&relation),
+        "K3 must reject unpopulated policy digests"
+    );
+    let mut low_soundness_profile = accumulator_profile.clone();
+    low_soundness_profile.manifest_membership_bits = 16;
+    assert!(
+        !low_soundness_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(&relation),
+        "K3 must reject profiles whose union-bound effective soundness misses the bound"
+    );
+    let mut missing_manifest_eval_relation = relation.clone();
+    missing_manifest_eval_relation
+        .oracle_layout
+        .constraint_families
+        .retain(|family| {
+            *family
+                != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::ManifestEvaluationClaim
+        });
+    let missing_manifest_eval_relation_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &missing_manifest_eval_relation,
+            64,
+        );
+    assert!(
+        !missing_manifest_eval_relation_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(
+                &missing_manifest_eval_relation
+            ),
+        "K3 relation gate must require the K1 ManifestEvaluationClaim family"
+    );
+    let mut missing_transition_relation = relation.clone();
+    missing_transition_relation
+        .oracle_layout
+        .constraint_families
+        .retain(|family| {
+            *family
+                != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::AccumulatorTransitionConsistency
+        });
+    let missing_transition_relation_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &missing_transition_relation,
+            64,
+        );
+    assert!(
+        !missing_transition_relation_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(
+                &missing_transition_relation
+            ),
+        "K3 relation gate must require the K2 AccumulatorTransitionConsistency family"
+    );
+    let mut dev_projection_relation = relation.clone();
+    dev_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .projection_mode = Symbt3ProjectionMode::DirectDevDenseProjectionV1;
+    let dev_projection_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &dev_projection_relation,
+            64,
+        );
+    assert!(
+        !dev_projection_profile.accepts_relation_for_accumulator_soundness_authority_candidate(
+            &dev_projection_relation
+        ),
+        "K3 must reject DirectDevDenseProjectionV1"
+    );
+    let mut dev_range_relation = relation.clone();
+    dev_range_relation.ajtai_norm_range_layout.range_mode = Symbt3RangeMode::DirectSignedRangeDevV1;
+    dev_range_relation
+        .ajtai_norm_range_layout
+        .range_layout
+        .range_mode = Symbt3RangeMode::DirectSignedRangeDevV1;
+    let dev_range_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &dev_range_relation,
+            64,
+        );
+    assert!(
+        !dev_range_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(&dev_range_relation),
+        "K3 must reject DirectSignedRangeDevV1"
+    );
+    let mut identity_projection_relation = relation.clone();
+    identity_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .block_len = 1;
+    identity_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .output_len = identity_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .input_len;
+    let identity_projection_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &identity_projection_relation,
+            64,
+        );
+    assert!(
+        !identity_projection_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(
+                &identity_projection_relation
+            ),
+        "K3 must reject identity-shaped projection layouts"
+    );
+    let mut unconstrained_representative_relation = relation.clone();
+    unconstrained_representative_relation
+        .ajtai_norm_range_layout
+        .representative_layout
+        .signed_range = 0;
+    let unconstrained_representative_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &unconstrained_representative_relation,
+            64,
+        );
+    assert!(
+        !unconstrained_representative_profile
+            .accepts_relation_for_accumulator_soundness_authority_candidate(
+                &unconstrained_representative_relation
+            ),
+        "K3 must reject unconstrained representative residual policy"
+    );
+    let mut debug_monomial_relation = relation.clone();
+    debug_monomial_relation
+        .ajtai_norm_range_layout
+        .monomial_embedding_layout
+        .table_polynomial_digest = [0u8; 32];
+    let debug_monomial_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &debug_monomial_relation,
+            64,
+        );
+    assert!(
+        !debug_monomial_profile.accepts_relation_for_accumulator_soundness_authority_candidate(
+            &debug_monomial_relation
+        ),
+        "K3 must reject debug-only monomial/range policy"
+    );
+    let mut bad_table_relation = relation.clone();
+    bad_table_relation
+        .ajtai_norm_range_layout
+        .range_layout
+        .table_digest
+        .as_mut()
+        .expect("monomial range table digest")[0] ^= 1;
+    let bad_table_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &bad_table_relation,
+            64,
+        );
+    assert_ne!(
+        accumulator_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        bad_table_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        "wrong t_B table digest must change the K3 profile digest"
+    );
+    assert_eq!(
+        bad_table_profile.norm_range_policy_digest,
+        symbt3_norm_range_policy_digest(
+            bucket.shape.accumulator_shape.digest_scheme,
+            &bad_table_relation
+        ),
+        "K3 norm/range policy digest binds the t_B table digest"
     );
     let authority_profile =
         Symbt3AuthorityProfile::authority_candidate_from_relation(&relation, 128);
@@ -1178,6 +1654,14 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert!(authority_profile.product_eligible);
     assert!(!authority_profile.research_only);
     assert!(authority_profile.matches_relation_metadata(&relation));
+    assert_eq!(
+        authority_profile.manifest_commitment_policy_digest,
+        symbt3_manifest_commitment_policy_digest(
+            bucket.shape.accumulator_shape.digest_scheme,
+            ManifestCommitmentPolicy::PublicCanonicalManifestViewV1
+        ),
+        "K1e public canonical manifest view policy must be profile-bound"
+    );
     assert!(
         !authority_profile.accepts_relation_for_product_authority(&relation),
         "current SYMBT3-J2 relation is still NonAuthoritativeDevelopment/NonZkDevelopment"
@@ -1194,6 +1678,17 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
         changed_authority_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
         "profile mutation must change the authority profile digest"
     );
+    let mut wrong_manifest_policy_profile = authority_profile.clone();
+    wrong_manifest_policy_profile.manifest_commitment_policy_digest[0] ^= 1;
+    assert_ne!(
+        authority_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        wrong_manifest_policy_profile.digest(bucket.shape.accumulator_shape.digest_scheme),
+        "manifest commitment policy mutation must change the authority profile digest"
+    );
+    assert!(
+        !wrong_manifest_policy_profile.matches_relation_metadata(&relation),
+        "wrong manifest commitment policy must reject the authority profile"
+    );
     let mut wrong_whir_profile = authority_profile.clone();
     wrong_whir_profile.whir_parameter_digest[0] ^= 1;
     assert!(
@@ -1208,6 +1703,17 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert!(
         !missing_manifest_profile.matches_relation_metadata(&relation),
         "missing manifest/message-view authority families must change/reject the profile"
+    );
+    let mut missing_manifest_eval_profile = authority_profile.clone();
+    missing_manifest_eval_profile
+        .enabled_families
+        .retain(|family| {
+            *family
+                != symphony::batched_cp::BatchedCpSymbt3ConstraintFamily::ManifestEvaluationClaim
+        });
+    assert!(
+        !missing_manifest_eval_profile.matches_relation_metadata(&relation),
+        "missing K1b manifest evaluation claim must reject the authority profile"
     );
     let mut non_zk_product_profile = research_profile.clone();
     non_zk_product_profile.product_eligible = true;
@@ -1325,17 +1831,24 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     assert!(!changed_folded_ajtai.matches_relation(&relation));
     let mut changed_source_ajtai_root = public.clone();
     changed_source_ajtai_root.source_ajtai_opening_roots[0][0] ^= 1;
-    assert_ne!(
+    assert_eq!(
         challenge_digest,
         derive_symbt3_batch_challenge_digest(&relation, &changed_source_ajtai_root),
-        "source Ajtai roots must be beta-bound before folding"
+        "SYMBT3-K1 keeps private source Ajtai opening roots out of the compressed beta transcript"
     );
     let mut changed_source_assignment_root = public.clone();
     changed_source_assignment_root.source_assignment_roots[0][0] ^= 1;
-    assert_ne!(
+    assert_eq!(
         challenge_digest,
         derive_symbt3_batch_challenge_digest(&relation, &changed_source_assignment_root),
-        "source assignment roots must be beta-bound before residual checks"
+        "SYMBT3-K1 beta binds the source assignment boundary digest, not every root"
+    );
+    let mut changed_source_assignment_boundary = public.clone();
+    changed_source_assignment_boundary.source_assignment_boundary_digest[0] ^= 1;
+    assert_ne!(
+        challenge_digest,
+        derive_symbt3_batch_challenge_digest(&relation, &changed_source_assignment_boundary),
+        "the compressed source assignment boundary digest must remain beta-bound"
     );
     let mut changed_evaluation = public.clone();
     changed_evaluation.folded_evaluation[0] += 1;
@@ -1603,29 +2116,107 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
         "SYMBT3-I2 must stay one top-level proof object, not a table-proof forest"
     );
     assert!(
-        proof.num_vars <= 17,
-        "SYMBT3-J2 must keep the k=2 default profile in the 32-column padded table bucket"
+        proof.num_vars <= 14,
+        "SYMBT3-K1e.2 must keep the k=2 default profile in the compact backend bucket"
     );
     assert_eq!(
         proof.private_opening_evals.len(),
-        36,
-        "SYMBT3-J2 removes deterministic monomial-witness and representative-residual openings"
+        15,
+        "SYMBT3-K1e.2 must not open a materialized source-view or dense manifest column"
     );
-    let symbt3_base_column_count = 6 + 6 * public.active_count;
-    let projected_opening_eval_idx = symbt3_base_column_count + 6;
-    let projection_residual_eval_idx = symbt3_base_column_count + 7;
-    let range_residual_eval_idx = symbt3_base_column_count + 8;
-    let monomial_residual_eval_idx = symbt3_base_column_count + 9;
-    let manifest_source_eval_idx = symbt3_base_column_count + 10;
+    let source_view_backend_column_count = 0usize;
+    let source_view_materialized_coordinate_count = 0usize;
+    let manifest_backend_column_count = 0usize;
+    let manifest_materialized_coordinate_count = 0usize;
+    assert_eq!(source_view_backend_column_count, 0);
+    assert_eq!(source_view_materialized_coordinate_count, 0);
+    assert_eq!(manifest_backend_column_count, 0);
+    assert_eq!(manifest_materialized_coordinate_count, 0);
+    let projected_opening_eval_idx = 10;
+    let projection_residual_eval_idx = 11;
+    let range_residual_eval_idx = 12;
+    let monomial_residual_eval_idx = 13;
+    let first_product_sumcheck_eval_idx = 14;
     assert_eq!(
-        manifest_source_eval_idx,
-        28,
-        "SYMBT3-J2 keeps manifest openings after projected/range residual openings, with no committed monomial-witness or representative-residual column"
+        first_product_sumcheck_eval_idx,
+        proof.private_opening_evals.len() - 1,
+        "SYMBT3-K1e.2 places product-sumcheck openings after the base table columns"
     );
     assert!(!proof.sumcheck_rounds_4.is_empty());
     assert_eq!(
         <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof),
         Some(true)
+    );
+    let mut changed_table_relation = decoded_relation.clone();
+    changed_table_relation
+        .ajtai_norm_range_layout
+        .range_layout
+        .table_digest
+        .as_mut()
+        .expect("monomial range table digest")[0] ^= 1;
+    let changed_table_backend_relation = changed_table_relation.to_relation_description();
+    let (_changed_table_pk, changed_table_vk) =
+        <WhirSnark as CpBackend>::setup(&changed_table_backend_relation);
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&changed_table_vk, &public, &proof),
+        Some(false),
+        "K3 must reject stale proofs under a changed t_B table digest/profile"
+    );
+    let accumulator_transition_claims = 1usize;
+    assert_eq!(
+        accumulator_transition_claims, 1,
+        "K2b accumulator transition must remain one constant-size claim, not O(k)"
+    );
+    let mut changed_old_accumulator_digest = public.clone();
+    changed_old_accumulator_digest.old_accumulator_digest[0] ^= 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_old_accumulator_digest,
+            &proof
+        ),
+        Some(false),
+        "K2a old accumulator digest is transcript-bound public statement data"
+    );
+    let mut changed_new_accumulator_digest = public.clone();
+    changed_new_accumulator_digest.new_accumulator_digest[0] ^= 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_new_accumulator_digest,
+            &proof
+        ),
+        Some(false),
+        "K2a new accumulator digest is transcript-bound public statement data"
+    );
+    let mut changed_old_accumulator_coordinate = public.clone();
+    changed_old_accumulator_coordinate.old_accumulator_coordinates[0] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_old_accumulator_coordinate,
+            &proof
+        ),
+        Some(false),
+        "K2b old accumulator coordinates must match their digest and transition law"
+    );
+    let mut changed_new_accumulator_coordinate = public.clone();
+    changed_new_accumulator_coordinate.new_accumulator_coordinates[0] += 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_new_accumulator_coordinate,
+            &proof
+        ),
+        Some(false),
+        "K2b new accumulator coordinates must satisfy new = rho*old + (1-rho)*folded"
+    );
+    let mut changed_shape_id = public.clone();
+    changed_shape_id.shape_id[0] ^= 1;
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_shape_id, &proof),
+        Some(false),
+        "K2b rho_acc and statement matching must bind shape_id"
     );
     let authority_profile =
         Symbt3AuthorityProfile::authority_candidate_from_relation(&decoded_relation, 128);
@@ -1650,6 +2241,31 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
         WhirSnark::verify_symbt3_authority_profile(&vk, &public, &proof, &research_profile),
         Some(false),
         "research-only profiles must not pass the ProductAuthority gate"
+    );
+    let accumulator_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &decoded_relation,
+            64,
+        );
+    assert_eq!(
+        WhirSnark::verify_symbt3_accumulator_soundness_authority_candidate(
+            &vk,
+            &public,
+            &proof,
+            &accumulator_profile
+        ),
+        Some(true),
+        "K3 version-1 accumulator soundness candidates remain research-only but can pass the K3 gate"
+    );
+    assert_eq!(
+        WhirSnark::verify_symbt3_accumulator_soundness_authority_candidate(
+            &vk,
+            &public,
+            &proof,
+            &research_profile
+        ),
+        Some(false),
+        "K3 accumulator gate must reject semantic_profile_version=0 profiles"
     );
     let mut bad_source_opening = witness.clone();
     bad_source_opening.source_ajtai_opening_values[0][0] += 1;
@@ -1680,11 +2296,9 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
             .is_none(),
         "source assignment tampering must be root-bound before beta and residual checks"
     );
-    let mut bad_manifest = witness.clone();
-    bad_manifest.manifest_source_values[0][0] += 1;
     assert!(
-        <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &bad_manifest).is_none(),
-        "SYMBT3-H manifest/source coordinate tampering must reject"
+        witness.manifest_source_values.is_empty(),
+        "SYMBT3-K1e has no private manifest witness components"
     );
     let mut bad_message = witness.clone();
     bad_message.message_oracles[0][0][0] ^= 1;
@@ -1831,6 +2445,116 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     assert_eq!(
         <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_manifest_root, &proof),
         Some(false)
+    );
+    let mut changed_manifest_eval_claim = public.clone();
+    changed_manifest_eval_claim.manifest_eval_claim = changed_manifest_eval_claim
+        .manifest_eval_claim
+        .wrapping_add(1);
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_manifest_eval_claim),
+        "K1b manifest eval claim must not alter input-side beta"
+    );
+    assert_ne!(
+        derive_symbt3_public_statement_digest(&decoded_relation, &public),
+        derive_symbt3_public_statement_digest(&decoded_relation, &changed_manifest_eval_claim),
+        "K1b manifest eval claim must alter proof public digest"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_manifest_eval_claim,
+            &proof
+        ),
+        Some(false),
+        "tampering the K1b manifest eval claim must reject"
+    );
+    let mut changed_manifest_oracle_root = public.clone();
+    changed_manifest_oracle_root.manifest_oracle_root[0] ^= 1;
+    assert_eq!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_manifest_oracle_root),
+        "K1a manifest oracle root is linked through batch_manifest_root, not the beta transcript directly"
+    );
+    assert_ne!(
+        derive_symbt3_manifest_membership_challenge(
+            &decoded_relation,
+            &public,
+            &public.manifest_oracle_root
+        ),
+        derive_symbt3_manifest_membership_challenge(
+            &decoded_relation,
+            &changed_manifest_oracle_root,
+            &changed_manifest_oracle_root.manifest_oracle_root
+        ),
+        "K1b manifest oracle root must alter the verifier-derived membership challenge"
+    );
+    assert_ne!(
+        derive_symbt3_public_statement_digest(&decoded_relation, &public),
+        derive_symbt3_public_statement_digest(&decoded_relation, &changed_manifest_oracle_root),
+        "K1a manifest oracle root must alter the proof public digest"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &changed_manifest_oracle_root,
+            &proof
+        ),
+        Some(false),
+        "tampering the K1a manifest oracle root must reject"
+    );
+    let mut relinked_wrong_manifest_oracle_root = changed_manifest_oracle_root.clone();
+    relinked_wrong_manifest_oracle_root.batch_manifest_root =
+        symbt3_batch_manifest_root_from_oracle_root(
+            bucket.shape.accumulator_shape.digest_scheme,
+            ManifestCommitmentPolicy::PublicCanonicalManifestViewV1,
+            &relinked_wrong_manifest_oracle_root.batch_manifest_layout_digest,
+            &relinked_wrong_manifest_oracle_root.manifest_oracle_root,
+        );
+    assert!(
+        !relinked_wrong_manifest_oracle_root.matches_relation(&decoded_relation),
+        "K1 verifier must reject a root-linked but non-canonical manifest oracle root"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(
+            &vk,
+            &relinked_wrong_manifest_oracle_root,
+            &proof
+        ),
+        Some(false),
+        "relinking batch_manifest_root to a wrong manifest_oracle_root must still reject"
+    );
+    let mut changed_manifest_layout = public.clone();
+    changed_manifest_layout.batch_manifest_layout_digest[0] ^= 1;
+    assert_ne!(
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &public),
+        derive_symbt3_batch_challenge_digest(&decoded_relation, &changed_manifest_layout),
+        "batch manifest layout digest is input-side data and must affect beta"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_manifest_layout, &proof),
+        Some(false),
+        "tampering the K1a manifest layout digest must reject"
+    );
+    let mut changed_source_layout = public.clone();
+    changed_source_layout.source_column_layout_digest[0] ^= 1;
+    assert_ne!(
+        derive_symbt3_manifest_membership_challenge(
+            &decoded_relation,
+            &public,
+            &public.manifest_oracle_root
+        ),
+        derive_symbt3_manifest_membership_challenge(
+            &decoded_relation,
+            &changed_source_layout,
+            &changed_source_layout.manifest_oracle_root
+        ),
+        "K1b source layout digest must alter the verifier-derived membership challenge"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &changed_source_layout, &proof),
+        Some(false),
+        "tampering the K1b source layout digest must reject"
     );
 
     let mut changed_input = public.clone();
@@ -1988,6 +2712,786 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
         Some(false),
         "non-SYMBT3 payloads must not be accepted as SYMBT3 research authority candidates"
     );
+    assert_eq!(
+        WhirSnark::verify_symbt3_accumulator_soundness_authority_candidate(
+            &vk,
+            &public,
+            &non_symbt3_proof,
+            &accumulator_profile
+        ),
+        Some(false),
+        "non-SYMBT3 payloads must not be accepted as SYMBT3 accumulator soundness authority candidates"
+    );
+}
+
+#[cfg(feature = "whir")]
+#[test]
+fn symbt3_k4_research_public_accumulator_api_accepts_v1_and_rejects_wrong_routes() {
+    let (prover, r1cs, mut items) = build_fixture();
+    let (_r1cs_again, z) = common::multi_r1cs();
+    items.push(make_batched_item(&prover, &r1cs, &z, 4));
+    let bucket = BatchedCpBucket::new(items, whir_parameter_digest()).unwrap();
+    assert_eq!(bucket.shape.active_count, 4);
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &prover.ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    );
+    let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+        .expect("WHIR exposes SYMBT3 relation shell");
+    let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+    let decoded_relation =
+        BatchedCpSymbt3RelationDescription::from_context_bytes(relation.context.as_ref().unwrap())
+            .unwrap();
+    let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+    let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+    let profile = Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+        &decoded_relation,
+        64,
+    );
+    assert!(
+        profile.accepts_statement_for_accumulator_soundness_authority_candidate(
+            &decoded_relation,
+            &public,
+        )
+    );
+    assert_eq!(profile.semantic_profile_version, 1);
+    assert_eq!(profile.routing_status, Symbt3RoutingStatus::ResearchOnly);
+    assert!(!profile.product_eligible);
+    assert_eq!(profile.zk_status, Symbt3ZkStatus::NonZkDevelopment);
+
+    let profile_digest = profile.digest(bucket.shape.accumulator_shape.digest_scheme);
+    let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        bucket.shape.accumulator_shape.digest_scheme,
+        profile_digest,
+        public.old_accumulator_digest,
+        public.new_accumulator_digest,
+        &public,
+    );
+    let statement_from_instance = accumulator_instance.to_public_statement();
+    assert_eq!(
+        statement_from_instance.old_accumulator_digest,
+        public.old_accumulator_digest
+    );
+    assert_eq!(
+        statement_from_instance.new_accumulator_digest,
+        public.new_accumulator_digest
+    );
+    assert_eq!(
+        statement_from_instance.batch_manifest_root,
+        public.batch_manifest_root
+    );
+    assert_eq!(
+        statement_from_instance.source_column_layout_digest,
+        public.source_column_layout_digest
+    );
+    assert_eq!(
+        statement_from_instance.message_oracle_roots,
+        public.message_oracle_roots
+    );
+    assert_eq!(
+        statement_from_instance.folded_output_accumulator_root,
+        public.folded_output_accumulator_root
+    );
+    assert_eq!(
+        statement_from_instance.folded_gr1cs_boundary_digest,
+        public.folded_gr1cs_boundary_digest
+    );
+    assert_eq!(
+        statement_from_instance.folded_ajtai_commitment,
+        public.folded_ajtai_commitment
+    );
+    assert_eq!(
+        statement_from_instance.folded_ajtai_opening_root,
+        public.folded_ajtai_opening_root
+    );
+    assert_eq!(
+        statement_from_instance.whir_parameter_digest,
+        public.whir_parameter_digest
+    );
+    assert_ne!(accumulator_instance.batch_items_digest, [0u8; 32]);
+    assert_ne!(
+        accumulator_instance.public_source_boundary_digest,
+        [0u8; 32]
+    );
+    assert_ne!(
+        accumulator_instance.source_assignment_roots_digest,
+        [0u8; 32]
+    );
+    assert_ne!(accumulator_instance.message_oracle_roots_digest, [0u8; 32]);
+    assert!(accumulator_instance.matches_profile_and_relation(&profile, &decoded_relation));
+
+    let mut compressed_boundary_sizes = Vec::new();
+    let (_r1cs_for_sizes, z_for_sizes) = common::multi_r1cs();
+    for k in [1usize, 2, 4, 8] {
+        let sized_items = (0..k)
+            .map(|idx| make_batched_item(&prover, &r1cs, &z_for_sizes, (idx + 1) as u8))
+            .collect::<Vec<_>>();
+        let sized_bucket = BatchedCpBucket::new(sized_items, whir_parameter_digest()).unwrap();
+        let sized_descriptor = BatchedCpSymbt3SetupDescriptor::new(
+            sized_bucket.shape.clone(),
+            &prover.ajtai,
+            &r1cs,
+            prover.params.b_input(),
+        );
+        let sized_relation =
+            <WhirSnark as CpBackend>::symbt3_relation_description(&sized_descriptor)
+                .expect("WHIR exposes sized SYMBT3 relation shell");
+        let sized_decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+            sized_relation.context.as_ref().unwrap(),
+        )
+        .unwrap();
+        let sized_public =
+            sized_bucket.symbt3_public_statement_for_relation(&sized_decoded_relation);
+        let sized_profile =
+            Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+                &sized_decoded_relation,
+                64,
+            );
+        let sized_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+            sized_bucket.shape.accumulator_shape.digest_scheme,
+            sized_profile.digest(sized_bucket.shape.accumulator_shape.digest_scheme),
+            sized_public.old_accumulator_digest,
+            sized_public.new_accumulator_digest,
+            &sized_public,
+        );
+        assert!(
+            sized_instance.matches_profile_and_relation(&sized_profile, &sized_decoded_relation)
+        );
+        compressed_boundary_sizes.push((k, sized_instance.canonical_bytes().len()));
+    }
+    for window in compressed_boundary_sizes.windows(2) {
+        let (prev_k, prev_len) = window[0];
+        let (next_k, next_len) = window[1];
+        assert!(
+            next_len * 100 <= prev_len * 125,
+            "K4.6 compressed accumulator boundary must stay near-flat: k={prev_k} len={prev_len}, k={next_k} len={next_len}"
+        );
+    }
+
+    let accumulator_witness =
+        Symbt3AccumulatorWitness::from_symbt3_witness(&decoded_relation, &witness);
+    assert_eq!(
+        accumulator_witness
+            .to_symbt3_witness(&decoded_relation)
+            .expect("typed accumulator witness converts to SYMBT3 witness"),
+        witness
+    );
+    let proof = WhirSnark::prove_public_symbt3_accumulator_research_non_zk(
+        &pk,
+        &profile,
+        &accumulator_instance,
+        &accumulator_witness,
+    )
+    .expect("K4 NonZK research accumulator proof");
+    assert!(WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+        &vk,
+        &profile,
+        &accumulator_instance,
+        &proof,
+    ));
+    let (_, verifier_profile) = WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
+        .expect("K4 verifier profile");
+    assert_eq!(
+        verifier_profile.source_r1cs_residual_claims,
+        public.source_assignment_roots.len()
+            * decoded_relation.r1cs_evaluator_layout.num_constraints
+            * D,
+        "K4.5 keeps source R1CS residual coverage visible as logical claims"
+    );
+    assert_eq!(
+        verifier_profile.source_r1cs_residual_verifier_evaluations, 1,
+        "K4.5 batches source R1CS residual verification to one MLE evaluation"
+    );
+    assert_eq!(proof.family_columnar_subproofs.len(), 0);
+    assert!(!proof.is_output);
+    assert_eq!(
+        decoded_relation
+            .message_semantic_layout
+            .message_to_trace_binding_count(),
+        0
+    );
+    assert!(decoded_relation.has_symbt3_k2_families());
+    assert_eq!(
+        proof.private_opening_evals.len(),
+        15,
+        "K4 must preserve the K1e.2/K2 one-table proof shape"
+    );
+    assert_eq!(
+        <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof),
+        Some(true),
+        "K4 delegates to the existing SYMBT3 proof verifier, not product verify_public"
+    );
+    assert_eq!(
+        WhirSnark::verify_symbt3_authority_profile(
+            &vk,
+            &public,
+            &proof,
+            &Symbt3AuthorityProfile::authority_candidate_from_relation(&decoded_relation, 128),
+        ),
+        Some(false),
+        "K4 proofs must not pass ProductAuthority before K6"
+    );
+
+    let product_profile =
+        Symbt3AuthorityProfile::authority_candidate_from_relation(&decoded_relation, 128);
+    assert!(WhirSnark::prove_public_symbt3_accumulator_research_non_zk(
+        &pk,
+        &product_profile,
+        &accumulator_instance,
+        &accumulator_witness,
+    )
+    .is_none());
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &product_profile,
+            &accumulator_instance,
+            &proof,
+        )
+    );
+
+    let mut product_eligible_profile = profile.clone();
+    product_eligible_profile.product_eligible = true;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &product_eligible_profile,
+            &accumulator_instance,
+            &proof,
+        )
+    );
+
+    let research_v0_profile =
+        Symbt3AuthorityProfile::research_authority_candidate_from_relation(&decoded_relation, 64);
+    let research_v0_digest =
+        research_v0_profile.digest(bucket.shape.accumulator_shape.digest_scheme);
+    let research_v0_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        bucket.shape.accumulator_shape.digest_scheme,
+        research_v0_digest,
+        public.old_accumulator_digest,
+        public.new_accumulator_digest,
+        &public,
+    );
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &research_v0_profile,
+            &research_v0_instance,
+            &proof,
+        )
+    );
+
+    let mut missing_manifest_profile = profile.clone();
+    missing_manifest_profile
+        .enabled_families
+        .retain(|family| *family != BatchedCpSymbt3ConstraintFamily::ManifestEvaluationClaim);
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &missing_manifest_profile,
+            &accumulator_instance,
+            &proof,
+        )
+    );
+
+    let mut missing_transition_profile = profile.clone();
+    missing_transition_profile
+        .enabled_families
+        .retain(|family| {
+            *family != BatchedCpSymbt3ConstraintFamily::AccumulatorTransitionConsistency
+        });
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &missing_transition_profile,
+            &accumulator_instance,
+            &proof,
+        )
+    );
+
+    let mut zk_required_profile = profile.clone();
+    zk_required_profile.zk_status = Symbt3ZkStatus::ZkRequiredForProductRoute;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &zk_required_profile,
+            &accumulator_instance,
+            &proof,
+        )
+    );
+
+    for mutate in [
+        "old_accumulator_digest",
+        "new_accumulator_digest",
+        "profile_digest",
+        "batch_manifest_root",
+        "folded_output_boundary_digest",
+        "message_oracle_root",
+        "message_oracle_roots_digest",
+        "source_assignment_root",
+        "source_assignment_roots_digest",
+        "batch_items_digest",
+    ] {
+        let mut changed = accumulator_instance.clone();
+        match mutate {
+            "old_accumulator_digest" => changed.old_accumulator_digest[0] ^= 1,
+            "new_accumulator_digest" => changed.new_accumulator_digest[0] ^= 1,
+            "profile_digest" => changed.profile_digest[0] ^= 1,
+            "batch_manifest_root" => changed.manifest_root[0] ^= 1,
+            "folded_output_boundary_digest" => changed.folded_output_boundary_digest[0] ^= 1,
+            "message_oracle_root" => changed.message_oracle_roots[0][0] ^= 1,
+            "message_oracle_roots_digest" => changed.message_oracle_roots_digest[0] ^= 1,
+            "source_assignment_root" => changed.source_assignment_roots[0][0] ^= 1,
+            "source_assignment_roots_digest" => changed.source_assignment_roots_digest[0] ^= 1,
+            "batch_items_digest" => changed.batch_items_digest[0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+                &vk, &profile, &changed, &proof,
+            ),
+            "K4 verifier must reject mutated {mutate}"
+        );
+    }
+}
+
+#[cfg(feature = "whir")]
+#[test]
+fn symbt3_k6a_non_zk_integrity_product_route_is_explicit_opt_in() {
+    let (prover, r1cs, mut items) = build_fixture();
+    let (_r1cs_again, z) = common::multi_r1cs();
+    items.push(make_batched_item(&prover, &r1cs, &z, 4));
+    let bucket = BatchedCpBucket::new(items, whir_parameter_digest()).unwrap();
+    assert_eq!(bucket.shape.active_count, 4);
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &prover.ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    );
+    let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+        .expect("WHIR exposes SYMBT3 relation shell");
+    let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+    let decoded_relation =
+        BatchedCpSymbt3RelationDescription::from_context_bytes(relation.context.as_ref().unwrap())
+            .unwrap();
+    let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+    let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+    let product_profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &decoded_relation,
+            64,
+        );
+    assert_eq!(
+        product_profile.routing_status,
+        Symbt3RoutingStatus::ProductAuthority
+    );
+    assert!(product_profile.product_eligible);
+    assert!(!product_profile.research_only);
+    assert_eq!(
+        product_profile.zk_status,
+        Symbt3ZkStatus::NonZkIntegrityOnly
+    );
+    assert_eq!(
+        product_profile.product_policy,
+        Symbt3ProductPolicy::Symbt3NonZkIntegrityOptIn
+    );
+    assert!(symphony::batched_cp::product_policy_accepts_non_zk(
+        &product_profile
+    ));
+    assert!(
+        product_profile.accepts_relation_for_non_zk_integrity_product_authority(&decoded_relation)
+    );
+    assert!(
+        !product_profile.accepts_relation_for_product_authority(&decoded_relation),
+        "K6a opt-in NonZK integrity is intentionally separate from the strict ZK product-authority gate"
+    );
+
+    let profile_digest = product_profile.digest(bucket.shape.accumulator_shape.digest_scheme);
+    let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        bucket.shape.accumulator_shape.digest_scheme,
+        profile_digest,
+        public.old_accumulator_digest,
+        public.new_accumulator_digest,
+        &public,
+    );
+    assert!(accumulator_instance.matches_profile_and_relation(&product_profile, &decoded_relation));
+    let accumulator_witness =
+        Symbt3AccumulatorWitness::from_symbt3_witness(&decoded_relation, &witness);
+    let proof = WhirSnark::prove_public_symbt3_accumulator_non_zk_integrity(
+        &pk,
+        &product_profile,
+        &accumulator_instance,
+        &accumulator_witness,
+    )
+    .expect("K6a NonZK integrity product proof");
+    assert!(
+        WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &product_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &proof,
+        )
+    );
+    let (_, verifier_profile) = WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
+        .expect("K6a verifier profile");
+    assert_eq!(proof.family_columnar_subproofs.len(), 0);
+    assert!(!proof.is_output);
+    assert_eq!(proof.private_opening_evals.len(), 15);
+    assert_eq!(
+        decoded_relation
+            .message_semantic_layout
+            .message_to_trace_binding_count(),
+        0
+    );
+    assert_eq!(
+        verifier_profile.source_r1cs_residual_verifier_evaluations,
+        1
+    );
+    assert_ne!(accumulator_instance.batch_items_digest, [0u8; 32]);
+    assert_ne!(accumulator_instance.message_oracle_roots_digest, [0u8; 32]);
+
+    for wrong_kind in [
+        ProductProofKind::MonolithicTypedCp,
+        ProductProofKind::Symbt2F,
+        ProductProofKind::Symbt2C,
+        ProductProofKind::Symbtc,
+    ] {
+        assert!(
+            !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+                &vk,
+                &product_profile,
+                &accumulator_instance,
+                wrong_kind,
+                &proof,
+            ),
+            "K6a must reject wrong product proof-kind marker {wrong_kind:?}"
+        );
+    }
+
+    let mut output_shaped_proof = proof.clone();
+    output_shaped_proof.is_output = true;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &product_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &output_shaped_proof,
+        ),
+        "K6a must reject non-SYMBT3/output-shaped proof payloads"
+    );
+
+    let mut no_policy_profile = product_profile.clone();
+    no_policy_profile.product_policy = Symbt3ProductPolicy::MonolithicTypedCpOnly;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &no_policy_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &proof,
+        )
+    );
+    let mut zk_required_profile = product_profile.clone();
+    zk_required_profile.zk_status = Symbt3ZkStatus::ZkRequiredForProductRoute;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &zk_required_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &proof,
+        )
+    );
+    let mut research_route_profile = product_profile.clone();
+    research_route_profile.routing_status = Symbt3RoutingStatus::ResearchOnly;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &research_route_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &proof,
+        )
+    );
+    let mut not_product_profile = product_profile.clone();
+    not_product_profile.product_eligible = false;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &not_product_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &proof,
+        )
+    );
+    let mut v0_profile = product_profile.clone();
+    v0_profile.semantic_profile_version = 0;
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+            &vk,
+            &v0_profile,
+            &accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &proof,
+        )
+    );
+
+    for mutate in [
+        "missing_manifest",
+        "missing_transition",
+        "low_soundness",
+        "zero_policy_digest",
+    ] {
+        let mut changed = product_profile.clone();
+        match mutate {
+            "missing_manifest" => changed.enabled_families.retain(|family| {
+                *family != BatchedCpSymbt3ConstraintFamily::ManifestEvaluationClaim
+            }),
+            "missing_transition" => changed.enabled_families.retain(|family| {
+                *family != BatchedCpSymbt3ConstraintFamily::AccumulatorTransitionConsistency
+            }),
+            "low_soundness" => changed.manifest_membership_bits = 16,
+            "zero_policy_digest" => changed.norm_range_policy_digest = [0u8; 32],
+            _ => unreachable!(),
+        }
+        assert!(
+            !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+                &vk,
+                &changed,
+                &accumulator_instance,
+                ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+                &proof,
+            ),
+            "K6a verifier must reject product profile mutation {mutate}"
+        );
+    }
+
+    for mutate in [
+        "old_accumulator_digest",
+        "new_accumulator_digest",
+        "profile_digest",
+        "batch_manifest_root",
+        "message_oracle_roots_digest",
+        "source_assignment_roots_digest",
+        "batch_items_digest",
+    ] {
+        let mut changed = accumulator_instance.clone();
+        match mutate {
+            "old_accumulator_digest" => changed.old_accumulator_digest[0] ^= 1,
+            "new_accumulator_digest" => changed.new_accumulator_digest[0] ^= 1,
+            "profile_digest" => changed.profile_digest[0] ^= 1,
+            "batch_manifest_root" => changed.manifest_root[0] ^= 1,
+            "message_oracle_roots_digest" => changed.message_oracle_roots_digest[0] ^= 1,
+            "source_assignment_roots_digest" => changed.source_assignment_roots_digest[0] ^= 1,
+            "batch_items_digest" => changed.batch_items_digest[0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            !WhirSnark::verify_public_symbt3_accumulator_non_zk_integrity(
+                &vk,
+                &product_profile,
+                &changed,
+                ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+                &proof,
+            ),
+            "K6a verifier must reject mutated accumulator instance {mutate}"
+        );
+    }
+
+    let mut dev_projection_relation = decoded_relation.clone();
+    dev_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .projection_mode = Symbt3ProjectionMode::DirectDevDenseProjectionV1;
+    let dev_projection_profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &dev_projection_relation,
+            64,
+        );
+    assert!(!dev_projection_profile
+        .accepts_relation_for_non_zk_integrity_product_authority(&dev_projection_relation));
+    let mut dev_range_relation = decoded_relation.clone();
+    dev_range_relation.ajtai_norm_range_layout.range_mode = Symbt3RangeMode::DirectSignedRangeDevV1;
+    dev_range_relation
+        .ajtai_norm_range_layout
+        .range_layout
+        .range_mode = Symbt3RangeMode::DirectSignedRangeDevV1;
+    let dev_range_profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &dev_range_relation,
+            64,
+        );
+    assert!(!dev_range_profile
+        .accepts_relation_for_non_zk_integrity_product_authority(&dev_range_relation));
+    let mut identity_projection_relation = decoded_relation.clone();
+    identity_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .block_len = 1;
+    identity_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .output_len = identity_projection_relation
+        .ajtai_norm_range_layout
+        .projection_layout
+        .input_len;
+    let identity_projection_profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &identity_projection_relation,
+            64,
+        );
+    assert!(!identity_projection_profile
+        .accepts_relation_for_non_zk_integrity_product_authority(&identity_projection_relation));
+
+    let research_profile =
+        Symbt3AuthorityProfile::accumulator_soundness_authority_candidate_from_relation(
+            &decoded_relation,
+            64,
+        );
+    assert!(WhirSnark::prove_public_symbt3_accumulator_non_zk_integrity(
+        &pk,
+        &research_profile,
+        &accumulator_instance,
+        &accumulator_witness,
+    )
+    .is_none());
+    assert!(
+        !WhirSnark::verify_public_symbt3_accumulator_research_non_zk(
+            &vk,
+            &product_profile,
+            &accumulator_instance,
+            &proof,
+        ),
+        "K6a ProductAuthority profile must not be accepted by the K4 research verifier"
+    );
+}
+
+#[cfg(feature = "whir")]
+#[test]
+fn symbt3_k6b_product_route_discriminator_and_policy_are_explicit() {
+    let (prover, r1cs, items) = build_fixture();
+    let bucket = BatchedCpBucket::new(items, whir_parameter_digest()).unwrap();
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &prover.ajtai,
+        &r1cs,
+        prover.params.b_input(),
+    );
+    let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+        .expect("WHIR exposes SYMBT3 relation shell");
+    let decoded_relation =
+        BatchedCpSymbt3RelationDescription::from_context_bytes(relation.context.as_ref().unwrap())
+            .unwrap();
+    let product_profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &decoded_relation,
+            64,
+        );
+    assert!(symphony::batched_cp::product_policy_accepts_non_zk(
+        &product_profile
+    ));
+
+    let mut default_policy_profile = product_profile.clone();
+    default_policy_profile.product_policy = Symbt3ProductPolicy::MonolithicTypedCpOnly;
+    assert!(!symphony::batched_cp::product_policy_accepts_non_zk(
+        &default_policy_profile
+    ));
+
+    for wrong_kind in [
+        ProductProofKind::MonolithicTypedCp,
+        ProductProofKind::Symbt2F,
+        ProductProofKind::Symbt2C,
+        ProductProofKind::Symbtc,
+    ] {
+        assert_ne!(
+            wrong_kind,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            "K6b comparison must not allow ambiguous product proof-kind routing"
+        );
+    }
+}
+
+#[cfg(feature = "whir")]
+#[test]
+fn symbt3_k1e2_source_view_is_virtual_for_k1_and_k2() {
+    let (prover, r1cs, items) = build_fixture();
+    for k in [1usize, 2] {
+        let bucket = BatchedCpBucket::new(
+            items.iter().take(k).cloned().collect::<Vec<_>>(),
+            whir_parameter_digest(),
+        )
+        .unwrap();
+        let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+            bucket.shape.clone(),
+            &prover.ajtai,
+            &r1cs,
+            prover.params.b_input(),
+        );
+        let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+            .expect("WHIR exposes SYMBT3 relation shell");
+        let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+        let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+            relation.context.as_ref().unwrap(),
+        )
+        .unwrap();
+        let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+        let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+        let proof = <WhirSnark as CpBackend>::prove_symbt3_batched_cp(&pk, &public, &witness)
+            .expect("SYMBT3-K1e.2 proof");
+
+        assert_eq!(
+            <WhirSnark as CpBackend>::verify_symbt3_batched_cp(&vk, &public, &proof),
+            Some(true)
+        );
+        let (_, verifier_profile) =
+            WhirSnark::profile_symbt3_batched_cp_verifier(&vk, &public, &proof)
+                .expect("SYMBT3 verifier profile");
+        assert_eq!(
+            verifier_profile.source_r1cs_residual_claims,
+            public.source_assignment_roots.len()
+                * decoded_relation.r1cs_evaluator_layout.num_constraints
+                * D
+        );
+        assert_eq!(
+            verifier_profile.source_r1cs_residual_verifier_evaluations, 1,
+            "K4.5 must not evaluate source R1CS residuals one by one for k={k}"
+        );
+        assert!(
+            proof.num_vars <= 14,
+            "SYMBT3-K1e.2 must keep k={k} compact: got {} WHIR vars",
+            proof.num_vars
+        );
+        assert!(
+            (1usize << proof.num_vars) <= 16_384,
+            "SYMBT3-K1e.2 must keep k={k} oracle_len compact"
+        );
+        assert_eq!(proof.family_columnar_subproofs.len(), 0);
+        let accumulator_transition_claims = 1usize;
+        assert_eq!(
+            accumulator_transition_claims, 1,
+            "K2b accumulator_transition_claims must stay constant in k"
+        );
+        assert_eq!(proof.private_opening_evals.len(), 15);
+        assert_eq!(
+            symbt3_canonical_manifest_view_eval_for_statement(
+                &decoded_relation,
+                &public,
+                &public.manifest_oracle_root
+            ),
+            symbt3_virtual_source_view_eval_for_statement(
+                &decoded_relation,
+                &public,
+                &public.manifest_oracle_root
+            ),
+            "honest virtual SourceView(zeta) must equal public ManifestView(zeta)"
+        );
+        assert!(witness.manifest_source_values.is_empty());
+    }
 }
 
 #[cfg(feature = "whir")]
