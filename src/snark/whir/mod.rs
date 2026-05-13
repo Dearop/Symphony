@@ -23,20 +23,29 @@
 pub mod field;
 pub mod serialize;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use sha2::{Digest, Sha256};
 
-use crate::params::SymphonyParams;
-use crate::r1cs::SparseMatrix;
+use crate::folding::{FoldedOutputInstance, FoldedOutputWitness};
+use crate::params::{SymphonyParams, D};
+use crate::r1cs::{R1CSMatrices, SparseMatrix};
+use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
+use crate::ring::tensor::TensorElement;
+use crate::ring::RingElement;
 use crate::snark::{BackendSnark, RelationDescription};
 
 use self::field::{bytes_to_babybear, bytes_to_babybear_direct, pad_to_power_of_two};
-use self::serialize::{deserialize_context, WhirContext};
+use self::serialize::{deserialize_context, WhirContext, WhirTypedCpContext};
 
 // Plonky3 / WHIR imports
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_dft::Radix2DFTSmallBatch;
-use p3_field::{extension::BinomialExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
+use p3_field::{
+    extension::BinomialExtensionField, Field, PrimeCharacteristicRing, PrimeField32, PrimeField64,
+};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::{evals::EvaluationsList, multilinear::MultilinearPoint};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -74,6 +83,136 @@ type WhirDft = Radix2DFTSmallBatch<F>;
 
 const DIGEST_ELEMS: usize = 8;
 const WHIR_SECURITY_LEVEL_BITS: usize = 100;
+pub const WHIR_PROOF_PAYLOAD_VERSION: u16 = 2;
+const WHIR_PROOF_PAYLOAD_MAGIC: &[u8; 8] = b"SYMWHPF\0";
+
+#[derive(Clone)]
+struct CachedTypedCpRelation {
+    r1cs: crate::r1cs::R1CSMatrices,
+    layout: crate::snark::cp_snark::TypedCpDigestR1csLayout,
+    audit: crate::snark::cp_snark::TypedCpAuditReport,
+}
+
+static TYPED_CP_RELATION_CACHE: OnceLock<Mutex<HashMap<[u8; 32], Arc<CachedTypedCpRelation>>>> =
+    OnceLock::new();
+static TYPED_CP_RELATION_DESCRIPTION_CACHE: OnceLock<
+    Mutex<HashMap<[u8; 32], RelationDescription>>,
+> = OnceLock::new();
+
+fn typed_cp_cache_key(ctx: &WhirContext) -> [u8; 32] {
+    let bytes = serialize::serialize_context(ctx);
+    Sha256::digest(&bytes).into()
+}
+
+fn hash_sparse_matrix_for_cache(hasher: &mut Sha256, matrix: &SparseMatrix) {
+    hasher.update((matrix.num_rows as u64).to_le_bytes());
+    hasher.update((matrix.num_cols as u64).to_le_bytes());
+    hasher.update((matrix.entries.len() as u64).to_le_bytes());
+    for &(row, col, value) in &matrix.entries {
+        hasher.update((row as u64).to_le_bytes());
+        hasher.update((col as u64).to_le_bytes());
+        hasher.update(value.to_le_bytes());
+    }
+}
+
+fn typed_cp_descriptor_cache_key(descriptor: &crate::snark::TypedCpSetupDescriptor) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"whir-typed-cp-relation-description-cache-v1");
+    hasher.update(descriptor.params.q.to_le_bytes());
+    hasher.update((descriptor.params.d as u64).to_le_bytes());
+    hasher.update((descriptor.params.lambda_pj as u64).to_le_bytes());
+    hasher.update((descriptor.params.ell_h as u64).to_le_bytes());
+    hasher.update((descriptor.params.k_g() as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.ell_np as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.kappa as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.n_in as u64).to_le_bytes());
+    hasher.update((descriptor.cp_layout.had_num_vars as u64).to_le_bytes());
+    hasher.update((descriptor.ajtai.kappa as u64).to_le_bytes());
+    hasher.update((descriptor.ajtai.n as u64).to_le_bytes());
+    hasher.update(descriptor.ajtai.q.to_le_bytes());
+    for row in &descriptor.ajtai.a {
+        hasher.update((row.len() as u64).to_le_bytes());
+        for elem in row {
+            for &coeff in &elem.coeffs {
+                hasher.update(coeff.to_le_bytes());
+            }
+        }
+    }
+    hasher.update((descriptor.original_r1cs.num_constraints as u64).to_le_bytes());
+    hasher.update((descriptor.original_r1cs.num_variables as u64).to_le_bytes());
+    hasher.update((descriptor.original_r1cs.num_public as u64).to_le_bytes());
+    hash_sparse_matrix_for_cache(&mut hasher, &descriptor.original_r1cs.a);
+    hash_sparse_matrix_for_cache(&mut hasher, &descriptor.original_r1cs.b);
+    hash_sparse_matrix_for_cache(&mut hasher, &descriptor.original_r1cs.c);
+    hasher.finalize().into()
+}
+
+#[allow(dead_code)]
+fn typed_cp_digest_r1cs_from_context(
+    ctx: &WhirContext,
+    typed: &WhirTypedCpContext,
+) -> Option<(
+    crate::r1cs::R1CSMatrices,
+    crate::snark::cp_snark::TypedCpDigestR1csLayout,
+)> {
+    let cached = typed_cp_relation_from_context(ctx, typed)?;
+    Some((cached.r1cs.clone(), cached.layout.clone()))
+}
+
+fn typed_cp_relation_from_context(
+    ctx: &WhirContext,
+    typed: &WhirTypedCpContext,
+) -> Option<Arc<CachedTypedCpRelation>> {
+    let key = typed_cp_cache_key(ctx);
+    let cache = TYPED_CP_RELATION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .expect("typed CP cache mutex poisoned")
+        .get(&key)
+    {
+        return Some(Arc::clone(cached));
+    }
+
+    let ext_ctx = ExtFieldContext::new(ctx.q);
+    let (cp_r1cs, cp_layout) = crate::snark::cp_snark::generate_cp_r1cs(
+        typed.cp_layout.ell_np,
+        typed.cp_layout.kappa,
+        typed.cp_layout.n_in,
+        typed.original_r1cs.num_constraints,
+        ext_ctx.alpha,
+        ctx.q,
+    );
+    if cp_layout.num_instance != typed.cp_layout.num_instance
+        || cp_layout.num_variables != typed.cp_layout.num_variables
+    {
+        return None;
+    }
+    let lengths = crate::snark::cp_snark::typed_cp_digest_input_lengths_from_setup(
+        typed.cp_layout.ell_np,
+        typed.cp_layout.kappa,
+        typed.cp_layout.n_in,
+        typed.lambda_pj,
+        typed.ell_h,
+        typed.k_g,
+        &typed.original_r1cs,
+    )?;
+    let (r1cs, layout, audit) = crate::snark::cp_snark::generate_typed_cp_digest_r1cs_with_audit(
+        &cp_r1cs,
+        &cp_layout,
+        &typed.ajtai,
+        &typed.original_r1cs,
+        &lengths,
+    );
+    debug_assert!(audit.validate_against(&r1cs).is_ok());
+    let cached = Arc::new(CachedTypedCpRelation {
+        r1cs,
+        layout,
+        audit,
+    });
+    let mut guard = cache.lock().expect("typed CP cache mutex poisoned");
+    let entry = guard.entry(key).or_insert_with(|| Arc::clone(&cached));
+    Some(Arc::clone(entry))
+}
 
 // ---------------------------------------------------------------------------
 // WHIR infrastructure: deterministic construction from seed + num_variables
@@ -84,6 +223,77 @@ struct WhirInfra {
     protocol_params: ProtocolParameters<WhirMmcs>,
     domainsep: DomainSeparator<EF, F>,
     perm: Perm,
+}
+
+struct WhirVerifierInfraEntry {
+    num_variables: usize,
+    infra: WhirInfra,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WhirVerifierInfraCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+}
+
+#[derive(Default)]
+struct WhirVerifierInfraCache {
+    entries: HashMap<usize, WhirVerifierInfraEntry>,
+    stats: WhirVerifierInfraCacheStats,
+}
+
+impl WhirVerifierInfraCache {
+    fn verify_opening_multi(
+        &mut self,
+        seed: &[u8; 32],
+        num_variables: usize,
+        proof: &WhirPcsProof<F, EF, WhirMmcs>,
+        points: &[Vec<BabyBear>],
+        claimed_evals: &[BabyBear],
+    ) -> bool {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.verify_opening_multi_inner(seed, num_variables, proof, points, claimed_evals)
+        }))
+        .unwrap_or(false)
+    }
+
+    fn verify_opening_multi_inner(
+        &mut self,
+        seed: &[u8; 32],
+        num_variables: usize,
+        proof: &WhirPcsProof<F, EF, WhirMmcs>,
+        points: &[Vec<BabyBear>],
+        claimed_evals: &[BabyBear],
+    ) -> bool {
+        if points.len() != claimed_evals.len() {
+            return false;
+        }
+        if points.iter().any(|point| point.len() != num_variables) {
+            return false;
+        }
+        let entry = if self.entries.contains_key(&num_variables) {
+            self.stats.hits += 1;
+            self.entries.get(&num_variables).expect("cache entry")
+        } else {
+            self.stats.misses += 1;
+            let infra = build_whir_infra(seed, num_variables);
+            self.entries.insert(
+                num_variables,
+                WhirVerifierInfraEntry {
+                    num_variables,
+                    infra,
+                },
+            );
+            self.entries
+                .get(&num_variables)
+                .expect("inserted cache entry")
+        };
+        whir_verify_opening_multi_with_entry(entry, proof, points, claimed_evals)
+    }
+
+    fn stats(&self) -> WhirVerifierInfraCacheStats {
+        self.stats
+    }
 }
 
 /// Build WHIR infrastructure deterministically from a seed and polynomial size.
@@ -166,6 +376,15 @@ pub struct WhirLinearCheckProof {
     pub z_eval: BabyBear,
 }
 
+/// One development-only WHIR PCS subproof for a SYMBT2F family-local table.
+#[derive(Debug, Clone)]
+pub struct WhirFamilyColumnarSubproof {
+    pub table_index: usize,
+    pub num_vars: usize,
+    pub z_eval: BabyBear,
+    pub whir_pcs_proof: WhirPcsProof<F, EF, WhirMmcs>,
+}
+
 /// Proof produced by the WHIR backend.
 #[derive(Debug, Clone)]
 pub struct WhirProof {
@@ -183,1687 +402,582 @@ pub struct WhirProof {
     /// Linear checks binding output/CP-R1CS Az, Bz, Cz claims to the same
     /// committed z polynomial.
     pub linear_checks: Vec<WhirLinearCheckProof>,
+    /// Additional private opening evaluations used by structured non-R1CS
+    /// proof paths. For SYMBTC1 these are paired chunk openings whose extracted
+    /// bytes must match across duplicated oracle regions.
+    pub private_opening_evals: Vec<BabyBear>,
+    /// Development-only family-local WHIR PCS subproofs for SYMBT2F.
+    ///
+    /// Product CP/output paths and non-SYMBT2F typed paths must reject proofs
+    /// with this populated.
+    pub family_columnar_subproofs: Vec<WhirFamilyColumnarSubproof>,
     /// Number of sumcheck variables.
     pub num_vars: usize,
     /// Whether this is an output SNARK proof (true) or CP proof (false).
     pub is_output: bool,
 }
 
-impl BackendSnark for WhirSnark {
-    type ProvingKey = WhirProvingKey;
-    type VerifyingKey = WhirVerifyingKey;
-    type Proof = WhirProof;
+/// Coarse verifier attribution for the non-authoritative SYMBT3 development
+/// path. These counters are intended for architecture benchmarks; they are not
+/// part of the public proof envelope.
+#[derive(Debug, Clone, Default)]
+pub struct Symbt3VerifierCostProfile {
+    pub verify_total_ms: f64,
+    pub verify_whir_pcs_ms: f64,
+    pub verify_merkle_or_pcs_opening_ms: f64,
+    pub verify_transcript_ms: f64,
+    pub verify_sumcheck_rounds_ms: f64,
+    pub verify_final_constraint_eval_ms: f64,
+    pub verify_final_eval_manifest_ms: f64,
+    pub verify_final_eval_source_r1cs_ms: f64,
+    pub verify_final_eval_folded_boundary_ms: f64,
+    pub verify_final_eval_product_residual_ms: f64,
+    pub verify_final_eval_ajtai_ms: f64,
+    pub verify_final_eval_range_ms: f64,
+    pub verify_final_eval_message_view_ms: f64,
+    pub verify_manifest_membership_eval_ms: f64,
+    pub verify_message_view_eval_ms: f64,
+    pub verify_projection_eval_ms: f64,
+    pub verify_monomial_embedding_eval_ms: f64,
+    pub verify_representative_eval_ms: f64,
+    pub verify_ajtai_eval_ms: f64,
+    pub source_r1cs_residual_claims: usize,
+    pub source_r1cs_residual_verifier_evaluations: usize,
+}
 
-    fn serialize_output_context(
-        r1cs: &crate::r1cs::R1CSMatrices,
-        q: u64,
-        d: usize,
-    ) -> Option<Vec<u8>> {
-        Some(serialize::serialize_context(&serialize::WhirContext {
-            r1cs: r1cs.clone(),
-            q,
-            d,
-            n_pub: r1cs.num_public,
-            is_output_snark: true,
-            is_cp_snark: false,
-        }))
+/// Private opening slice for one structured batched-CP semantic block.
+///
+/// This is a development/audit helper for the non-authoritative SYMBTC1 path;
+/// it is not part of the public proof format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhirBatchedCpPrivateOpeningSection {
+    pub start: usize,
+    pub len: usize,
+}
+
+impl WhirBatchedCpPrivateOpeningSection {
+    #[must_use]
+    pub const fn end(self) -> usize {
+        self.start + self.len
     }
 
-    fn serialize_cp_context(r1cs: &crate::r1cs::R1CSMatrices, q: u64, d: usize) -> Option<Vec<u8>> {
-        Some(serialize::serialize_context(&serialize::WhirContext {
-            r1cs: r1cs.clone(),
-            q,
-            d,
-            n_pub: r1cs.num_public,
-            is_output_snark: false,
-            is_cp_snark: true,
-        }))
-    }
-
-    fn setup(relation: &RelationDescription) -> (Self::ProvingKey, Self::VerifyingKey) {
-        // Derive a deterministic seed from the relation description
-        let mut hasher = Sha256::new();
-        hasher.update(b"whir-setup-v2");
-        hasher.update((relation.num_instance_vars as u64).to_le_bytes());
-        hasher.update((relation.num_witness_vars as u64).to_le_bytes());
-        hasher.update((relation.num_constraints as u64).to_le_bytes());
-        if let Some(ref ctx_bytes) = relation.context {
-            hasher.update((ctx_bytes.len() as u64).to_le_bytes());
-            hasher.update(ctx_bytes);
-        }
-        let seed: [u8; 32] = hasher.finalize().into();
-
-        let context_hash = compute_context_hash(&relation.context);
-
-        (
-            WhirProvingKey {
-                seed,
-                context_hash,
-                relation: relation.clone(),
-            },
-            WhirVerifyingKey {
-                seed,
-                context_hash,
-                relation: relation.clone(),
-            },
-        )
-    }
-
-    fn prove(pk: &Self::ProvingKey, instance: &[u8], witness: &[u8]) -> Self::Proof {
-        let current_hash = compute_context_hash(&pk.relation.context);
-        assert_eq!(
-            current_hash, pk.context_hash,
-            "WHIR: context was modified after setup"
-        );
-
-        if let Some(ref ctx_bytes) = pk.relation.context {
-            if let Some(ctx) = deserialize_context(ctx_bytes) {
-                if ctx.is_output_snark {
-                    return prove_output(pk, instance, witness, &ctx);
-                }
-                if ctx.is_cp_snark {
-                    return prove_cp_r1cs(pk, instance, witness, &ctx);
-                }
-            }
-        }
-        prove_cp(pk, instance, witness)
-    }
-
-    fn verify(vk: &Self::VerifyingKey, instance: &[u8], proof: &Self::Proof) -> bool {
-        let current_hash = compute_context_hash(&vk.relation.context);
-        if current_hash != vk.context_hash {
-            return false;
-        }
-
-        if let Some(ref ctx_bytes) = vk.relation.context {
-            if let Some(ctx) = deserialize_context(ctx_bytes) {
-                if ctx.is_output_snark {
-                    return verify_output(vk, instance, proof, &ctx);
-                }
-                if ctx.is_cp_snark {
-                    return verify_cp_r1cs(vk, instance, proof, &ctx);
-                }
-            }
-        }
-        verify_cp(vk, instance, proof)
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
     }
 }
 
-// ---------------------------------------------------------------------------
-// Output SNARK: full R1CS verification via sumcheck over BabyBear
-// ---------------------------------------------------------------------------
-
-/// Sparse matrix in COO format over BabyBear.
-#[derive(Debug, Clone)]
-struct FlatSparseMatrixBB {
-    entries: Vec<(usize, usize, BabyBear)>,
-    #[allow(dead_code)]
-    num_rows: usize,
-    #[allow(dead_code)]
-    num_cols: usize,
+/// Private opening layout for a structured batched-CP WHIR proof.
+///
+/// The sections are ordered exactly as `WhirProof::private_opening_evals`.
+/// This exists so tests and audit tooling can target individual semantic
+/// blocks without relying on hard-coded offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhirBatchedCpPrivateOpeningProfile {
+    pub equality: WhirBatchedCpPrivateOpeningSection,
+    pub folded_public_input: WhirBatchedCpPrivateOpeningSection,
+    pub folded_commitment: WhirBatchedCpPrivateOpeningSection,
+    pub folded_evaluation: WhirBatchedCpPrivateOpeningSection,
+    pub poseidon_r1cs: WhirBatchedCpPrivateOpeningSection,
+    pub ajtai_opening: WhirBatchedCpPrivateOpeningSection,
+    pub original_r1cs: WhirBatchedCpPrivateOpeningSection,
+    pub total_len: usize,
 }
 
-/// Flatten ring R1CS to scalar R1CS over BabyBear.
-fn flatten_ring_r1cs_bb(
-    a: &SparseMatrix,
-    b: &SparseMatrix,
-    c: &SparseMatrix,
-    num_constraints: usize,
-    num_variables: usize,
-    d: usize,
-    _q: u64,
-) -> (FlatSparseMatrixBB, FlatSparseMatrixBB, FlatSparseMatrixBB) {
-    let flat_rows = num_constraints * d;
-    let flat_cols = num_variables * d;
-
-    let flatten_matrix = |mat: &SparseMatrix| -> FlatSparseMatrixBB {
-        let mut entries = Vec::with_capacity(mat.entries.len() * d);
-        for &(row, col, val) in &mat.entries {
-            let s = BabyBear::from_i64(val);
-            for j in 0..d {
-                entries.push((row * d + j, col * d + j, s));
-            }
-        }
-        FlatSparseMatrixBB {
-            entries,
-            num_rows: flat_rows,
-            num_cols: flat_cols,
-        }
-    };
-
-    (flatten_matrix(a), flatten_matrix(b), flatten_matrix(c))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhirBatchedCpColumnarV2FamilyOpeningProfile {
+    pub family: crate::batched_cp::BatchedCpSemanticConstraintFamily,
+    pub residual_count: usize,
+    pub sampled_check_count: usize,
+    pub subproof_index: Option<usize>,
+    pub num_vars: Option<usize>,
+    pub padded_row_count: Option<usize>,
+    pub section: WhirBatchedCpPrivateOpeningSection,
 }
 
-/// Compute Az, Bz, Cz as dense vectors.
-fn compute_matrix_vector_products_bb(
-    flat_a: &FlatSparseMatrixBB,
-    flat_b: &FlatSparseMatrixBB,
-    flat_c: &FlatSparseMatrixBB,
-    z_flat: &[BabyBear],
-    num_vars: usize,
-) -> (Vec<BabyBear>, Vec<BabyBear>, Vec<BabyBear>) {
-    let n = 1 << num_vars;
-
-    let sparse_mul = |mat: &FlatSparseMatrixBB| -> Vec<BabyBear> {
-        let mut result = vec![BabyBear::ZERO; n];
-        for &(row, col, val) in &mat.entries {
-            if row < n && col < z_flat.len() {
-                result[row] += val * z_flat[col];
-            }
-        }
-        result
-    };
-
-    (sparse_mul(flat_a), sparse_mul(flat_b), sparse_mul(flat_c))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhirBatchedCpColumnarV2OpeningProfile {
+    pub families: Vec<WhirBatchedCpColumnarV2FamilyOpeningProfile>,
+    pub total_len: usize,
 }
 
-fn eval_eq_index_bb(point: &[BabyBear], index: usize) -> BabyBear {
-    point
-        .iter()
-        .enumerate()
-        .fold(BabyBear::ONE, |acc, (bit, &r)| {
-            let shift = point.len() - 1 - bit;
-            if ((index >> shift) & 1) == 1 {
-                acc * r
-            } else {
-                acc * (BabyBear::ONE - r)
-            }
-        })
-}
-
-fn compute_matrix_mle_row_bb(
-    mat: &FlatSparseMatrixBB,
-    row_point: &[BabyBear],
-    num_cols: usize,
-) -> Vec<BabyBear> {
-    let mut result = vec![BabyBear::ZERO; num_cols];
-    let num_rows = 1usize << row_point.len();
-    for &(row, col, val) in &mat.entries {
-        if row < num_rows && col < num_cols {
-            result[col] += eval_eq_index_bb(row_point, row) * val;
-        }
+/// Compute the private-opening section layout for a structured typed batched CP proof.
+///
+/// This is a debug/development API only. Product public verification consumes
+/// only the proof and public statement; it must not use this helper.
+pub fn whir_typed_batched_cp_private_opening_profile(
+    seed: &[u8; 32],
+    relation: &RelationDescription,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Option<WhirBatchedCpPrivateOpeningProfile> {
+    let context = relation.context.as_ref()?;
+    let relation = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    if relation.shape() != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return None;
     }
-    result
-}
+    let num_vars = typed_batched_cp_oracle_num_vars(relation.shape());
 
-fn eval_matrix_mle_at_points_bb(
-    mat: &FlatSparseMatrixBB,
-    row_point: &[BabyBear],
-    col_point: &[BabyBear],
-    num_cols: usize,
-) -> BabyBear {
-    let num_rows = 1usize << row_point.len();
-    mat.entries
-        .iter()
-        .filter(|&&(row, col, _)| row < num_rows && col < num_cols)
-        .fold(BabyBear::ZERO, |acc, &(row, col, val)| {
-            acc + val * eval_eq_index_bb(row_point, row) * eval_eq_index_bb(col_point, col)
-        })
-}
+    let equality_pairs = typed_batched_cp_sampled_equalities(seed, &relation, statement, 64);
+    let equality_len = typed_batched_cp_equality_opening_points(&equality_pairs, num_vars)?.len();
 
-fn pad_point(point: &[BabyBear], len: usize) -> Vec<BabyBear> {
-    point
-        .iter()
-        .copied()
-        .chain(std::iter::repeat(BabyBear::ZERO))
-        .take(len)
-        .collect()
-}
-
-fn sumcheck_point_to_mle_point(point: &[BabyBear], len: usize) -> Vec<BabyBear> {
-    let mut padded = pad_point(point, len);
-    padded.reverse();
-    padded
-}
-
-fn prove_output(
-    pk: &WhirProvingKey,
-    instance: &[u8],
-    witness: &[u8],
-    ctx: &WhirContext,
-) -> WhirProof {
-    let d = ctx.d;
-    let q = ctx.q;
-
-    // Parse instance and witness bytes into BabyBear elements
-    // Parse only the CP-R1CS public prefix from `instance`.
-    // Any trailer bytes are transcript-binding metadata and must not shift the
-    // R1CS witness layout.
-    let mut instance_bb = bytes_to_babybear_direct(instance);
-    let expected_instance_len = ctx.r1cs.num_public * d;
-    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
-    let witness_bb = bytes_to_babybear_direct(witness);
-
-    // Build z_flat = (instance, witness), padded to total_vars * d
-    let total_vars = ctx.r1cs.num_variables * d;
-    let mut z_flat = Vec::with_capacity(total_vars);
-    z_flat.extend_from_slice(&instance_bb);
-    z_flat.extend_from_slice(&witness_bb);
-    z_flat.resize(total_vars, BabyBear::ZERO);
-
-    // Flatten R1CS
-    let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a,
-        &ctx.r1cs.b,
-        &ctx.r1cs.c,
-        ctx.r1cs.num_constraints,
-        ctx.r1cs.num_variables,
-        d,
-        q,
+    let linear_constraints = typed_batched_cp_sampled_folded_public_input_linear_constraints(
+        seed, &relation, statement, 8,
     );
-    let num_constraints = ctx.r1cs.num_constraints * d;
-    let num_vars = ceil_log2(num_constraints.max(1));
+    let folded_public_input_len =
+        typed_batched_cp_linear_opening_points(&linear_constraints, num_vars)?.len();
 
-    // Compute Az, Bz, Cz
-    let (az, bz, cz) =
-        compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
-
-    // Pad z_flat to power of two for WHIR polynomial (at least 2 elements)
-    let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
-    let mut z_padded = z_flat;
-    z_padded.resize(z_padded_len, BabyBear::ZERO);
-    let z_num_vars = z_padded.len().trailing_zeros() as usize;
-
-    // Build transcript for Spartan sumcheck challenge derivation
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-output-v2");
-    transcript.extend_from_slice(&pk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-
-    // Derive tau for the sumcheck
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    // Build eq(tau, x) table
-    let eq_table = build_eq_table_bb(&tau, num_vars);
-
-    // Sumcheck for F(x) = eq(tau,x) * [Az(x)*Bz(x) - Cz(x)]
-    let (rounds, challenges, az_eval, bz_eval, cz_eval, _eq_final) =
-        prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
-
-    let mut opening_points = Vec::new();
-    let main_point = sumcheck_point_to_mle_point(&challenges, z_num_vars);
-    let z_eval = mle_eval_bb(&z_padded, &main_point);
-    opening_points.push(main_point);
-
-    let (linear_checks, linear_points) = prove_linear_bindings(
-        [&flat_a, &flat_b, &flat_c],
-        &challenges,
-        &z_padded,
-        z_num_vars,
-        &mut transcript,
+    let ring_mul_constraints = typed_batched_cp_sampled_folded_commitment_ring_mul_constraints(
+        seed, &relation, statement, 2,
     );
-    opening_points.extend(linear_points);
+    let folded_commitment_len =
+        typed_batched_cp_ring_mul_opening_points(&ring_mul_constraints, num_vars)?.len();
 
-    let (whir_pcs_proof, opening_evals) =
-        whir_commit_and_prove_multi(&pk.seed, z_num_vars, &z_padded, &opening_points);
-    assert_eq!(opening_evals.first().copied(), Some(z_eval));
+    let eval_ring_mul_constraints = typed_batched_cp_sampled_folded_evaluation_ring_mul_constraints(
+        seed, &relation, statement, 2,
+    );
+    let folded_evaluation_len =
+        typed_batched_cp_eval_ring_mul_opening_points(&eval_ring_mul_constraints, num_vars)?.len();
 
-    WhirProof {
-        sumcheck_rounds_3: Vec::new(),
-        sumcheck_rounds_4: rounds,
-        evaluations: [az_eval, bz_eval, cz_eval],
-        whir_pcs_proof,
-        z_eval,
-        linear_checks,
-        num_vars,
-        is_output: true,
-    }
+    let poseidon_r1cs_constraints =
+        typed_batched_cp_sampled_poseidon_r1cs_constraints(seed, &relation, statement, 8);
+    let poseidon_r1cs_len =
+        typed_batched_cp_poseidon_r1cs_opening_points(&poseidon_r1cs_constraints, num_vars)?.len();
+
+    let ajtai_constraints =
+        typed_batched_cp_sampled_ajtai_opening_constraints(seed, &relation, statement, 2);
+    let ajtai_opening_len =
+        typed_batched_cp_ajtai_opening_points(&ajtai_constraints, num_vars)?.len();
+
+    let original_r1cs_constraints =
+        typed_batched_cp_sampled_original_r1cs_constraints(seed, &relation, statement, 2);
+    let original_r1cs_len =
+        typed_batched_cp_original_r1cs_opening_points(&original_r1cs_constraints, num_vars)?.len();
+
+    let mut start = 0usize;
+    let mut next = |len| {
+        let section = WhirBatchedCpPrivateOpeningSection { start, len };
+        start += len;
+        section
+    };
+    let equality = next(equality_len);
+    let folded_public_input = next(folded_public_input_len);
+    let folded_commitment = next(folded_commitment_len);
+    let folded_evaluation = next(folded_evaluation_len);
+    let poseidon_r1cs = next(poseidon_r1cs_len);
+    let ajtai_opening = next(ajtai_opening_len);
+    let original_r1cs = next(original_r1cs_len);
+
+    Some(WhirBatchedCpPrivateOpeningProfile {
+        equality,
+        folded_public_input,
+        folded_commitment,
+        folded_evaluation,
+        poseidon_r1cs,
+        ajtai_opening,
+        original_r1cs,
+        total_len: start,
+    })
 }
 
-fn verify_output(
+/// Compute the private-opening layout for a SYMBT2C columnar batched CP proof.
+///
+/// This is a debug/development API only. It mirrors the transcript-derived
+/// residual checks used by the SYMBT2C prover/verifier and is not part of the
+/// public proof envelope.
+pub fn whir_typed_batched_cp_columnar_v2_private_opening_profile(
+    seed: &[u8; 32],
+    relation: &RelationDescription,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Option<WhirBatchedCpColumnarV2OpeningProfile> {
+    let context = relation.context.as_ref()?;
+    let relation_context = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    let relation = relation_context.columnar_v2()?;
+    if &relation.semantic.shape != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return None;
+    }
+    let checks = typed_batched_cp_columnar_v2_checks(seed, relation, statement);
+    let mut total_len = 0usize;
+    let mut families: Vec<WhirBatchedCpColumnarV2FamilyOpeningProfile> = Vec::new();
+    for (residual_index, residual) in relation.columnar_layout.residuals.iter().enumerate() {
+        let residual_checks: Vec<_> = checks
+            .iter()
+            .filter(|check| check.residual_index == residual_index)
+            .collect();
+        if residual_checks.is_empty() {
+            continue;
+        }
+        let len = residual_checks
+            .iter()
+            .map(|check| check.columns.len())
+            .sum::<usize>();
+        if let Some(last) = families.last_mut() {
+            if last.family == residual.family && last.section.end() == total_len {
+                last.residual_count += 1;
+                last.sampled_check_count += residual_checks.len();
+                last.section.len += len;
+                total_len += len;
+                continue;
+            }
+        }
+        families.push(WhirBatchedCpColumnarV2FamilyOpeningProfile {
+            family: residual.family,
+            residual_count: 1,
+            sampled_check_count: residual_checks.len(),
+            subproof_index: None,
+            num_vars: None,
+            padded_row_count: None,
+            section: WhirBatchedCpPrivateOpeningSection {
+                start: total_len,
+                len,
+            },
+        });
+        total_len += len;
+    }
+    Some(WhirBatchedCpColumnarV2OpeningProfile {
+        families,
+        total_len,
+    })
+}
+
+/// Compute the private-opening layout for a SYMBT2F family-local columnar
+/// batched CP proof.
+///
+/// This is a debug/development API only. It mirrors the transcript-derived
+/// residual checks used by the SYMBT2F prover/verifier and is not part of the
+/// public proof envelope.
+pub fn whir_typed_batched_cp_family_columnar_v2_private_opening_profile(
+    seed: &[u8; 32],
+    relation: &RelationDescription,
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
+) -> Option<WhirBatchedCpColumnarV2OpeningProfile> {
+    let context = relation.context.as_ref()?;
+    let relation_context = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    let relation = relation_context.family_columnar_v2()?;
+    if &relation.semantic.shape != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return None;
+    }
+    let checks = typed_batched_cp_family_columnar_v2_checks(seed, relation, statement);
+    let mut total_len = 0usize;
+    let mut families = Vec::new();
+    for (table_idx, table) in relation.family_layout.tables.iter().enumerate() {
+        let table_checks: Vec<_> = checks
+            .iter()
+            .filter(|check| check.residual_index == table_idx)
+            .collect();
+        if table_checks.is_empty() {
+            continue;
+        }
+        let len = table_checks
+            .iter()
+            .map(|check| check.columns.len())
+            .sum::<usize>();
+        families.push(WhirBatchedCpColumnarV2FamilyOpeningProfile {
+            family: table.family,
+            residual_count: 1,
+            sampled_check_count: table_checks.len(),
+            subproof_index: Some(families.len()),
+            num_vars: Some(
+                (table.column_kinds.len() * table.padded_row_count)
+                    .next_power_of_two()
+                    .max(2)
+                    .trailing_zeros() as usize,
+            ),
+            padded_row_count: Some(table.padded_row_count),
+            section: WhirBatchedCpPrivateOpeningSection {
+                start: total_len,
+                len,
+            },
+        });
+        total_len += len;
+    }
+    Some(WhirBatchedCpColumnarV2OpeningProfile {
+        families,
+        total_len,
+    })
+}
+
+/// Verify a SYMBT2F proof and report verifier-infrastructure cache use.
+///
+/// This is a development/profile API only. Product public verification does
+/// not consume SYMBT2F and must not depend on these stats.
+pub fn whir_typed_batched_cp_family_columnar_v2_verify_with_cache_stats(
     vk: &WhirVerifyingKey,
-    instance: &[u8],
+    statement: &crate::batched_cp::BatchedCpPublicStatement,
     proof: &WhirProof,
-    ctx: &WhirContext,
-) -> bool {
-    if !proof.is_output {
-        return false;
+) -> Option<(bool, WhirVerifierInfraCacheStats)> {
+    let context = vk.relation.context.as_ref()?;
+    let relation_context = WhirBatchedCpRelationContext::from_context_bytes(context)?;
+    let relation = relation_context.family_columnar_v2()?;
+    if &relation.semantic.shape != &statement.shape
+        || relation.public_statement_bytes() != statement.canonical_bytes().len()
+    {
+        return Some((false, WhirVerifierInfraCacheStats::default()));
     }
-
-    let d = ctx.d;
-    let num_constraints = ctx.r1cs.num_constraints * d;
-    let num_vars = ceil_log2(num_constraints.max(1));
-
-    if proof.num_vars != num_vars {
-        return false;
-    }
-
-    // Build transcript
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-output-v2");
-    transcript.extend_from_slice(&vk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-
-    // Derive tau
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    // Verify sumcheck
-    let (final_eval, challenges) = match verify_sumcheck_r1cs(
-        &proof.sumcheck_rounds_4,
-        BabyBear::ZERO,
-        num_vars,
-        &mut transcript,
-    ) {
-        Some(v) => v,
-        None => return false,
-    };
-
-    // Check final evaluation: eq(tau, r*) * (Az_eval * Bz_eval - Cz_eval)
-    // Recompute eq(tau, r*) by folding the same eq table convention used by prover.
-    let mut eq_fold = build_eq_table_bb(&tau, num_vars);
-    for &r in &challenges {
-        let half = eq_fold.len() / 2;
-        let one_minus_r = BabyBear::ONE - r;
-        let mut next = Vec::with_capacity(half);
-        for j in 0..half {
-            next.push(eq_fold[j] * one_minus_r + eq_fold[half + j] * r);
-        }
-        eq_fold = next;
-    }
-    let eq_at_r = eq_fold[0];
-    let [az_eval, bz_eval, cz_eval] = proof.evaluations;
-    let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
-    if final_eval != expected_final {
-        return false;
-    }
-
-    // Verify WHIR PCS opening for z polynomial
-    let total_vars = ctx.r1cs.num_variables * d;
-    let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
-    let z_num_vars = z_padded_len.trailing_zeros() as usize;
-
-    let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a,
-        &ctx.r1cs.b,
-        &ctx.r1cs.c,
-        ctx.r1cs.num_constraints,
-        ctx.r1cs.num_variables,
-        d,
-        ctx.q,
-    );
-
-    let mut opening_points = vec![sumcheck_point_to_mle_point(&challenges, z_num_vars)];
-    let mut opening_evals = vec![proof.z_eval];
-    if !verify_linear_bindings(
-        [&flat_a, &flat_b, &flat_c],
-        &challenges,
-        &proof.evaluations,
-        total_vars,
-        z_num_vars,
-        &proof.linear_checks,
-        &mut transcript,
-        &mut opening_points,
-        &mut opening_evals,
-    ) {
-        return false;
-    }
-
-    whir_verify_opening_multi(
-        &vk.seed,
-        z_num_vars,
-        &proof.whir_pcs_proof,
-        &opening_points,
-        &opening_evals,
-    )
+    Some(verify_typed_batched_cp_family_columnar_v2_with_stats(
+        vk, relation, statement, proof,
+    ))
 }
 
-// ---------------------------------------------------------------------------
-// CP-SNARK R1CS path: folding constraints via R1CS sumcheck over BabyBear
-// ---------------------------------------------------------------------------
-// Reuses the same R1CS-over-BabyBear sumcheck as the output path, but with
-// CP-specific R1CS matrices (folding linear combination constraints).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhirProofPayloadError {
+    BadMagic,
+    UnsupportedVersion(u16),
+    Truncated,
+    TrailingBytes,
+    InvalidProofKind(u8),
+    LengthOverflow,
+    NonCanonicalBabyBear(u32),
+    MalformedPcsProof,
+}
 
-fn parse_i64_chunks_to_babybear(bytes: &[u8]) -> Vec<BabyBear> {
-    let mut out = Vec::with_capacity(bytes.len().div_ceil(8));
-    let mut i = 0;
-    while i + 8 <= bytes.len() {
-        let v = i64::from_le_bytes(bytes[i..i + 8].try_into().expect("8-byte chunk"));
-        out.push(BabyBear::from_i64(v));
-        i += 8;
+/// Canonical WHIR backend proof payload bytes for the public proof envelope.
+///
+/// This is a backend-owned codec for the opaque `cp_proof_bytes` and
+/// `output_proof_bytes` fields in the versioned public proof envelope. The
+/// Symphony envelope owns proof ordering and length delimiting; WHIR owns the
+/// bytes for an individual WHIR proof payload.
+#[must_use]
+pub fn canonical_whir_proof_bytes(proof: &WhirProof) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(WHIR_PROOF_PAYLOAD_MAGIC);
+    out.extend_from_slice(&WHIR_PROOF_PAYLOAD_VERSION.to_le_bytes());
+    out.push(u8::from(proof.is_output));
+    out.extend_from_slice(&(proof.num_vars as u64).to_le_bytes());
+
+    write_bb_array3_vec(&mut out, &proof.sumcheck_rounds_3);
+    write_bb_array4_vec(&mut out, &proof.sumcheck_rounds_4);
+    for value in &proof.evaluations {
+        write_bb(&mut out, *value);
     }
-    if i < bytes.len() {
-        let mut buf = [0u8; 8];
-        buf[..bytes.len() - i].copy_from_slice(&bytes[i..]);
-        let v = i64::from_le_bytes(buf);
-        out.push(BabyBear::from_i64(v));
+    write_bb(&mut out, proof.z_eval);
+
+    out.extend_from_slice(&(proof.linear_checks.len() as u64).to_le_bytes());
+    for check in &proof.linear_checks {
+        write_bb_array3_vec(&mut out, &check.rounds);
+        write_bb(&mut out, check.z_eval);
     }
+    out.extend_from_slice(&(proof.private_opening_evals.len() as u64).to_le_bytes());
+    for value in &proof.private_opening_evals {
+        write_bb(&mut out, *value);
+    }
+
+    out.extend_from_slice(&(proof.family_columnar_subproofs.len() as u64).to_le_bytes());
+    for subproof in &proof.family_columnar_subproofs {
+        out.extend_from_slice(&(subproof.table_index as u64).to_le_bytes());
+        out.extend_from_slice(&(subproof.num_vars as u64).to_le_bytes());
+        write_bb(&mut out, subproof.z_eval);
+        let pcs_bytes =
+            serde_json::to_vec(&subproof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
+        out.extend_from_slice(&(pcs_bytes.len() as u64).to_le_bytes());
+        out.extend_from_slice(&pcs_bytes);
+    }
+
+    let pcs_bytes =
+        serde_json::to_vec(&proof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
+    out.extend_from_slice(&(pcs_bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(&pcs_bytes);
     out
 }
 
-fn prove_cp_r1cs(
-    pk: &WhirProvingKey,
-    instance: &[u8],
-    witness: &[u8],
-    ctx: &WhirContext,
-) -> WhirProof {
-    // Identical to prove_output but with a different transcript domain separator
-    // and is_output = false on the proof.
-    //
-    // IMPORTANT: CP-R1CS context is already scalarized over BabyBear.
-    // Do NOT multiply dimensions by ring degree `d` again.
-    let q = ctx.q;
+pub fn whir_proof_from_canonical_bytes(bytes: &[u8]) -> Result<WhirProof, WhirProofPayloadError> {
+    let mut reader = WhirProofPayloadReader::new(bytes);
+    if reader.read_exact(WHIR_PROOF_PAYLOAD_MAGIC.len())? != WHIR_PROOF_PAYLOAD_MAGIC {
+        return Err(WhirProofPayloadError::BadMagic);
+    }
 
-    // Parse only CP-R1CS public prefix from `instance`; ignore trailer bytes.
-    let mut instance_bb = parse_i64_chunks_to_babybear(instance);
-    let expected_instance_len = ctx.r1cs.num_public;
-    instance_bb.resize(expected_instance_len, BabyBear::ZERO);
-    let witness_bb = parse_i64_chunks_to_babybear(witness);
+    let version = reader.read_u16()?;
+    if version != WHIR_PROOF_PAYLOAD_VERSION {
+        return Err(WhirProofPayloadError::UnsupportedVersion(version));
+    }
 
-    let total_vars = ctx.r1cs.num_variables;
-    let mut z_flat = Vec::with_capacity(total_vars);
-    z_flat.extend_from_slice(&instance_bb);
-    z_flat.extend_from_slice(&witness_bb);
-    z_flat.resize(total_vars, BabyBear::ZERO);
+    let is_output = match reader.read_u8()? {
+        0 => false,
+        1 => true,
+        other => return Err(WhirProofPayloadError::InvalidProofKind(other)),
+    };
+    let num_vars = reader.read_len()?;
+    let sumcheck_rounds_3 = reader.read_bb_array3_vec()?;
+    let sumcheck_rounds_4 = reader.read_bb_array4_vec()?;
+    let evaluations = [reader.read_bb()?, reader.read_bb()?, reader.read_bb()?];
+    let z_eval = reader.read_bb()?;
 
-    let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a,
-        &ctx.r1cs.b,
-        &ctx.r1cs.c,
-        ctx.r1cs.num_constraints,
-        ctx.r1cs.num_variables,
-        1,
-        q,
-    );
-    let num_constraints = ctx.r1cs.num_constraints;
-    let num_vars = ceil_log2(num_constraints.max(1));
+    let linear_check_count = reader.read_len()?;
+    let mut linear_checks = Vec::with_capacity(linear_check_count);
+    for _ in 0..linear_check_count {
+        linear_checks.push(WhirLinearCheckProof {
+            rounds: reader.read_bb_array3_vec()?,
+            z_eval: reader.read_bb()?,
+        });
+    }
+    let private_opening_eval_count = reader.read_len()?;
+    let mut private_opening_evals = Vec::with_capacity(private_opening_eval_count);
+    for _ in 0..private_opening_eval_count {
+        private_opening_evals.push(reader.read_bb()?);
+    }
 
-    let (az, bz, cz) =
-        compute_matrix_vector_products_bb(&flat_a, &flat_b, &flat_c, &z_flat, num_vars);
+    let family_subproof_count = reader.read_len()?;
+    let mut family_columnar_subproofs = Vec::with_capacity(family_subproof_count);
+    for _ in 0..family_subproof_count {
+        let table_index = reader.read_len()?;
+        let num_vars = reader.read_len()?;
+        let z_eval = reader.read_bb()?;
+        let pcs_bytes = reader.read_bytes()?;
+        let whir_pcs_proof = serde_json::from_slice(pcs_bytes)
+            .map_err(|_| WhirProofPayloadError::MalformedPcsProof)?;
+        family_columnar_subproofs.push(WhirFamilyColumnarSubproof {
+            table_index,
+            num_vars,
+            z_eval,
+            whir_pcs_proof,
+        });
+    }
 
-    let z_padded_len = (1 << ceil_log2(z_flat.len().max(1))).max(2);
-    let mut z_padded = z_flat;
-    z_padded.resize(z_padded_len, BabyBear::ZERO);
-    let z_num_vars = z_padded.len().trailing_zeros() as usize;
+    let pcs_bytes = reader.read_bytes()?;
+    let whir_pcs_proof =
+        serde_json::from_slice(pcs_bytes).map_err(|_| WhirProofPayloadError::MalformedPcsProof)?;
+    if !reader.is_finished() {
+        return Err(WhirProofPayloadError::TrailingBytes);
+    }
 
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-cp-r1cs-v1");
-    transcript.extend_from_slice(&pk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    let eq_table = build_eq_table_bb(&tau, num_vars);
-
-    let (rounds, challenges, az_eval, bz_eval, cz_eval, _eq_final) =
-        prove_sumcheck_r1cs(&eq_table, &az, &bz, &cz, num_vars, &mut transcript);
-
-    let mut opening_points = Vec::new();
-    let main_point = sumcheck_point_to_mle_point(&challenges, z_num_vars);
-    let z_eval = mle_eval_bb(&z_padded, &main_point);
-    opening_points.push(main_point);
-
-    let (linear_checks, linear_points) = prove_linear_bindings(
-        [&flat_a, &flat_b, &flat_c],
-        &challenges,
-        &z_padded,
-        z_num_vars,
-        &mut transcript,
-    );
-    opening_points.extend(linear_points);
-
-    let (whir_pcs_proof, opening_evals) =
-        whir_commit_and_prove_multi(&pk.seed, z_num_vars, &z_padded, &opening_points);
-    assert_eq!(opening_evals.first().copied(), Some(z_eval));
-
-    WhirProof {
-        sumcheck_rounds_3: Vec::new(),
-        sumcheck_rounds_4: rounds,
-        evaluations: [az_eval, bz_eval, cz_eval],
+    Ok(WhirProof {
+        sumcheck_rounds_3,
+        sumcheck_rounds_4,
+        evaluations,
         whir_pcs_proof,
         z_eval,
         linear_checks,
+        private_opening_evals,
+        family_columnar_subproofs,
         num_vars,
-        is_output: false,
-    }
+        is_output,
+    })
 }
 
-fn verify_cp_r1cs(
-    vk: &WhirVerifyingKey,
-    instance: &[u8],
-    proof: &WhirProof,
-    ctx: &WhirContext,
-) -> bool {
-    // Must not be marked as output
-    if proof.is_output {
-        return false;
-    }
-    if instance.is_empty() {
-        return false;
-    }
-
-    // CP-R1CS is already scalarized over BabyBear.
-    let expected_num_vars = ceil_log2(ctx.r1cs.num_constraints.max(1));
-    if proof.num_vars != expected_num_vars {
-        return false;
-    }
-
-    let num_vars = proof.num_vars;
-    if num_vars > 0 && proof.sumcheck_rounds_4.len() != num_vars {
-        return false;
-    }
-
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-cp-r1cs-v1");
-    transcript.extend_from_slice(&vk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    let (final_eval, challenges) = match verify_sumcheck_r1cs(
-        &proof.sumcheck_rounds_4,
-        BabyBear::ZERO,
-        num_vars,
-        &mut transcript,
-    ) {
-        Some(v) => v,
-        None => return false,
-    };
-
-    // Check final evaluation: eq(tau, r*) * (Az * Bz - Cz)
-    // Recompute eq(tau, r*) by folding the same eq table convention used by prover.
-    let mut eq_fold = build_eq_table_bb(&tau, num_vars);
-    for &r in &challenges {
-        let half = eq_fold.len() / 2;
-        let one_minus_r = BabyBear::ONE - r;
-        let mut next = Vec::with_capacity(half);
-        for j in 0..half {
-            next.push(eq_fold[j] * one_minus_r + eq_fold[half + j] * r);
-        }
-        eq_fold = next;
-    }
-    let eq_at_r = eq_fold[0];
-    let [az_eval, bz_eval, cz_eval] = proof.evaluations;
-    let expected_final = eq_at_r * (az_eval * bz_eval - cz_eval);
-    if final_eval != expected_final {
-        return false;
-    }
-
-    // Verify WHIR PCS opening.
-    // CP witness polynomial length is based on scalar CP-R1CS variable count.
-    let total_vars = ctx.r1cs.num_variables;
-    let z_padded_len = (1usize << ceil_log2(total_vars.max(1))).max(2);
-    let z_num_vars = z_padded_len.trailing_zeros() as usize;
-
-    let (flat_a, flat_b, flat_c) = flatten_ring_r1cs_bb(
-        &ctx.r1cs.a,
-        &ctx.r1cs.b,
-        &ctx.r1cs.c,
-        ctx.r1cs.num_constraints,
-        ctx.r1cs.num_variables,
-        1,
-        ctx.q,
-    );
-
-    let mut opening_points = vec![sumcheck_point_to_mle_point(&challenges, z_num_vars)];
-    let mut opening_evals = vec![proof.z_eval];
-    if !verify_linear_bindings(
-        [&flat_a, &flat_b, &flat_c],
-        &challenges,
-        &proof.evaluations,
-        total_vars,
-        z_num_vars,
-        &proof.linear_checks,
-        &mut transcript,
-        &mut opening_points,
-        &mut opening_evals,
-    ) {
-        return false;
-    }
-
-    whir_verify_opening_multi(
-        &vk.seed,
-        z_num_vars,
-        &proof.whir_pcs_proof,
-        &opening_points,
-        &opening_evals,
-    )
+fn write_bb(out: &mut Vec<u8>, value: BabyBear) {
+    out.extend_from_slice(&value.as_canonical_u32().to_le_bytes());
 }
 
-// ---------------------------------------------------------------------------
-// CP-SNARK path (trivial): witness commitment + sumcheck over BabyBear
-// ---------------------------------------------------------------------------
-
-fn prove_cp(pk: &WhirProvingKey, instance: &[u8], witness: &[u8]) -> WhirProof {
-    let q = SymphonyParams::default_from_paper().q;
-
-    let mut table = bytes_to_babybear(witness, q);
-    pad_to_power_of_two(&mut table);
-    // WHIR requires at least 2 evaluations (1 variable)
-    if table.len() < 2 {
-        table.resize(2, BabyBear::ZERO);
-    }
-    let num_vars = table.len().trailing_zeros() as usize;
-
-    // Build transcript for sumcheck challenge derivation
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-cp-v2");
-    transcript.extend_from_slice(&pk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    let eq_table = build_eq_table_bb(&tau, num_vars);
-
-    let (rounds, challenges) = prove_sumcheck_product(&eq_table, &table, num_vars, &mut transcript);
-
-    let w_eval = mle_eval_bb(&table, &challenges);
-
-    // --- WHIR PCS: commit to witness polynomial and prove evaluation ---
-    let whir_pcs_proof = whir_commit_and_prove(&pk.seed, num_vars, &table, &challenges, w_eval);
-
-    WhirProof {
-        sumcheck_rounds_3: rounds,
-        sumcheck_rounds_4: Vec::new(),
-        evaluations: [w_eval, BabyBear::ZERO, BabyBear::ZERO],
-        whir_pcs_proof,
-        z_eval: w_eval,
-        linear_checks: Vec::new(),
-        num_vars,
-        is_output: false,
-    }
-}
-
-fn verify_cp(vk: &WhirVerifyingKey, instance: &[u8], proof: &WhirProof) -> bool {
-    if proof.is_output {
-        return false;
-    }
-    if !proof.linear_checks.is_empty() {
-        return false;
-    }
-
-    // Enforce instance is non-empty.
-    if instance.is_empty() {
-        return false;
-    }
-
-    // Validate proof structure: sumcheck rounds must match the claimed
-    // number of variables, and the relation's expected sizes.
-    let num_vars = proof.num_vars;
-    if num_vars == 0 && !proof.sumcheck_rounds_3.is_empty() {
-        return false;
-    }
-    if num_vars > 0 && proof.sumcheck_rounds_3.len() != num_vars {
-        return false;
-    }
-
-    // When the relation carries sizing metadata, enforce it.
-    if vk.relation.num_instance_vars > 0 && instance.len() < vk.relation.num_instance_vars {
-        return false;
-    }
-
-    let mut transcript = Vec::new();
-    transcript.extend_from_slice(b"whir-cp-v2");
-    transcript.extend_from_slice(&vk.seed);
-    transcript.extend_from_slice(&(instance.len() as u64).to_le_bytes());
-    transcript.extend_from_slice(instance);
-
-    let tau: Vec<BabyBear> = (0..num_vars)
-        .map(|i| derive_challenge(&transcript, i, b"tau"))
-        .collect();
-
-    let challenges =
-        match verify_sumcheck_product(&proof.sumcheck_rounds_3, num_vars, &mut transcript) {
-            Some(c) => c,
-            None => return false,
-        };
-
-    let [w_eval, _, _] = proof.evaluations;
-    let eq_at_r = eval_eq_at_point_bb(&tau, &challenges);
-    let expected = eq_at_r * w_eval;
-
-    if num_vars == 0 {
-        if expected != w_eval {
-            return false;
-        }
-    } else {
-        let last_round = match proof.sumcheck_rounds_3.last() {
-            Some(r) => r,
-            None => return false,
-        };
-        let last_challenge = challenges.last().copied().unwrap_or(BabyBear::ZERO);
-        let final_eval = eval_univariate_3(last_round, last_challenge);
-        if final_eval != expected {
-            return false;
+fn write_bb_array3_vec(out: &mut Vec<u8>, values: &[[BabyBear; 3]]) {
+    out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for round in values {
+        for value in round {
+            write_bb(out, *value);
         }
     }
-
-    // Critical: sumcheck and WHIR opening must agree on the same evaluation.
-    // Without this check, a prover could use different polynomials for the
-    // sumcheck and the WHIR opening, decoupling the two proof components.
-    if proof.evaluations[0] != proof.z_eval {
-        return false;
-    }
-
-    // Verify WHIR PCS opening
-    if !whir_verify_opening(
-        &vk.seed,
-        num_vars,
-        &proof.whir_pcs_proof,
-        &challenges,
-        proof.z_eval,
-    ) {
-        return false;
-    }
-
-    true
 }
 
-// ---------------------------------------------------------------------------
-// WHIR PCS: commit and prove / verify
-// ---------------------------------------------------------------------------
-
-fn prove_linear_bindings(
-    matrices: [&FlatSparseMatrixBB; 3],
-    row_point: &[BabyBear],
-    z_table: &[BabyBear],
-    z_num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> (Vec<WhirLinearCheckProof>, Vec<Vec<BabyBear>>) {
-    let mut proofs = Vec::with_capacity(3);
-    let mut opening_points = Vec::with_capacity(3);
-    let num_cols = z_table.len();
-
-    for (i, mat) in matrices.iter().enumerate() {
-        transcript.extend_from_slice(b"whir-linear-binding-v1");
-        transcript.push(i as u8);
-        let row = compute_matrix_mle_row_bb(mat, row_point, num_cols);
-        let (rounds, point, z_eval) =
-            prove_sumcheck_inner_product(&row, z_table, z_num_vars, transcript);
-        proofs.push(WhirLinearCheckProof { rounds, z_eval });
-        opening_points.push(sumcheck_point_to_mle_point(&point, z_num_vars));
-    }
-
-    (proofs, opening_points)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn verify_linear_bindings(
-    matrices: [&FlatSparseMatrixBB; 3],
-    row_point: &[BabyBear],
-    claimed_evals: &[BabyBear; 3],
-    num_cols: usize,
-    z_num_vars: usize,
-    proofs: &[WhirLinearCheckProof],
-    transcript: &mut Vec<u8>,
-    opening_points: &mut Vec<Vec<BabyBear>>,
-    opening_evals: &mut Vec<BabyBear>,
-) -> bool {
-    if proofs.len() != 3 {
-        return false;
-    }
-
-    for (i, (mat, proof)) in matrices.iter().zip(proofs.iter()).enumerate() {
-        transcript.extend_from_slice(b"whir-linear-binding-v1");
-        transcript.push(i as u8);
-        let (final_eval, point) = match verify_sumcheck_inner_product(
-            &proof.rounds,
-            claimed_evals[i],
-            z_num_vars,
-            transcript,
-        ) {
-            Some(v) => v,
-            None => return false,
-        };
-        let row_eval = eval_matrix_mle_at_points_bb(mat, row_point, &point, num_cols);
-        if final_eval != row_eval * proof.z_eval {
-            return false;
-        }
-        opening_points.push(sumcheck_point_to_mle_point(&point, z_num_vars));
-        opening_evals.push(proof.z_eval);
-    }
-
-    true
-}
-
-/// Commit to a multilinear polynomial and prove evaluation claims using WHIR.
-fn whir_commit_and_prove_multi(
-    seed: &[u8; 32],
-    num_variables: usize,
-    evaluations: &[BabyBear],
-    points: &[Vec<BabyBear>],
-) -> (WhirPcsProof<F, EF, WhirMmcs>, Vec<BabyBear>) {
-    assert_eq!(evaluations.len(), 1 << num_variables);
-    for point in points {
-        assert_eq!(point.len(), num_variables);
-    }
-
-    let infra = build_whir_infra(seed, num_variables);
-    let dft = Radix2DFTSmallBatch::<F>::default();
-
-    // Build the polynomial in evaluation form
-    let poly = EvaluationsList::new(evaluations.to_vec());
-
-    // Create the initial statement
-    let mut statement = infra
-        .params
-        .initial_statement(poly, SumcheckStrategy::Classic);
-
-    // Add evaluation constraints. WHIR computes the evaluations internally for
-    // the prover; verification receives the returned claimed values explicitly.
-    // NOTE: Plonky3 multilinear convention has point[0] as the *slowest* variable
-    // (controls the top-half split), while our mle_eval_bb has point[0] as the
-    // *fastest* variable. Reverse the point to match conventions.
-    let mut claimed_evals = Vec::with_capacity(points.len());
-    for point in points {
-        let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
-        let ml_point = MultilinearPoint::new(ef_point);
-        let _whir_eval = statement.evaluate(&ml_point);
-        claimed_evals.push(mle_eval_bb(evaluations, point));
-    }
-
-    // Normalize for verifier
-    let _verifier_statement = statement.normalize();
-
-    // Create prover challenger
-    let mut prover_challenger = make_challenger(&infra.perm);
-    infra
-        .domainsep
-        .observe_domain_separator(&mut prover_challenger);
-
-    // Create proof struct
-    let mut proof = WhirPcsProof::<F, EF, WhirMmcs>::from_protocol_parameters(
-        &infra.protocol_params,
-        num_variables,
-    );
-
-    // Commit
-    let committer = CommitmentWriter::new(&infra.params);
-    let prover_data = committer
-        .commit(&dft, &mut proof, &mut prover_challenger, &mut statement)
-        .expect("WHIR commit failed");
-
-    // Prove
-    let prover = WhirProver(&infra.params);
-    prover
-        .prove(
-            &dft,
-            &mut proof,
-            &mut prover_challenger,
-            &statement,
-            prover_data,
-        )
-        .expect("WHIR prove failed");
-
-    (proof, claimed_evals)
-}
-
-/// Verify a WHIR PCS opening proof with one or more evaluation constraints.
-fn whir_verify_opening_multi(
-    seed: &[u8; 32],
-    num_variables: usize,
-    proof: &WhirPcsProof<F, EF, WhirMmcs>,
-    points: &[Vec<BabyBear>],
-    claimed_evals: &[BabyBear],
-) -> bool {
-    if points.len() != claimed_evals.len() {
-        return false;
-    }
-    if points.iter().any(|point| point.len() != num_variables) {
-        return false;
-    }
-
-    let infra = build_whir_infra(seed, num_variables);
-
-    // Create verifier challenger (must match prover's)
-    let mut verifier_challenger = make_challenger(&infra.perm);
-    infra
-        .domainsep
-        .observe_domain_separator(&mut verifier_challenger);
-
-    // Parse commitment
-    let commitment_reader = CommitmentReader::new(&infra.params);
-    let parsed_commitment =
-        commitment_reader.parse_commitment::<F, DIGEST_ELEMS>(proof, &mut verifier_challenger);
-
-    // Build verifier statement: the verifier must know each claimed (point,
-    // evaluation) pair.
-    // Reverse point to match Plonky3 convention (point[0] = slowest variable).
-    use whir_p3::constraints::statement::EqStatement;
-    let mut verifier_statement = EqStatement::initialize(num_variables);
-    for (point, &claimed_eval) in points.iter().zip(claimed_evals.iter()) {
-        let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
-        let ml_point = MultilinearPoint::new(ef_point);
-        verifier_statement.add_evaluated_constraint(ml_point, EF::from(claimed_eval));
-    }
-
-    let verifier = WhirVerifier::new(&infra.params);
-    verifier
-        .verify(
-            proof,
-            &mut verifier_challenger,
-            &parsed_commitment,
-            verifier_statement,
-        )
-        .is_ok()
-}
-
-fn whir_commit_and_prove(
-    seed: &[u8; 32],
-    num_variables: usize,
-    evaluations: &[BabyBear],
-    point: &[BabyBear],
-    claimed_eval: BabyBear,
-) -> WhirPcsProof<F, EF, WhirMmcs> {
-    let points = vec![point.to_vec()];
-    let (proof, evals) = whir_commit_and_prove_multi(seed, num_variables, evaluations, &points);
-    assert_eq!(evals, vec![claimed_eval]);
-    proof
-}
-
-fn whir_verify_opening(
-    seed: &[u8; 32],
-    num_variables: usize,
-    proof: &WhirPcsProof<F, EF, WhirMmcs>,
-    point: &[BabyBear],
-    claimed_eval: BabyBear,
-) -> bool {
-    whir_verify_opening_multi(
-        seed,
-        num_variables,
-        proof,
-        &[point.to_vec()],
-        &[claimed_eval],
-    )
-}
-
-// ---------------------------------------------------------------------------
-// R1CS sumcheck: degree-3, evaluations at {0, 1, 2, 3}
-// ---------------------------------------------------------------------------
-
-/// Prove sumcheck for F(x) = eq(tau,x) * [Az(x)*Bz(x) - Cz(x)].
-fn prove_sumcheck_r1cs(
-    eq_table: &[BabyBear],
-    az_table: &[BabyBear],
-    bz_table: &[BabyBear],
-    cz_table: &[BabyBear],
-    num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> (
-    Vec<[BabyBear; 4]>,
-    Vec<BabyBear>,
-    BabyBear,
-    BabyBear,
-    BabyBear,
-    BabyBear,
-) {
-    let n = 1 << num_vars;
-    assert_eq!(eq_table.len(), n);
-    assert_eq!(az_table.len(), n);
-    assert_eq!(bz_table.len(), n);
-    assert_eq!(cz_table.len(), n);
-
-    let mut eq = eq_table.to_vec();
-    let mut az = az_table.to_vec();
-    let mut bz = bz_table.to_vec();
-    let mut cz = cz_table.to_vec();
-
-    let mut rounds = Vec::with_capacity(num_vars);
-    let mut challenges = Vec::with_capacity(num_vars);
-
-    for round in 0..num_vars {
-        let half = eq.len() / 2;
-
-        let mut evals = [BabyBear::ZERO; 4];
-        for j in 0..half {
-            let eq0 = eq[j];
-            let eq1 = eq[half + j];
-            let az0 = az[j];
-            let az1 = az[half + j];
-            let bz0 = bz[j];
-            let bz1 = bz[half + j];
-            let cz0 = cz[j];
-            let cz1 = cz[half + j];
-
-            for t in 0u32..4 {
-                let t_bb = BabyBear::from_u32(t);
-                let one_minus_t = BabyBear::ONE - t_bb;
-
-                let eq_t = eq0 * one_minus_t + eq1 * t_bb;
-                let az_t = az0 * one_minus_t + az1 * t_bb;
-                let bz_t = bz0 * one_minus_t + bz1 * t_bb;
-                let cz_t = cz0 * one_minus_t + cz1 * t_bb;
-
-                evals[t as usize] += eq_t * (az_t * bz_t - cz_t);
-            }
-        }
-
-        rounds.push(evals);
-
-        for e in &evals {
-            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
-        }
-
-        let r = derive_challenge(transcript, round, b"sc-r1cs");
-        challenges.push(r);
-
-        let one_minus_r = BabyBear::ONE - r;
-        let mut new_eq = Vec::with_capacity(half);
-        let mut new_az = Vec::with_capacity(half);
-        let mut new_bz = Vec::with_capacity(half);
-        let mut new_cz = Vec::with_capacity(half);
-        for j in 0..half {
-            new_eq.push(eq[j] * one_minus_r + eq[half + j] * r);
-            new_az.push(az[j] * one_minus_r + az[half + j] * r);
-            new_bz.push(bz[j] * one_minus_r + bz[half + j] * r);
-            new_cz.push(cz[j] * one_minus_r + cz[half + j] * r);
-        }
-        eq = new_eq;
-        az = new_az;
-        bz = new_bz;
-        cz = new_cz;
-    }
-
-    let final_az = az[0];
-    let final_bz = bz[0];
-    let final_cz = cz[0];
-    let final_eq = eq[0];
-
-    (rounds, challenges, final_az, final_bz, final_cz, final_eq)
-}
-
-/// Verify R1CS sumcheck (degree-3 round polynomials).
-fn verify_sumcheck_r1cs(
-    rounds: &[[BabyBear; 4]],
-    claimed_sum: BabyBear,
-    num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> Option<(BabyBear, Vec<BabyBear>)> {
-    if rounds.len() != num_vars {
-        return None;
-    }
-    if num_vars == 0 {
-        return Some((claimed_sum, Vec::new()));
-    }
-
-    let mut current_claim = claimed_sum;
-    let mut challenges = Vec::with_capacity(num_vars);
-
-    for (round, evals) in rounds.iter().enumerate() {
-        if evals[0] + evals[1] != current_claim {
-            return None;
-        }
-
-        for e in evals {
-            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
-        }
-
-        let r = derive_challenge(transcript, round, b"sc-r1cs");
-        challenges.push(r);
-
-        current_claim = lagrange_interpolate_4(evals, r);
-    }
-
-    Some((current_claim, challenges))
-}
-
-/// Lagrange interpolation at {0, 1, 2, 3} evaluated at t.
-fn lagrange_interpolate_4(evals: &[BabyBear; 4], t: BabyBear) -> BabyBear {
-    let [e0, e1, e2, e3] = *evals;
-    let six_inv = BabyBear::from_u32(6).inverse();
-    let two_inv = BabyBear::TWO.inverse();
-
-    let t1 = t - BabyBear::ONE;
-    let t2 = t - BabyBear::TWO;
-    let t3 = t - BabyBear::from_u32(3);
-
-    let l0 = t1 * t2 * t3 * (-six_inv);
-    let l1 = t * t2 * t3 * two_inv;
-    let l2 = t * t1 * t3 * (-two_inv);
-    let l3 = t * t1 * t2 * six_inv;
-
-    e0 * l0 + e1 * l1 + e2 * l2 + e3 * l3
-}
-
-// ---------------------------------------------------------------------------
-// CP sumcheck: degree-2, evaluations at {0, 1, 2}
-// ---------------------------------------------------------------------------
-
-fn prove_sumcheck_inner_product(
-    a_table: &[BabyBear],
-    b_table: &[BabyBear],
-    num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> (Vec<[BabyBear; 3]>, Vec<BabyBear>, BabyBear) {
-    let n = 1 << num_vars;
-    assert_eq!(a_table.len(), n);
-    assert_eq!(b_table.len(), n);
-
-    let mut a = a_table.to_vec();
-    let mut b = b_table.to_vec();
-    let mut rounds = Vec::with_capacity(num_vars);
-    let mut challenges = Vec::with_capacity(num_vars);
-
-    for round in 0..num_vars {
-        let half = a.len() / 2;
-        let mut evals = [BabyBear::ZERO; 3];
-
-        for j in 0..half {
-            let a0 = a[j];
-            let a1 = a[half + j];
-            let b0 = b[j];
-            let b1 = b[half + j];
-            for t in 0u32..3 {
-                let t_bb = BabyBear::from_u32(t);
-                let one_minus_t = BabyBear::ONE - t_bb;
-                let a_t = a0 * one_minus_t + a1 * t_bb;
-                let b_t = b0 * one_minus_t + b1 * t_bb;
-                evals[t as usize] += a_t * b_t;
-            }
-        }
-
-        rounds.push(evals);
-        for e in &evals {
-            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
-        }
-        let r = derive_challenge(transcript, round, b"sc-inner");
-        challenges.push(r);
-
-        let one_minus_r = BabyBear::ONE - r;
-        let mut new_a = Vec::with_capacity(half);
-        let mut new_b = Vec::with_capacity(half);
-        for j in 0..half {
-            new_a.push(a[j] * one_minus_r + a[half + j] * r);
-            new_b.push(b[j] * one_minus_r + b[half + j] * r);
-        }
-        a = new_a;
-        b = new_b;
-    }
-
-    (rounds, challenges, b[0])
-}
-
-fn verify_sumcheck_inner_product(
-    rounds: &[[BabyBear; 3]],
-    claimed_sum: BabyBear,
-    num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> Option<(BabyBear, Vec<BabyBear>)> {
-    if rounds.len() != num_vars {
-        return None;
-    }
-    if num_vars == 0 {
-        return Some((claimed_sum, Vec::new()));
-    }
-
-    let mut current_claim = claimed_sum;
-    let mut challenges = Vec::with_capacity(num_vars);
-    for (round, evals) in rounds.iter().enumerate() {
-        if evals[0] + evals[1] != current_claim {
-            return None;
-        }
-        for e in evals {
-            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
-        }
-        let r = derive_challenge(transcript, round, b"sc-inner");
-        challenges.push(r);
-        current_claim = eval_univariate_3(evals, r);
-    }
-
-    Some((current_claim, challenges))
-}
-
-/// Prove sumcheck for F(x) = eq(x) * w(x) (degree-2, CP path).
-fn prove_sumcheck_product(
-    eq_table: &[BabyBear],
-    w_table: &[BabyBear],
-    num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> (Vec<[BabyBear; 3]>, Vec<BabyBear>) {
-    let n = 1 << num_vars;
-    assert_eq!(eq_table.len(), n);
-    assert_eq!(w_table.len(), n);
-
-    let mut eq = eq_table.to_vec();
-    let mut w = w_table.to_vec();
-    let mut rounds = Vec::with_capacity(num_vars);
-    let mut challenges = Vec::with_capacity(num_vars);
-
-    for round in 0..num_vars {
-        let half = 1 << (num_vars - 1 - round);
-
-        let mut e0 = BabyBear::ZERO;
-        let mut e1 = BabyBear::ZERO;
-        let mut e2 = BabyBear::ZERO;
-
-        for j in 0..half {
-            let eq_lo = eq[2 * j];
-            let eq_hi = eq[2 * j + 1];
-            let w_lo = w[2 * j];
-            let w_hi = w[2 * j + 1];
-
-            e0 += eq_lo * w_lo;
-            e1 += eq_hi * w_hi;
-            let eq_at_2 = eq_hi.double() - eq_lo;
-            let w_at_2 = w_hi.double() - w_lo;
-            e2 += eq_at_2 * w_at_2;
-        }
-
-        let round_evals = [e0, e1, e2];
-        rounds.push(round_evals);
-
-        for e in &round_evals {
-            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
-        }
-
-        let r = derive_challenge(transcript, round, b"sc-r");
-        challenges.push(r);
-
-        let mut new_eq = Vec::with_capacity(half);
-        let mut new_w = Vec::with_capacity(half);
-        for j in 0..half {
-            new_eq.push(eq[2 * j] * (BabyBear::ONE - r) + eq[2 * j + 1] * r);
-            new_w.push(w[2 * j] * (BabyBear::ONE - r) + w[2 * j + 1] * r);
-        }
-        eq = new_eq;
-        w = new_w;
-    }
-
-    (rounds, challenges)
-}
-
-/// Verify CP sumcheck.
-fn verify_sumcheck_product(
-    rounds: &[[BabyBear; 3]],
-    num_vars: usize,
-    transcript: &mut Vec<u8>,
-) -> Option<Vec<BabyBear>> {
-    if rounds.len() != num_vars {
-        return None;
-    }
-    if num_vars == 0 {
-        return Some(Vec::new());
-    }
-
-    let claimed_sum = rounds[0][0] + rounds[0][1];
-    let mut current_claim = claimed_sum;
-    let mut challenges = Vec::with_capacity(num_vars);
-
-    for (round, evals) in rounds.iter().enumerate() {
-        if evals[0] + evals[1] != current_claim {
-            return None;
-        }
-
-        for e in evals {
-            transcript.extend_from_slice(&e.as_canonical_u64().to_le_bytes());
-        }
-
-        let r = derive_challenge(transcript, round, b"sc-r");
-        challenges.push(r);
-
-        current_claim = eval_univariate_3(evals, r);
-    }
-
-    Some(challenges)
-}
-
-// ---------------------------------------------------------------------------
-// BabyBear helpers
-// ---------------------------------------------------------------------------
-
-/// Build eq(tau, x) table over {0,1}^n.
-fn build_eq_table_bb(tau: &[BabyBear], num_vars: usize) -> Vec<BabyBear> {
-    let n = 1 << num_vars;
-    let mut table = vec![BabyBear::ONE; n];
-    for (i, &ti) in tau.iter().enumerate() {
-        let half = 1 << (num_vars - 1 - i);
-        for j in (0..n).rev() {
-            let bit = (j >> (num_vars - 1 - i)) & 1;
-            if bit == 1 {
-                table[j] = table[j - half] * ti;
-            } else {
-                table[j] *= BabyBear::ONE - ti;
-            }
+fn write_bb_array4_vec(out: &mut Vec<u8>, values: &[[BabyBear; 4]]) {
+    out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for round in values {
+        for value in round {
+            write_bb(out, *value);
         }
     }
-    table
 }
 
-/// Evaluate multilinear extension at a point.
-fn mle_eval_bb(table: &[BabyBear], point: &[BabyBear]) -> BabyBear {
-    let mut current = table.to_vec();
-    for &r in point.iter() {
-        let half = current.len() / 2;
-        let mut next = Vec::with_capacity(half);
-        for j in 0..half {
-            next.push(current[2 * j] * (BabyBear::ONE - r) + current[2 * j + 1] * r);
+struct WhirProofPayloadReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> WhirProofPayloadReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.pos == self.bytes.len()
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], WhirProofPayloadError> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or(WhirProofPayloadError::LengthOverflow)?;
+        if end > self.bytes.len() {
+            return Err(WhirProofPayloadError::Truncated);
         }
-        current = next;
+        let slice = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(slice)
     }
-    current[0]
-}
 
-/// Evaluate eq(a, b) = prod_i (a_i * b_i + (1-a_i)*(1-b_i)) in O(n) field ops.
-///
-/// This avoids building the full 2^n eq table when only a single-point
-/// evaluation is needed (e.g., eq(tau, r*) after sumcheck verification).
-fn eval_eq_at_point_bb(a: &[BabyBear], b: &[BabyBear]) -> BabyBear {
-    assert_eq!(a.len(), b.len());
-    // Convention note:
-    // - build_eq_table_bb indexes tau[0] as the slowest variable (MSB position)
-    // - mle_eval_bb consumes point[0] as the fastest variable (LSB position)
-    // Therefore, to match mle_eval_bb(build_eq_table_bb(a), b), we pair a[i]
-    // with b[n-1-i].
-    a.iter()
-        .zip(b.iter().rev())
-        .fold(BabyBear::ONE, |acc, (ai, bi)| {
-            acc * (*ai * *bi + (BabyBear::ONE - *ai) * (BabyBear::ONE - *bi))
-        })
-}
-
-/// Evaluate a degree-2 univariate at point t, given evals at {0, 1, 2}.
-fn eval_univariate_3(evals: &[BabyBear; 3], t: BabyBear) -> BabyBear {
-    let [e0, e1, e2] = *evals;
-    let two_inv = BabyBear::TWO.inverse();
-    let l0 = (t - BabyBear::ONE) * (t - BabyBear::TWO) * two_inv;
-    let l1 = -t * (t - BabyBear::TWO);
-    let l2 = t * (t - BabyBear::ONE) * two_inv;
-    e0 * l0 + e1 * l1 + e2 * l2
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn compute_context_hash(context: &Option<Vec<u8>>) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"whir-context-binding");
-    if let Some(ref ctx_bytes) = context {
-        h.update((ctx_bytes.len() as u64).to_le_bytes());
-        h.update(ctx_bytes);
-    } else {
-        h.update(0u64.to_le_bytes());
+    fn read_u8(&mut self) -> Result<u8, WhirProofPayloadError> {
+        Ok(self.read_exact(1)?[0])
     }
-    h.finalize().into()
-}
 
-fn derive_challenge(transcript: &[u8], index: usize, label: &[u8]) -> BabyBear {
-    let mut hasher = Sha256::new();
-    hasher.update(label);
-    hasher.update((index as u64).to_le_bytes());
-    hasher.update(transcript);
-    let hash: [u8; 32] = hasher.finalize().into();
-    let val = u32::from_le_bytes(hash[..4].try_into().unwrap());
-    BabyBear::from_u32(val)
-}
-
-fn ceil_log2(n: usize) -> usize {
-    if n <= 1 {
-        return 1;
+    fn read_u16(&mut self) -> Result<u16, WhirProofPayloadError> {
+        let mut raw = [0u8; 2];
+        raw.copy_from_slice(self.read_exact(2)?);
+        Ok(u16::from_le_bytes(raw))
     }
-    (usize::BITS - (n - 1).leading_zeros()) as usize
+
+    fn read_u32(&mut self) -> Result<u32, WhirProofPayloadError> {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(self.read_exact(4)?);
+        Ok(u32::from_le_bytes(raw))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, WhirProofPayloadError> {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(self.read_exact(8)?);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn read_len(&mut self) -> Result<usize, WhirProofPayloadError> {
+        usize::try_from(self.read_u64()?).map_err(|_| WhirProofPayloadError::LengthOverflow)
+    }
+
+    fn read_bb(&mut self) -> Result<BabyBear, WhirProofPayloadError> {
+        const BABYBEAR_MODULUS: u32 = 2_013_265_921;
+        let value = self.read_u32()?;
+        if value >= BABYBEAR_MODULUS {
+            return Err(WhirProofPayloadError::NonCanonicalBabyBear(value));
+        }
+        Ok(BabyBear::from_u32(value))
+    }
+
+    fn read_bb_array3_vec(&mut self) -> Result<Vec<[BabyBear; 3]>, WhirProofPayloadError> {
+        let len = self.read_len()?;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push([self.read_bb()?, self.read_bb()?, self.read_bb()?]);
+        }
+        Ok(values)
+    }
+
+    fn read_bb_array4_vec(&mut self) -> Result<Vec<[BabyBear; 4]>, WhirProofPayloadError> {
+        let len = self.read_len()?;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push([
+                self.read_bb()?,
+                self.read_bb()?,
+                self.read_bb()?,
+                self.read_bb()?,
+            ]);
+        }
+        Ok(values)
+    }
+
+    fn read_bytes(&mut self) -> Result<&'a [u8], WhirProofPayloadError> {
+        let len = self.read_len()?;
+        self.read_exact(len)
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
+include!("symbt3_columns.rs");
+include!("backend_impl.rs");
+include!("symbt3_verify.rs");
+include!("output.rs");
+include!("batched_cp_context.rs");
+include!("batched_cp_columnar.rs");
+include!("core_protocol.rs");
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::r1cs::R1CSMatrices;
-
-    fn test_relation() -> RelationDescription {
-        RelationDescription {
-            num_instance_vars: 4,
-            num_witness_vars: 8,
-            num_constraints: 4,
-            context: None,
-        }
-    }
-
-    // --- CP path tests ---
-
-    #[test]
-    fn cp_snark_roundtrip() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let proof = WhirSnark::prove(&pk, b"test-instance", b"secret-witness-1234");
-        assert!(WhirSnark::verify(&vk, b"test-instance", &proof));
-    }
-
-    #[test]
-    fn cp_snark_wrong_instance_rejected() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let proof = WhirSnark::prove(&pk, b"instance-A", b"witness");
-        assert!(!WhirSnark::verify(&vk, b"instance-B", &proof));
-    }
-
-    #[test]
-    fn cp_snark_short_instance_rejected() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let proof = WhirSnark::prove(&pk, b"abc", b"witness");
-        assert!(!WhirSnark::verify(&vk, b"abc", &proof));
-    }
-
-    #[test]
-    fn cp_snark_empty_witness() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let proof = WhirSnark::prove(&pk, b"instance", b"");
-        assert!(WhirSnark::verify(&vk, b"instance", &proof));
-    }
-
-    #[test]
-    fn cp_snark_large_witness() {
-        let (pk, vk) = WhirSnark::setup(&test_relation());
-        let witness: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
-        let proof = WhirSnark::prove(&pk, b"instance", &witness);
-        assert!(WhirSnark::verify(&vk, b"instance", &proof));
-    }
-
-    #[test]
-    fn cp_snark_proof_is_succinct() {
-        let (pk, _vk) = WhirSnark::setup(&test_relation());
-        let witness: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
-        let proof = WhirSnark::prove(&pk, b"instance", &witness);
-        // WHIR proof should have a Merkle commitment (not a full witness table)
-        assert!(proof.whir_pcs_proof.initial_commitment.is_some());
-    }
-
-    // --- Output SNARK tests ---
-
-    #[test]
-    fn output_snark_roundtrip() {
-        // Build a simple R1CS: x * x = x (satisfied by x=0 or x=1)
-        let mut r1cs = R1CSMatrices::new(1, 2, 1);
-        r1cs.a.insert(0, 1, 1);
-        r1cs.b.insert(0, 1, 1);
-        r1cs.c.insert(0, 1, 1);
-
-        let ctx = WhirContext {
-            r1cs,
-            q: 2013265921,
-            d: 1,
-            n_pub: 1,
-            is_output_snark: true,
-            is_cp_snark: false,
-        };
-        let ctx_bytes = serialize::serialize_context(&ctx);
-
-        let relation = RelationDescription {
-            num_instance_vars: 1,
-            num_witness_vars: 1,
-            num_constraints: 1,
-            context: Some(ctx_bytes),
-        };
-
-        let (pk, vk) = WhirSnark::setup(&relation);
-
-        let instance = 1i64.to_le_bytes();
-        let witness = 1i64.to_le_bytes();
-        let proof = WhirSnark::prove(&pk, &instance, &witness);
-        assert!(proof.is_output);
-        assert!(WhirSnark::verify(&vk, &instance, &proof));
-    }
-
-    #[test]
-    fn output_snark_wrong_instance_rejected() {
-        let mut r1cs = R1CSMatrices::new(1, 2, 1);
-        r1cs.a.insert(0, 1, 1);
-        r1cs.b.insert(0, 1, 1);
-        r1cs.c.insert(0, 1, 1);
-
-        let ctx = WhirContext {
-            r1cs,
-            q: 2013265921,
-            d: 1,
-            n_pub: 1,
-            is_output_snark: true,
-            is_cp_snark: false,
-        };
-        let ctx_bytes = serialize::serialize_context(&ctx);
-
-        let relation = RelationDescription {
-            num_instance_vars: 1,
-            num_witness_vars: 1,
-            num_constraints: 1,
-            context: Some(ctx_bytes),
-        };
-
-        let (pk, vk) = WhirSnark::setup(&relation);
-        let instance = 1i64.to_le_bytes();
-        let witness = 1i64.to_le_bytes();
-        let proof = WhirSnark::prove(&pk, &instance, &witness);
-
-        let wrong_instance = 42i64.to_le_bytes();
-        assert!(!WhirSnark::verify(&vk, &wrong_instance, &proof));
-    }
-
-    #[test]
-    fn output_snark_rejects_forged_az_bz_cz_claims() {
-        let mut r1cs = R1CSMatrices::new(1, 2, 1);
-        r1cs.a.insert(0, 1, 1);
-        r1cs.b.insert(0, 1, 1);
-        r1cs.c.insert(0, 1, 1);
-
-        let ctx = WhirContext {
-            r1cs,
-            q: 2013265921,
-            d: 1,
-            n_pub: 1,
-            is_output_snark: true,
-            is_cp_snark: false,
-        };
-        let ctx_bytes = serialize::serialize_context(&ctx);
-        let relation = RelationDescription {
-            num_instance_vars: 1,
-            num_witness_vars: 1,
-            num_constraints: 1,
-            context: Some(ctx_bytes),
-        };
-
-        let (pk, vk) = WhirSnark::setup(&relation);
-        let instance = 1i64.to_le_bytes();
-        let witness = 1i64.to_le_bytes();
-        let mut proof = WhirSnark::prove(&pk, &instance, &witness);
-        assert!(WhirSnark::verify(&vk, &instance, &proof));
-        assert_eq!(proof.linear_checks.len(), 3);
-
-        // Preserve the R1CS sumcheck final product relation:
-        // (Az + d) * Bz - (Cz + d * Bz) == Az * Bz - Cz.
-        // The new WHIR linear-binding checks must still reject because these
-        // altered claims are no longer derived from the committed z.
-        let delta = BabyBear::ONE;
-        let bz = proof.evaluations[1];
-        proof.evaluations[0] += delta;
-        proof.evaluations[2] += delta * bz;
-
-        assert!(!WhirSnark::verify(&vk, &instance, &proof));
-    }
-
-    // --- Shared helper tests ---
-
-    #[test]
-    fn eq_table_correctness() {
-        let tau = vec![BabyBear::from_u32(3), BabyBear::from_u32(5)];
-        let table = build_eq_table_bb(&tau, 2);
-        let expected_00 = (BabyBear::ONE - tau[0]) * (BabyBear::ONE - tau[1]);
-        assert_eq!(table[0], expected_00);
-        let expected_11 = tau[0] * tau[1];
-        assert_eq!(table[3], expected_11);
-    }
-
-    #[test]
-    fn mle_eval_consistency() {
-        let table = vec![
-            BabyBear::from_u32(1),
-            BabyBear::from_u32(2),
-            BabyBear::from_u32(3),
-            BabyBear::from_u32(4),
-        ];
-        let val = mle_eval_bb(&table, &[BabyBear::ZERO, BabyBear::ZERO]);
-        assert_eq!(val, BabyBear::from_u32(1));
-        let val = mle_eval_bb(&table, &[BabyBear::ONE, BabyBear::ONE]);
-        assert_eq!(val, BabyBear::from_u32(4));
-    }
-
-    #[test]
-    fn eq_point_eval_matches_table_mle() {
-        let tau = vec![
-            BabyBear::from_u32(3),
-            BabyBear::from_u32(5),
-            BabyBear::from_u32(7),
-        ];
-        let r = vec![
-            BabyBear::from_u32(11),
-            BabyBear::from_u32(13),
-            BabyBear::from_u32(17),
-        ];
-
-        let eq_table = build_eq_table_bb(&tau, tau.len());
-        let via_table = mle_eval_bb(&eq_table, &r);
-        let direct = eval_eq_at_point_bb(&tau, &r);
-        assert_eq!(direct, via_table);
-    }
-
-    #[test]
-    fn lagrange_4_correctness() {
-        let evals = [
-            BabyBear::from_u32(10),
-            BabyBear::from_u32(20),
-            BabyBear::from_u32(35),
-            BabyBear::from_u32(55),
-        ];
-        assert_eq!(lagrange_interpolate_4(&evals, BabyBear::ZERO), evals[0]);
-        assert_eq!(lagrange_interpolate_4(&evals, BabyBear::ONE), evals[1]);
-        assert_eq!(lagrange_interpolate_4(&evals, BabyBear::TWO), evals[2]);
-        assert_eq!(
-            lagrange_interpolate_4(&evals, BabyBear::from_u32(3)),
-            evals[3]
-        );
-    }
-
-    #[test]
-    fn serialize_roundtrip() {
-        let mut r1cs = R1CSMatrices::new(2, 3, 1);
-        r1cs.a.insert(0, 1, 1);
-        r1cs.b.insert(1, 2, -1);
-
-        let ctx = WhirContext {
-            r1cs,
-            q: 65537,
-            d: 64,
-            n_pub: 1,
-            is_output_snark: true,
-            is_cp_snark: false,
-        };
-        let bytes = serialize::serialize_context(&ctx);
-        let ctx2 = deserialize_context(&bytes).unwrap();
-        assert_eq!(ctx2.q, 65537);
-        assert_eq!(ctx2.d, 64);
-        assert!(ctx2.is_output_snark);
-    }
-}
+include!("tests.rs");

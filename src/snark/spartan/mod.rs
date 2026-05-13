@@ -23,7 +23,7 @@ use curve25519_dalek::scalar::Scalar;
 use sha2::{Digest, Sha256};
 
 use crate::cp_relation_core::{
-    CpPublicInstance as TypedCpPublicInstance, CpWitnessBundle as TypedCpWitnessBundle,
+    CpPublicStatement as TypedCpPublicStatement, CpWitnessBundle as TypedCpWitnessBundle,
 };
 use crate::folding::{FoldedOutputInstance, FoldedOutputWitness};
 use crate::ring::extension::{ExtFieldContext, ExtFieldElement};
@@ -132,26 +132,26 @@ impl BackendSnark for SpartanSnark {
 
     fn prove_typed_cp(
         pk: &Self::ProvingKey,
-        instance: &TypedCpPublicInstance,
+        statement: &TypedCpPublicStatement,
         witness: &TypedCpWitnessBundle,
     ) -> Option<Self::Proof> {
         let ctx = pk.context.as_ref()?;
         if ctx.is_output_snark {
             return None;
         }
-        Some(prove_cp_typed(pk, instance, witness))
+        Some(prove_cp_typed(pk, statement, witness))
     }
 
     fn verify_typed_cp(
         vk: &Self::VerifyingKey,
-        instance: &TypedCpPublicInstance,
+        statement: &TypedCpPublicStatement,
         proof: &Self::Proof,
     ) -> Option<bool> {
         let ctx = vk.context.as_ref()?;
         if ctx.is_output_snark {
             return None;
         }
-        Some(verify_cp_typed(vk, instance, proof))
+        Some(verify_cp_typed(vk, statement, proof))
     }
 
     fn prove_typed_output(
@@ -286,20 +286,20 @@ impl BackendSnark for SpartanSnark {
 
 fn prove_cp_typed(
     pk: &SpartanProvingKey,
-    instance: &TypedCpPublicInstance,
+    statement: &TypedCpPublicStatement,
     witness: &TypedCpWitnessBundle,
 ) -> SpartanProof {
-    let instance_bytes = crate::snark::cp_snark::encode_typed_cp_public_instance(instance);
+    let instance_bytes = crate::snark::cp_snark::encode_typed_cp_public_statement(statement);
     let witness_bytes = crate::snark::cp_snark::encode_typed_cp_witness_bundle(witness);
     prove_cp(pk, &instance_bytes, &witness_bytes)
 }
 
 fn verify_cp_typed(
     vk: &SpartanVerifyingKey,
-    instance: &TypedCpPublicInstance,
+    statement: &TypedCpPublicStatement,
     proof: &SpartanProof,
 ) -> bool {
-    let instance_bytes = crate::snark::cp_snark::encode_typed_cp_public_instance(instance);
+    let instance_bytes = crate::snark::cp_snark::encode_typed_cp_public_statement(statement);
     verify_cp(vk, &instance_bytes, proof)
 }
 

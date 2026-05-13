@@ -167,25 +167,8 @@ pub fn encode_cp_witness_r1cs(
     // prod_c[ℓ][i][j] / prod_x[ℓ][s][j] are computed over BabyBear to match
     // CP-R1CS Phase A constraints.
     let p_bb = 2013265921u64;
-    let ring_mul_bb = |a: &RingElement, b: &RingElement| -> RingElement {
-        let mut acc = [0i128; D];
-        for i in 0..D {
-            for j in 0..D {
-                let prod = a.coeffs[i] as i128 * b.coeffs[j] as i128;
-                let idx = i + j;
-                if idx < D {
-                    acc[idx] += prod;
-                } else {
-                    acc[idx - D] -= prod; // X^D = -1
-                }
-            }
-        }
-        let mut coeffs = [0i64; D];
-        for (out, &v) in coeffs.iter_mut().zip(acc.iter()) {
-            *out = centered_mod(v, p_bb);
-        }
-        RingElement { coeffs }
-    };
+    let bb_ntt = NttContext::new(p_bb);
+    let ring_mul_bb = |a: &RingElement, b: &RingElement| -> RingElement { bb_ntt.ring_mul(a, b) };
 
     // prod_c[ℓ][i][j] — ring products beta[ℓ] · c[ℓ][i]
     for ell in 0..ell_np {
@@ -327,7 +310,7 @@ pub fn encode_cp_witness_r1cs(
     let inv6 = mod_pow(6, bb_p - 2, bb_p) as i64;
 
     for ell in 0..ell_np {
-        if had_nv == 0 || ell >= gr1cs_proofs.len() {
+        if ell >= gr1cs_proofs.len() {
             // No Hadamard data for this instance — fill with zeros.
             for _ in 0..layout.had_block_size {
                 buf.extend_from_slice(&0i64.to_le_bytes());
@@ -397,6 +380,10 @@ pub fn encode_cp_witness_r1cs(
                 };
                 buf.extend_from_slice(&bb_red(val as i128).to_le_bytes());
             }
+        }
+
+        if had_nv == 0 {
+            continue;
         }
 
         // --- Compute and write auxiliary K-mul results ---
