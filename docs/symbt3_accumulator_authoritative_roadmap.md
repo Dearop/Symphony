@@ -1108,6 +1108,17 @@ compressed public envelope with proof payloads omitted. SYMBT3 proof bytes are
 the single SYMBT3 WHIR proof bytes; SYMBT3 public bytes are the compressed
 `Symbt3AccumulatorInstance` canonical bytes.
 
+The stable CSV schema is:
+
+```text
+k,monolithic_verify_ms,symbt3_verify_ms,verify_speedup,monolithic_prove_ms,symbt3_prove_ms,prove_speedup,monolithic_proof_bytes,symbt3_proof_bytes,proof_size_ratio,monolithic_public_statement_bytes,symbt3_public_statement_bytes,public_size_ratio,symbt3_whir_num_vars,symbt3_oracle_len,symbt3_opened_field_elements,symbt3_top_level_whir_proof_count,symbt3_family_columnar_subproof_count,symbt3_backend_table_count,symbt3_accumulator_transition_claims,symbt3_source_r1cs_residual_verifier_evaluations,symbt3_product_route_selected,symbt3_monolithic_fallback_used
+```
+
+The shape counters are part of the reporting contract: one top-level WHIR
+proof, zero family subproofs, and one backend table. K6b is a cleanup/reporting
+pass only; it does not change protocol semantics, product routing, or the
+K6a opt-in policy.
+
 Run:
 
 ```text
@@ -1116,18 +1127,19 @@ SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4,8 cargo bench --bench whir_scaling --featur
 
 ### K6b: Product Route Comparison
 
-| k | monolithic verify_ms | SYMBT3 K6a verify_ms | verify speedup | monolithic proof bytes | SYMBT3 proof bytes | proof ratio | monolithic public bytes | SYMBT3 public bytes | notes |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 1 | 2,109.052 | 17.656 | 119.45x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | K6a selected, no fallback |
-| 2 | 6,232.810 | 24.180 | 257.77x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | K6a selected, no fallback |
-| 4 | 13,326.962 | 24.348 | 547.36x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | K6a selected, no fallback |
-| 8 | 51,182.449 | 30.702 | 1,667.09x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | K6a selected, no fallback |
+| k | monolithic verify_ms | SYMBT3 K6a verify_ms | verify speedup | monolithic prove_ms | SYMBT3 prove_ms | prove speedup | monolithic proof bytes | SYMBT3 proof bytes | proof ratio | monolithic public bytes | SYMBT3 public bytes | public ratio | SYMBT3 shape | notes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 1 | 2,109.052 | 17.656 | 119.45x | 3,664.787 | 17.491 | 209.52x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | 1.234 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
+| 2 | 6,232.810 | 24.180 | 257.77x | 7,519.404 | 49.591 | 151.63x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | 1.232 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
+| 4 | 13,326.962 | 24.348 | 547.36x | 23,325.334 | 25.078 | 930.11x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | 1.230 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
+| 8 | 51,182.449 | 30.702 | 1,667.09x | 43,438.693 | 67.128 | 647.10x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | 1.225 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
 
 These are one-shot route measurements from the comparison reporter; the
 individual route benchmarks remain the repeated Criterion timing sources.
 SYMBT3 K6a is NonZK integrity only, explicit opt-in only, not default product
 routing, does not implement K5 masking, and does not support private manifest
-membership.
+membership. K5/private manifest/native multi-oracle product work remains
+deferred.
 
 ### K6b Acceptance Criteria
 
@@ -1138,6 +1150,8 @@ membership.
    CP on failed K6a gates.
 5. The route labels state that K6a is NonZK integrity only and not K5/K6
    default zkSNARK product routing.
+6. Shape counters remain fixed at one top-level WHIR proof, zero family
+   subproofs, and one backend table.
 
 **Files**: `benches/whir_scaling.rs`, `tests/batched_cp.rs`, `docs/whir.md`,
 `docs/whir_public_performance_north_star_plan.md`,

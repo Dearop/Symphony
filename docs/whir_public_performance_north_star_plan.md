@@ -896,21 +896,31 @@ monolithic public bytes are the compressed public envelope with proof payloads
 omitted. SYMBT3 proof bytes are the single SYMBT3 WHIR proof bytes; SYMBT3
 public bytes are the compressed accumulator instance canonical bytes.
 
+K6b stabilizes reporting only. The `PRODUCT_COMPARISON_CSV` schema is:
+
+```text
+k,monolithic_verify_ms,symbt3_verify_ms,verify_speedup,monolithic_prove_ms,symbt3_prove_ms,prove_speedup,monolithic_proof_bytes,symbt3_proof_bytes,proof_size_ratio,monolithic_public_statement_bytes,symbt3_public_statement_bytes,public_size_ratio,symbt3_whir_num_vars,symbt3_oracle_len,symbt3_opened_field_elements,symbt3_top_level_whir_proof_count,symbt3_family_columnar_subproof_count,symbt3_backend_table_count,symbt3_accumulator_transition_claims,symbt3_source_r1cs_residual_verifier_evaluations,symbt3_product_route_selected,symbt3_monolithic_fallback_used
+```
+
+The reported SYMBT3 K6a shape remains one top-level WHIR proof, zero family
+subproofs, and one backend table.
+
 ### K6b: Product Route Comparison
 
-| k | monolithic verify_ms | SYMBT3 K6a verify_ms | verify speedup | monolithic proof bytes | SYMBT3 proof bytes | proof size ratio | monolithic public bytes | SYMBT3 public bytes | notes |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 1 | 2,109.052 | 17.656 | 119.45x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | K6a selected, no fallback |
-| 2 | 6,232.810 | 24.180 | 257.77x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | K6a selected, no fallback |
-| 4 | 13,326.962 | 24.348 | 547.36x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | K6a selected, no fallback |
-| 8 | 51,182.449 | 30.702 | 1,667.09x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | K6a selected, no fallback |
+| k | monolithic verify_ms | SYMBT3 K6a verify_ms | verify speedup | monolithic prove_ms | SYMBT3 prove_ms | prove speedup | monolithic proof bytes | SYMBT3 proof bytes | proof size ratio | monolithic public bytes | SYMBT3 public bytes | public size ratio | SYMBT3 shape | notes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 1 | 2,109.052 | 17.656 | 119.45x | 3,664.787 | 17.491 | 209.52x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | 1.234 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
+| 2 | 6,232.810 | 24.180 | 257.77x | 7,519.404 | 49.591 | 151.63x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | 1.232 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
+| 4 | 13,326.962 | 24.348 | 547.36x | 23,325.334 | 25.078 | 930.11x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | 1.230 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
+| 8 | 51,182.449 | 30.702 | 1,667.09x | 43,438.693 | 67.128 | 647.10x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | 1.225 | 1 WHIR / 0 family / 1 table | K6a selected, no fallback |
 
 These rows are one-shot route measurements emitted by the comparison reporter;
 the individual `public_verify_v2_vs_k` and
 `symbt3_accumulator_authority_vs_k` suites remain the repeated Criterion
 timing sources. SYMBT3 K6a is NonZK integrity only, explicit opt-in, not default
 product routing, does not implement K5 masking, and does not support private
-manifest membership.
+manifest membership. Product `verify_public` remains unchanged, and
+K5/private manifest/native multi-oracle work remains deferred.
 
 ### P5 — SYMBT3-F Ajtai linear-algebra layout
 

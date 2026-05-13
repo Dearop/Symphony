@@ -866,6 +866,8 @@ fn batched_cp_semantic_v2_relation_context_is_stable_and_non_r1cs() {
 
 #[cfg(feature = "whir")]
 #[test]
+// SYMBT3 K1/K2/K3: public-canonical manifest binding, accumulator
+// transition consistency, and authority-profile gates.
 fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
     let (prover, r1cs, mut items) = build_fixture();
     let item_a = items.remove(0);
@@ -2075,6 +2077,7 @@ fn symbt3_relation_context_public_boundary_and_challenges_are_stable() {
 
 #[cfg(feature = "whir")]
 #[test]
+// SYMBT3 K1-K3 negative matrix over the compact one-table backend proof.
 fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
     let (prover, r1cs, mut items) = build_fixture();
     let item_a = items.remove(0);
@@ -2726,6 +2729,8 @@ fn symbt3_backend_hooks_prove_first_algebraic_block_and_reject_tampering() {
 
 #[cfg(feature = "whir")]
 #[test]
+// SYMBT3 K4/K4.5/K4.6: research public accumulator API and compressed
+// public boundary. This remains research-only and NonZK.
 fn symbt3_k4_research_public_accumulator_api_accepts_v1_and_rejects_wrong_routes() {
     let (prover, r1cs, mut items) = build_fixture();
     let (_r1cs_again, z) = common::multi_r1cs();
@@ -3059,6 +3064,8 @@ fn symbt3_k4_research_public_accumulator_api_accepts_v1_and_rejects_wrong_routes
 
 #[cfg(feature = "whir")]
 #[test]
+// SYMBT3 K6a: explicit opt-in NonZK integrity product route. This does not
+// make SYMBT3 the default product `verify_public` route.
 fn symbt3_k6a_non_zk_integrity_product_route_is_explicit_opt_in() {
     let (prover, r1cs, mut items) = build_fixture();
     let (_r1cs_again, z) = common::multi_r1cs();
@@ -3373,6 +3380,8 @@ fn symbt3_k6a_non_zk_integrity_product_route_is_explicit_opt_in() {
 
 #[cfg(feature = "whir")]
 #[test]
+// SYMBT3 K6b: product comparison/discriminator policy only, no protocol route
+// promotion.
 fn symbt3_k6b_product_route_discriminator_and_policy_are_explicit() {
     let (prover, r1cs, items) = build_fixture();
     let bucket = BatchedCpBucket::new(items, whir_parameter_digest()).unwrap();
@@ -3418,6 +3427,7 @@ fn symbt3_k6b_product_route_discriminator_and_policy_are_explicit() {
 
 #[cfg(feature = "whir")]
 #[test]
+// SYMBT3 K1e.2/K4.5: compact source-view evaluator and residual batching.
 fn symbt3_k1e2_source_view_is_virtual_for_k1_and_k2() {
     let (prover, r1cs, items) = build_fixture();
     for k in [1usize, 2] {

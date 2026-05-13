@@ -106,6 +106,24 @@ use symphony::{
 static SYMBT3_SCALING_CSV_INIT: Once = Once::new();
 static PRODUCT_ROUTE_COMPARISON_CSV_INIT: Once = Once::new();
 
+const PRODUCT_ROUTE_COMPARISON_CSV_PATH: &str = "benchmarks/product_route_comparison.csv";
+const PRODUCT_ROUTE_COMPARISON_CSV_PREFIX: &str = "PRODUCT_COMPARISON_CSV,";
+const PRODUCT_ROUTE_COMPARISON_CSV_HEADER: &str = concat!(
+    "k,monolithic_verify_ms,symbt3_verify_ms,verify_speedup,",
+    "monolithic_prove_ms,symbt3_prove_ms,prove_speedup,",
+    "monolithic_proof_bytes,symbt3_proof_bytes,proof_size_ratio,",
+    "monolithic_public_statement_bytes,symbt3_public_statement_bytes,",
+    "public_size_ratio,symbt3_whir_num_vars,symbt3_oracle_len,",
+    "symbt3_opened_field_elements,symbt3_top_level_whir_proof_count,",
+    "symbt3_family_columnar_subproof_count,symbt3_backend_table_count,",
+    "symbt3_accumulator_transition_claims,",
+    "symbt3_source_r1cs_residual_verifier_evaluations,",
+    "symbt3_product_route_selected,symbt3_monolithic_fallback_used\n"
+);
+const SYMBT3_TOP_LEVEL_WHIR_PROOF_COUNT: usize = 1;
+const SYMBT3_BACKEND_TABLE_COUNT: usize = 1;
+const SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER: usize = 0;
+
 const WHIR_CP_NUM_MESSAGES: usize = 8;
 const WHIR_CP_WITNESS_SIZES: &[usize] = &[256, 512, 1024, 2048, 4096];
 const FOLDING_KS: &[usize] = &[2, 4, 8, 16, 32];
@@ -334,22 +352,13 @@ fn ratio(numerator: f64, denominator: f64) -> f64 {
 }
 
 fn write_product_route_comparison_csv_row(row: &ProductRouteComparisonCsvRow) {
-    const HEADER: &str = concat!(
-        "k,monolithic_verify_ms,symbt3_verify_ms,verify_speedup,",
-        "monolithic_prove_ms,symbt3_prove_ms,prove_speedup,",
-        "monolithic_proof_bytes,symbt3_proof_bytes,proof_size_ratio,",
-        "monolithic_public_statement_bytes,symbt3_public_statement_bytes,",
-        "public_size_ratio,symbt3_whir_num_vars,symbt3_oracle_len,",
-        "symbt3_opened_field_elements,symbt3_top_level_whir_proof_count,",
-        "symbt3_family_columnar_subproof_count,symbt3_backend_table_count,",
-        "symbt3_accumulator_transition_claims,",
-        "symbt3_source_r1cs_residual_verifier_evaluations,",
-        "symbt3_product_route_selected,symbt3_monolithic_fallback_used\n"
-    );
     PRODUCT_ROUTE_COMPARISON_CSV_INIT.call_once(|| {
         std::fs::create_dir_all("benchmarks").expect("create benchmarks directory");
-        std::fs::write("benchmarks/product_route_comparison.csv", HEADER)
-            .expect("write product route comparison CSV header");
+        std::fs::write(
+            PRODUCT_ROUTE_COMPARISON_CSV_PATH,
+            PRODUCT_ROUTE_COMPARISON_CSV_HEADER,
+        )
+        .expect("write product route comparison CSV header");
     });
 
     let verify_speedup = ratio(row.monolithic_verify_ms, row.symbt3_verify_ms);
@@ -389,13 +398,13 @@ fn write_product_route_comparison_csv_row(row: &ProductRouteComparisonCsvRow) {
         row.symbt3_monolithic_fallback_used.to_string(),
     ];
     let line = format!("{}\n", fields.join(","));
-    print!("PRODUCT_COMPARISON_CSV,{line}");
+    print!("{PRODUCT_ROUTE_COMPARISON_CSV_PREFIX}{line}");
     std::io::stdout()
         .flush()
         .expect("flush product route comparison CSV row");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
-        .open("benchmarks/product_route_comparison.csv")
+        .open(PRODUCT_ROUTE_COMPARISON_CSV_PATH)
         .expect("open product route comparison CSV");
     file.write_all(line.as_bytes())
         .expect("append product route comparison CSV row");
@@ -2504,10 +2513,10 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             .source_column_layout
             .coordinate_count
             * public.active_count;
-        let source_view_backend_column_count = 0usize;
-        let source_view_materialized_coordinate_count = 0usize;
-        let manifest_backend_column_count = 0usize;
-        let manifest_materialized_coordinate_count = 0usize;
+        let source_view_backend_column_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+        let source_view_materialized_coordinate_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+        let manifest_backend_column_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+        let manifest_materialized_coordinate_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
         let message_round_count = decoded_relation.message_semantic_layout.round_count;
         let message_coordinate_count = decoded_relation
             .message_semantic_layout
@@ -2663,9 +2672,9 @@ fn bench_symbt3_profile_vs_k(c: &mut Criterion, profile: &'static str) {
             sumcheck_rounds: proof.sumcheck_rounds_4.len(),
             transcript_squeezes: proof.private_opening_evals.len(),
             pcs_merkle_opening_proxy: proof.private_opening_evals.len(),
-            top_level_whir_proof_count: 1,
+            top_level_whir_proof_count: SYMBT3_TOP_LEVEL_WHIR_PROOF_COUNT,
             family_columnar_subproof_count: proof.family_columnar_subproofs.len(),
-            backend_table_count: 1,
+            backend_table_count: SYMBT3_BACKEND_TABLE_COUNT,
             verify_whir_pcs_ms: verifier_profile.verify_whir_pcs_ms,
             verify_transcript_ms: verifier_profile.verify_transcript_ms,
             verify_sumcheck_rounds_ms: verifier_profile.verify_sumcheck_rounds_ms,
@@ -3131,10 +3140,10 @@ fn bench_symbt3_accumulator_research_vs_k(c: &mut Criterion) {
             .source_column_layout
             .coordinate_count
             * public.active_count;
-        let source_view_backend_column_count = 0usize;
-        let source_view_materialized_coordinate_count = 0usize;
-        let manifest_backend_column_count = 0usize;
-        let manifest_materialized_coordinate_count = 0usize;
+        let source_view_backend_column_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+        let source_view_materialized_coordinate_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+        let manifest_backend_column_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+        let manifest_materialized_coordinate_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
         let message_view_coordinates = decoded_relation
             .message_semantic_layout
             .view_coordinate_count(public.active_count);
@@ -3203,9 +3212,9 @@ fn bench_symbt3_accumulator_research_vs_k(c: &mut Criterion) {
             sumcheck_rounds: proof.sumcheck_rounds_4.len(),
             transcript_squeezes: proof.private_opening_evals.len(),
             pcs_merkle_opening_proxy: proof.private_opening_evals.len(),
-            top_level_whir_proof_count: 1,
+            top_level_whir_proof_count: SYMBT3_TOP_LEVEL_WHIR_PROOF_COUNT,
             family_columnar_subproof_count: proof.family_columnar_subproofs.len(),
-            backend_table_count: 1,
+            backend_table_count: SYMBT3_BACKEND_TABLE_COUNT,
             verify_whir_pcs_ms: verifier_profile.verify_whir_pcs_ms,
             verify_transcript_ms: verifier_profile.verify_transcript_ms,
             verify_sumcheck_rounds_ms: verifier_profile.verify_sumcheck_rounds_ms,
@@ -3414,10 +3423,10 @@ fn symbt3_authority_route_measurement(
         .source_column_layout
         .coordinate_count
         * public.active_count;
-    let source_view_backend_column_count = 0usize;
-    let source_view_materialized_coordinate_count = 0usize;
-    let manifest_backend_column_count = 0usize;
-    let manifest_materialized_coordinate_count = 0usize;
+    let source_view_backend_column_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+    let source_view_materialized_coordinate_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+    let manifest_backend_column_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
+    let manifest_materialized_coordinate_count = SYMBT3_DIAGNOSTIC_MATERIALIZED_COUNTER;
     let message_view_coordinates = decoded_relation
         .message_semantic_layout
         .view_coordinate_count(public.active_count);
@@ -3451,9 +3460,9 @@ fn symbt3_authority_route_measurement(
             sumcheck_rounds: proof.sumcheck_rounds_4.len(),
             transcript_squeezes: proof.private_opening_evals.len(),
             pcs_merkle_opening_proxy: proof.private_opening_evals.len(),
-            top_level_whir_proof_count: 1,
+            top_level_whir_proof_count: SYMBT3_TOP_LEVEL_WHIR_PROOF_COUNT,
             family_columnar_subproof_count: proof.family_columnar_subproofs.len(),
-            backend_table_count: 1,
+            backend_table_count: SYMBT3_BACKEND_TABLE_COUNT,
             verify_whir_pcs_ms: verifier_profile.verify_whir_pcs_ms,
             verify_transcript_ms: verifier_profile.verify_transcript_ms,
             verify_sumcheck_rounds_ms: verifier_profile.verify_sumcheck_rounds_ms,

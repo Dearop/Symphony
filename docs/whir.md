@@ -777,18 +777,22 @@ SYMBT3 K6a NonZK integrity route (`symbt3_accumulator_authority_vs_k`) and
 emits `PRODUCT_COMPARISON_CSV` rows. The monolithic public-byte column is the
 compressed public envelope with backend proof payloads omitted; the SYMBT3
 public-byte column is `Symbt3AccumulatorInstance::canonical_bytes()`.
+The CSV schema is stabilized for cleanup/reporting consumers and includes
+verify/prove timing, proof/public byte ratios, and the SYMBT3 shape counters:
+one top-level WHIR proof, zero family subproofs, and one backend table.
 
-| k | monolithic verify | SYMBT3 K6a verify | verify speedup | monolithic proof bytes | SYMBT3 proof bytes | proof ratio | monolithic public bytes | SYMBT3 public bytes | notes |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 1 | 2,109.052 ms | 17.656 ms | 119.45x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | one-shot comparison row |
-| 2 | 6,232.810 ms | 24.180 ms | 257.77x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | one-shot comparison row |
-| 4 | 13,326.962 ms | 24.348 ms | 547.36x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | one-shot comparison row |
-| 8 | 51,182.449 ms | 30.702 ms | 1,667.09x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | one-shot comparison row |
+| k | monolithic verify | SYMBT3 K6a verify | verify speedup | monolithic prove | SYMBT3 prove | prove speedup | monolithic proof bytes | SYMBT3 proof bytes | proof ratio | monolithic public bytes | SYMBT3 public bytes | public ratio | SYMBT3 shape | notes |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 1 | 2,109.052 ms | 17.656 ms | 119.45x | 3,664.787 ms | 17.491 ms | 209.52x | 1,206,465 | 311,568 | 0.258 | 15,171 | 18,715 | 1.234 | 1 WHIR / 0 family / 1 table | one-shot comparison row |
+| 2 | 6,232.810 ms | 24.180 ms | 257.77x | 7,519.404 ms | 49.591 ms | 151.63x | 1,256,159 | 335,935 | 0.267 | 15,187 | 18,715 | 1.232 | 1 WHIR / 0 family / 1 table | one-shot comparison row |
+| 4 | 13,326.962 ms | 24.348 ms | 547.36x | 23,325.334 ms | 25.078 ms | 930.11x | 1,556,795 | 329,707 | 0.212 | 15,219 | 18,715 | 1.230 | 1 WHIR / 0 family / 1 table | one-shot comparison row |
+| 8 | 51,182.449 ms | 30.702 ms | 1,667.09x | 43,438.693 ms | 67.128 ms | 647.10x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | 1.225 | 1 WHIR / 0 family / 1 table | one-shot comparison row |
 
 K6b is a reporting/regression milestone only. SYMBT3 K6a remains NonZK
 integrity only, explicit opt-in, and not the default `verify_public` route. It
 does not implement K5 masking and does not support private manifest
-membership.
+membership. Product `verify_public` remains unchanged, and K5/private
+manifest/native multi-oracle product work remains deferred.
 The first `symbt3_e_vs_k` benchmark preserved the one-proof guard while
 switching the default product law to `RqNegacyclicConvolutionV1` and beta action
 to `RingCoefficientActionV1`: `k=1` measured 395,418 proof bytes, 6.4393 ms
