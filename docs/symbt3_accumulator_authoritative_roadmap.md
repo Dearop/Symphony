@@ -112,7 +112,16 @@ Special notes:
 
 ## Current State
 
-The codebase (`src/modular/batched_cp.rs`, `src/snark/whir/mod.rs`) has:
+The codebase has split the former large SYMBT3/WHIR implementation files into
+module-root facades plus focused section files:
+
+- `src/modular/batched_cp.rs` is the public module facade for structured
+  batched CP and SYMBT3 domain objects. The implementation sections live under
+  `src/modular/batched_cp/`.
+- `src/snark/whir/mod.rs` is the WHIR module root / orchestration file. WHIR
+  backend routing, typed batched CP context handling, core protocol helpers,
+  output helpers, and SYMBT3 verifier code live in sibling files under
+  `src/snark/whir/`.
 
 - 33 constraint families in `BatchedCpSymbt3ConstraintFamily`
 - 3-tier authority profile: development / research-candidate / authority-candidate
@@ -416,10 +425,9 @@ Acceptance criteria for message oracle semantics:
 
 ### Changes
 
-**`src/modular/batched_cp.rs`**
+**`src/modular/batched_cp/` (via `src/modular/batched_cp.rs` facade)**
 
-- Add `ManifestEvaluationClaim` variant to `BatchedCpSymbt3ConstraintFamily`
-  (enum lines 346–380).
+- Add `ManifestEvaluationClaim` variant to `BatchedCpSymbt3ConstraintFamily`.
 - Add fields to `BatchedCpSymbt3PublicStatement`:
   - `manifest_oracle_root: Digest` — root of the committed manifest oracle
   - `manifest_eval_claim: BabyBear` — prover's claimed evaluation
@@ -427,12 +435,12 @@ Acceptance criteria for message oracle semantics:
 - Add `ManifestCommitmentPolicy::DigestOfLayoutAndOracleRootV1` enum and
   populate `manifest_commitment_policy_digest` in `Symbt3AuthorityProfile`.
   The verifier uses this to recompute and check `batch_manifest_root`.
-- Extend `has_symbt3_h_families()` (lines 3862–3880) to require
+- Extend `has_symbt3_h_families()` to require
   `ManifestEvaluationClaim` for `AccumulatorSoundnessAuthorityCandidateV1`
   profiles.
 - Bump `SYMBT3_LAYOUT_VERSION`.
 
-**`src/snark/whir/mod.rs`**
+**`src/snark/whir/` (with `mod.rs` as module root)**
 
 - In the constraint table builder, add the `ManifestEvaluationClaim` entry.
 - Squeeze `manifest_membership_challenge` from transcript after absorbing
@@ -444,8 +452,8 @@ Acceptance criteria for message oracle semantics:
   from the public statement.
 - Verifier checks the claimed evaluation against `manifest_oracle_root` via the
   WHIR opening. No full manifest reconstruction.
-- Existing prover-side `symbt3_manifest_membership_residual_values` (lines
-  ~1848–1856) remains a witness consistency check; it is not the verification path.
+- Existing prover-side `symbt3_manifest_membership_residual_values` remains a
+  witness consistency check; it is not the verification path.
 
 ### K1 Acceptance Criteria
 
@@ -476,7 +484,7 @@ Acceptance criteria for message oracle semantics:
 18. Manifest oracle is part of the top-level SYMBT3 proof object (code audit:
     no new WHIR proof or `family_columnar_subproof` introduced).
 
-**Files**: `src/modular/batched_cp.rs`, `src/snark/whir/mod.rs`, `tests/batched_cp.rs`
+**Files**: `src/modular/batched_cp/`, `src/snark/whir/`, `tests/batched_cp.rs`
 
 ---
 
@@ -525,7 +533,7 @@ Both layers are unified under K2. Layer 2 is not a separate milestone.
 
 ### Changes
 
-**`src/modular/batched_cp.rs`**
+**`src/modular/batched_cp/` (via `src/modular/batched_cp.rs` facade)**
 
 Add typed structs before `BatchedCpSymbt3PublicStatement`:
 
@@ -574,7 +582,7 @@ serialization detail, not the witness API.
 - Add `Symbt3AccumulatorInstance::digest()` for stable hashing.
 - Bump `SYMBT3_LAYOUT_VERSION`.
 
-**`src/snark/whir/mod.rs`**
+**`src/snark/whir/` (with `mod.rs` as module root)**
 
 Wire `AccumulatorTransitionConsistency` into the constraint table (Option B):
 - Squeeze `rho_acc = H("SYMBT3_ACC_TRANSITION", old_acc.x, folded_batch.x, ...)`
@@ -602,7 +610,7 @@ Wire `AccumulatorTransitionConsistency` into the constraint table (Option B):
 13. `message_oracles` field uses typed view type, not raw bytes (code audit).
 14. All existing tests pass.
 
-**Files**: `src/modular/batched_cp.rs`, `src/snark/whir/mod.rs`, `tests/batched_cp.rs`
+**Files**: `src/modular/batched_cp/`, `src/snark/whir/`, `tests/batched_cp.rs`
 
 ---
 
@@ -653,7 +661,7 @@ soundness accounting must reflect the actual field/extension used.
 
 ### Changes
 
-**`src/modular/batched_cp.rs`**
+**`src/modular/batched_cp/` (via `src/modular/batched_cp.rs` facade)**
 
 Extend `Symbt3AuthorityProfile` in-place (no new struct):
 
@@ -712,14 +720,14 @@ Authority must require:
 - Projection seed binding
 - Monomiality / constant-term relation
 
-Update `research_authority_candidate_from_relation()` (lines ~4346) to
+Update `research_authority_candidate_from_relation()` to
 produce `semantic_profile_version = 0` (unchanged behavior).
 
 Add new factory `accumulator_soundness_authority_candidate_from_relation()`
 that produces `semantic_profile_version = 1` with all K1/K2 families required
 and all policy digests populated.
 
-**`src/snark/whir/mod.rs`**
+**`src/snark/whir/` (with `mod.rs` as module root)**
 
 Call `profile_meets_accumulator_soundness_authority()` inside
 `verify_symbt3_batched_cp_with_profile()` for all non-development profiles with
@@ -750,7 +758,7 @@ Call `profile_meets_accumulator_soundness_authority()` inside
 7. Projection/range data does not affect `beta_challenge`.
 8. Projection/range data does affect proof-checking challenges.
 
-**Files**: `src/modular/batched_cp.rs`, `src/snark/whir/mod.rs`, `tests/batched_cp.rs`
+**Files**: `src/modular/batched_cp/`, `src/snark/whir/`, `tests/batched_cp.rs`
 
 ---
 
@@ -765,7 +773,7 @@ implemented by the same API — M1 is M0 once the profile gates are satisfied.
 
 ### Changes
 
-**`src/snark/whir/mod.rs`**
+**`src/snark/whir/` (with `mod.rs` as module root)**
 
 ```rust
 /// NonZK: may reveal WHIR-queried private coordinates at query positions.
@@ -803,7 +811,7 @@ The verifier takes a `WhirVerifyingKey` because the WHIR PCS opening check is
 seeded by the relation context; there is no sound verifier from only
 `(profile, accumulator_instance, proof)`.
 
-**`src/modular/batched_cp.rs`**
+**`src/modular/batched_cp/` (via `src/modular/batched_cp.rs` facade)**
 
 Adds typed conversion helpers:
 - `Symbt3AccumulatorInstance::to_public_statement(...)`
@@ -845,7 +853,7 @@ view coordinates, and verifier cost attribution.
 6. All K1 + K2 + K3 acceptance criteria hold when tested through the new API.
 7. K5 ZK/masking and K6 product-route promotion remain deferred.
 
-**Files**: `src/snark/whir/mod.rs`, `src/modular/batched_cp.rs`,
+**Files**: `src/snark/whir/`, `src/modular/batched_cp/`,
 `tests/batched_cp.rs`, `benches/whir_scaling.rs`
 
 ---
@@ -915,7 +923,7 @@ family subproofs, no dense manifest/source-view columns, and
 `message_to_trace_binding_count = 0`. This does not change the K3 authority
 profile status and does not promote SYMBT3 to product routing.
 
-**Files**: `src/snark/whir/mod.rs`, `src/modular/batched_cp.rs`,
+**Files**: `src/snark/whir/`, `src/modular/batched_cp/`,
 `benches/whir_scaling.rs`, `tests/batched_cp.rs`,
 `docs/whir_public_performance_north_star_plan.md`
 
@@ -972,7 +980,7 @@ research prover/dev conversion path and are consistency-checked before
 delegating to the SYMBT3 verifier. This is not K6 product routing and does not
 change the product public verifier.
 
-**Files**: `src/modular/batched_cp.rs`, `tests/batched_cp.rs`,
+**Files**: `src/modular/batched_cp/`, `tests/batched_cp.rs`,
 `benches/whir_scaling.rs`, `docs/whir.md`,
 `docs/whir_public_performance_north_star_plan.md`
 
@@ -1020,7 +1028,7 @@ for zkSNARK/CP-SNARK semantics remains blocked until K5.
 
 ### Changes
 
-**`src/snark/whir/mod.rs`**
+**`src/snark/whir/` (with `mod.rs` as module root)**
 
 ```rust
 prove_public_symbt3_accumulator_non_zk_integrity(...)
@@ -1087,7 +1095,7 @@ Report speedup vs monolithic typed CP for `verify_ms` and `proof_bytes`.
 7. Monolithic typed CP `verify_public()` works unchanged.
 8. Speedup reported vs monolithic typed CP for both benchmark suites.
 
-**Files**: `src/snark/whir/mod.rs`, `benches/whir_scaling.rs`, `tests/batched_cp.rs`
+**Files**: `src/snark/whir/`, `benches/whir_scaling.rs`, `tests/batched_cp.rs`
 
 ---
 
@@ -1323,17 +1331,25 @@ Tests are marked:
 
 ## Key File Locations
 
-| Item | File | Lines |
-|---|---|---|
-| Constraint family enum | `src/modular/batched_cp.rs` | 346–380 |
-| Manifest component kinds | `src/modular/batched_cp.rs` | 393–401 |
-| Authority profile struct | `src/modular/batched_cp.rs` | 530–566 |
-| Profile factory functions | `src/modular/batched_cp.rs` | 4327–4453 |
-| `has_symbt3_h_families()` gate | `src/modular/batched_cp.rs` | 3862–3880 |
-| Manifest rows function | `src/modular/batched_cp.rs` | 8656–8711 |
-| Verifier manifest binding (K0/J3 design) | `src/snark/whir/mod.rs` | ~1076–1082 |
-| Manifest residual function | `src/snark/whir/mod.rs` | ~1848–1856 |
-| Main verify entry point | `src/snark/whir/mod.rs` | ~2750–2756 |
-| Proof shape checks | `src/snark/whir/mod.rs` | ~2948–3016 |
-| Test suite | `tests/batched_cp.rs` | full file (~3547 lines) |
-| Scaling benchmarks | `benches/whir_scaling.rs` | full file |
+| Item | File |
+|---|---|
+| Batched CP module root / public facade | `src/modular/batched_cp.rs` |
+| Batched CP and SYMBT3 public data types | `src/modular/batched_cp/types.rs` |
+| Accumulator and batch shape builders | `src/modular/batched_cp/shape.rs` |
+| SYMBT3 layout descriptors and authority profiles | `src/modular/batched_cp/symbt3_layouts.rs` |
+| SYMBT3 public statements, witnesses, manifests, challenges | `src/modular/batched_cp/symbt3_public.rs` |
+| Columnar semantic layouts and traces | `src/modular/batched_cp/columnar_layouts.rs` |
+| Batched CP evaluator and field arithmetic helpers | `src/modular/batched_cp/evaluator.rs` |
+| Structured/semantic context encode/decode impls | `src/modular/batched_cp/relation_contexts.rs` |
+| Semantic/SYMBT3 discriminants and code mappings | `src/modular/batched_cp/semantic_codes.rs` |
+| Canonical statement, relation, and layout codecs | `src/modular/batched_cp/serialization.rs` |
+| WHIR module root / orchestration file | `src/snark/whir/mod.rs` |
+| WHIR `BackendSnark` impl and typed CP/output routing | `src/snark/whir/backend_impl.rs` |
+| Typed batched CP columnar proof checks | `src/snark/whir/batched_cp_columnar.rs` |
+| Typed batched CP relation context decoding and dispatch | `src/snark/whir/batched_cp_context.rs` |
+| WHIR PCS, CP, sumcheck, MLE, and BabyBear helpers | `src/snark/whir/core_protocol.rs` |
+| Typed output proof helpers | `src/snark/whir/output.rs` |
+| SYMBT3 algebraic columns and claims | `src/snark/whir/symbt3_columns.rs` |
+| SYMBT3 verifier profile and accumulator route checks | `src/snark/whir/symbt3_verify.rs` |
+| Test suite | `tests/batched_cp.rs` |
+| Scaling benchmarks | `benches/whir_scaling.rs` |

@@ -12,15 +12,56 @@ The WHIR backend (`WhirSnark`) implements the `BackendSnark` trait using Merkle-
 
 ```
 src/snark/whir/
-├── mod.rs          # WhirSnark: BackendSnark impl, sumcheck + WHIR PCS integration
-├── field.rs        # BabyBear field conversions and limb splitting
-└── serialize.rs    # WhirContext binary serialization
+├── mod.rs                  # module root and orchestration facade
+├── backend_impl.rs         # BackendSnark impl and typed CP/output routing
+├── batched_cp_columnar.rs  # SYMBT2C/SYMBT2F columnar batched-CP proof checks
+├── batched_cp_context.rs   # batched-CP relation context decoding and dispatch
+├── core_protocol.rs        # shared WHIR PCS, CP, sumcheck, and MLE helpers
+├── field.rs                # BabyBear field conversions and limb splitting
+├── output.rs               # typed output proof helpers
+├── serialize.rs            # WhirContext binary serialization
+├── symbt3_columns.rs       # SYMBT3 algebraic columns and claims
+├── symbt3_verify.rs        # SYMBT3 verifier profile and accumulator route checks
+└── tests.rs                # WHIR module tests
 ```
 
 The module combines two layers:
 
 1. **Spartan-style sumcheck** (implemented locally): Reduces R1CS satisfaction to a polynomial evaluation claim at a random challenge point `r*`.
 2. **WHIR PCS** (from whir-p3): Commits to the witness polynomial via a Merkle tree and proves the evaluation claim `w(r*) = v` using WHIR's interactive oracle proof protocol.
+
+`mod.rs` owns the public module surface and shared imports/types. The split
+files above are included into that module scope, so existing paths such as
+`crate::snark::whir::WhirSnark`, canonical WHIR proof payload helpers, and
+public profile helpers remain stable.
+
+Related split modules:
+
+```
+src/modular/batched_cp/
+├── columnar_layouts.rs     # SYMBT2C/SYMBT2F columnar layouts and traces
+├── evaluator.rs            # batched CP evaluator and field arithmetic helpers
+├── relation_contexts.rs    # structured/semantic context encode/decode impls
+├── semantic_codes.rs       # semantic/SYMBT3 discriminants and code mappings
+├── serialization.rs        # canonical statement, relation, and layout codecs
+├── shape.rs                # accumulator and batch shape builders
+├── symbt3_layouts.rs       # SYMBT3 layout descriptors and authority profiles
+├── symbt3_public.rs        # SYMBT3 public statements, witnesses, manifests
+└── types.rs                # public batched CP and SYMBT3 data types
+
+src/snark/cp_snark/typed_r1cs/
+├── digest_builder.rs       # full typed CP digest R1CS assembly
+├── digest_constraints.rs   # digest body, beta, and folded-output constraints
+├── encoding_witness.rs     # typed CP instance/witness encoders
+├── gr1cs_range.rs          # GR1CS range-message byte/shape constraints
+├── helpers.rs              # shared arithmetic, byte, and Poseidon helpers
+├── layouts.rs              # public layout, audit, and shape structs
+├── monomial_constraints.rs # monomial/range semantic constraints
+├── monomial_witness.rs     # monomial semantic witness construction
+├── poseidon.rs             # Poseidon2/BabyBear software and R1CS gadgets
+├── statement.rs            # original/typed CP statement R1CS builders
+└── tests.rs                # typed CP R1CS tests
+```
 
 ---
 

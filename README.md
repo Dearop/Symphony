@@ -58,6 +58,7 @@ symphony/
 │   │   ├── prover.rs      #   Full proof generation orchestration
 │   │   ├── cp_snark.rs    #   Commit-and-prove encoding helpers and CP R1CS exports
 │   │   ├── cp_snark/      #   CP instance/witness encoding and CP R1CS layout
+│   │   │   └── typed_r1cs/ #  Typed CP R1CS layout, Poseidon, constraints, witness, tests
 │   │   ├── sumcheck_snark.rs # Sumcheck-backed demo backend (consistency/soundness checks)
 │   │   ├── spartan/       #   Spartan backend (R1CS-to-sumcheck + Pedersen + IPA)
 │   │   │   ├── mod.rs     #     SpartanSnark implementing BackendSnark
@@ -68,11 +69,19 @@ symphony/
 │   │   │   ├── serialize.rs     # SpartanContext serialization
 │   │   │   └── sumcheck.rs      # Sumcheck over Fp
 │   │   └── whir/          #   WHIR backend (feature-gated, post-quantum PCS)
-│   │       ├── mod.rs     #     WhirSnark: sumcheck + WHIR PCS commit/prove/verify
+│   │       ├── mod.rs     #     Module root / orchestration facade
+│   │       ├── backend_impl.rs # BackendSnark impl and typed CP/output routing
+│   │       ├── batched_cp_columnar.rs # Batched CP columnar proof checks
+│   │       ├── batched_cp_context.rs # Batched CP relation context decoding
+│   │       ├── core_protocol.rs # WHIR PCS, CP, sumcheck, and MLE helpers
+│   │       ├── output.rs   #     Typed output proof helpers
+│   │       ├── symbt3_columns.rs # SYMBT3 algebraic columns and claims
+│   │       ├── symbt3_verify.rs # SYMBT3 verifier profile checks
 │   │       ├── field.rs   #     BabyBear byte packing and i64 field conversions
 │   │       └── serialize.rs #   WhirContext serialization
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── modular/           # Reusable modular CP pipeline components
+│   │   ├── batched_cp/        # Structured batched CP and SYMBT3 split sections
 │   │   ├── transcript_core/   # Canonical transcript schema/codec and challenge derivation
 │   │   ├── digest_core/       # Digest/root helpers for transcript and fold bindings
 │   │   ├── folding_core/      # Folding-domain traits and adapters

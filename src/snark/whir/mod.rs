@@ -979,4 +979,5 @@ include!("output.rs");
 include!("batched_cp_context.rs");
 include!("batched_cp_columnar.rs");
 include!("core_protocol.rs");
+#[cfg(test)]
 include!("tests.rs");

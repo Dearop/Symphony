@@ -454,17 +454,25 @@ symphony/
 │   ├── snark/
 │   │   ├── mod.rs            // Construction 6.1 compiler + BackendSnark trait
 │   │   ├── cp_snark.rs       // Commit-and-prove SNARK interface
+│   │   ├── cp_snark/
+│   │   │   └── typed_r1cs/    // Typed CP R1CS layouts, Poseidon, constraints, witness, tests
 │   │   ├── prover.rs         // Full SNARK prover
 │   │   ├── sumcheck_snark.rs // Demo backend (transcript binding checks)
 │   │   ├── spartan/          // Spartan backend (Pedersen + IPA over Ristretto)
 │   │   │   ├── mod.rs, commitment.rs, ipa.rs, r1cs_sumcheck.rs,
 │   │   │   │   scalar_field.rs, serialize.rs, sumcheck.rs
 │   │   └── whir/             // WHIR backend (feature-gated, PQ Merkle PCS)
-│   │       ├── mod.rs, field.rs, serialize.rs
+│   │       ├── mod.rs         // Module root / orchestration facade
+│   │       ├── backend_impl.rs, batched_cp_columnar.rs,
+│   │       │   batched_cp_context.rs, core_protocol.rs, output.rs
+│   │       ├── symbt3_columns.rs, symbt3_verify.rs
+│   │       ├── field.rs, serialize.rs
 │   ├── r1cs/
 │   │   ├── mod.rs            // R1CS relation definition
 │   │   ├── generalized.rs    // Generalized committed R1CS (Eq. 38)
 │   │   └── conversion.rs     // Standard → generalized R1CS conversion
+│   ├── modular/
+│   │   └── batched_cp/        // Structured batched CP and SYMBT3 split sections
 │   └── params.rs             // Global parameter struct (Table 1)
 └── benches/
     └── folding.rs            // Benchmarks for commitment + folding

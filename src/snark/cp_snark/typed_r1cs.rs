@@ -47,4 +47,5 @@ include!("typed_r1cs/digest_constraints.rs");
 include!("typed_r1cs/gr1cs_range.rs");
 include!("typed_r1cs/monomial_constraints.rs");
 include!("typed_r1cs/helpers.rs");
+#[cfg(test)]
 include!("typed_r1cs/tests.rs");
