@@ -567,12 +567,29 @@ fn whir_commit_and_prove_multi(
     evaluations: &[BabyBear],
     points: &[Vec<BabyBear>],
 ) -> (WhirPcsProof<F, EF, WhirMmcs>, Vec<BabyBear>) {
+    whir_commit_and_prove_multi_with_profile(seed, num_variables, evaluations, points, None)
+}
+
+fn whir_commit_and_prove_multi_with_profile(
+    seed: &[u8; 32],
+    num_variables: usize,
+    evaluations: &[BabyBear],
+    points: &[Vec<BabyBear>],
+    mut profile: Option<&mut Symbt3ProverCostProfile>,
+) -> (WhirPcsProof<F, EF, WhirMmcs>, Vec<BabyBear>) {
+    let total_start = std::time::Instant::now();
     assert_eq!(evaluations.len(), 1 << num_variables);
     for point in points {
         assert_eq!(point.len(), num_variables);
     }
 
+    let transcript_start = std::time::Instant::now();
     let infra = build_whir_infra(seed, num_variables);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.prove_transcript_ms += elapsed_ms(transcript_start);
+    }
+
+    let oracle_start = std::time::Instant::now();
     let dft = Radix2DFTSmallBatch::<F>::default();
 
     // Build the polynomial in evaluation form
@@ -582,12 +599,18 @@ fn whir_commit_and_prove_multi(
     let mut statement = infra
         .params
         .initial_statement(poly, SumcheckStrategy::Classic);
+    if let Some(profile) = profile.as_deref_mut() {
+        let elapsed = elapsed_ms(oracle_start);
+        profile.prove_oracle_construction_ms += elapsed;
+        profile.prove_allocations_copies_ms += elapsed;
+    }
 
     // Add evaluation constraints. WHIR computes the evaluations internally for
     // the prover; verification receives the returned claimed values explicitly.
     // NOTE: Plonky3 multilinear convention has point[0] as the *slowest* variable
     // (controls the top-half split), while our mle_eval_bb has point[0] as the
     // *fastest* variable. Reverse the point to match conventions.
+    let constraint_start = std::time::Instant::now();
     let mut claimed_evals = Vec::with_capacity(points.len());
     for point in points {
         let ef_point: Vec<EF> = point.iter().rev().map(|&x| EF::from(x)).collect();
@@ -598,8 +621,16 @@ fn whir_commit_and_prove_multi(
 
     // Normalize for verifier
     let _verifier_statement = statement.normalize();
+    if let Some(profile) = profile.as_deref_mut() {
+        let elapsed = elapsed_ms(constraint_start);
+        profile.prove_constraint_construction_ms += elapsed;
+        profile.prove_constraint_batching_ms += elapsed;
+        profile.prove_field_ops_ms += elapsed;
+        profile.prove_field_extension_ops_ms += elapsed;
+    }
 
     // Create prover challenger
+    let transcript_start = std::time::Instant::now();
     let mut prover_challenger = make_challenger(&infra.perm);
     infra
         .domainsep
@@ -610,14 +641,22 @@ fn whir_commit_and_prove_multi(
         &infra.protocol_params,
         num_variables,
     );
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.prove_transcript_ms += elapsed_ms(transcript_start);
+    }
 
     // Commit
+    let merkle_start = std::time::Instant::now();
     let committer = CommitmentWriter::new(&infra.params);
     let prover_data = committer
         .commit(&dft, &mut proof, &mut prover_challenger, &mut statement)
         .expect("WHIR commit failed");
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.prove_merkle_tree_build_ms += elapsed_ms(merkle_start);
+    }
 
     // Prove
+    let folding_start = std::time::Instant::now();
     let prover = WhirProver(&infra.params);
     prover
         .prove(
@@ -628,6 +667,13 @@ fn whir_commit_and_prove_multi(
             prover_data,
         )
         .expect("WHIR prove failed");
+    if let Some(profile) = profile.as_deref_mut() {
+        let elapsed = elapsed_ms(folding_start);
+        profile.prove_whir_folding_layers_ms += elapsed;
+        profile.prove_merkle_path_materialization_ms += elapsed;
+        profile.prove_field_extension_ops_ms += elapsed;
+        profile.prove_total_ms += elapsed_ms(total_start);
+    }
 
     (proof, claimed_evals)
 }
@@ -1347,4 +1393,3 @@ fn ceil_log2(n: usize) -> usize {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-

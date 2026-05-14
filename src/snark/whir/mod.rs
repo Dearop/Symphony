@@ -423,9 +423,17 @@ pub struct WhirProof {
 #[derive(Debug, Clone, Default)]
 pub struct Symbt3VerifierCostProfile {
     pub verify_total_ms: f64,
+    pub verify_accumulator_decoding_ms: f64,
+    pub verify_public_input_parsing_ms: f64,
+    pub verify_proof_deserialization_ms: f64,
     pub verify_whir_pcs_ms: f64,
     pub verify_merkle_or_pcs_opening_ms: f64,
     pub verify_transcript_ms: f64,
+    pub verify_field_ops_ms: f64,
+    pub verify_field_extension_ops_ms: f64,
+    pub verify_fold_query_eval_ms: f64,
+    pub verify_eq_lagrange_eval_ms: f64,
+    pub verify_constraint_batching_ms: f64,
     pub verify_sumcheck_rounds_ms: f64,
     pub verify_final_constraint_eval_ms: f64,
     pub verify_final_eval_manifest_ms: f64,
@@ -443,6 +451,27 @@ pub struct Symbt3VerifierCostProfile {
     pub verify_ajtai_eval_ms: f64,
     pub source_r1cs_residual_claims: usize,
     pub source_r1cs_residual_verifier_evaluations: usize,
+}
+
+/// Coarse prover attribution for the opt-in SYMBT3 accumulator path.
+///
+/// These measurements are benchmark/audit counters only. They are not part of
+/// the public proof format and do not affect verification semantics.
+#[derive(Debug, Clone, Default)]
+pub struct Symbt3ProverCostProfile {
+    pub prove_total_ms: f64,
+    pub prove_accumulator_glue_ms: f64,
+    pub prove_oracle_construction_ms: f64,
+    pub prove_whir_folding_layers_ms: f64,
+    pub prove_merkle_tree_build_ms: f64,
+    pub prove_merkle_path_materialization_ms: f64,
+    pub prove_constraint_construction_ms: f64,
+    pub prove_constraint_batching_ms: f64,
+    pub prove_transcript_ms: f64,
+    pub prove_field_ops_ms: f64,
+    pub prove_field_extension_ops_ms: f64,
+    pub prove_allocations_copies_ms: f64,
+    pub prove_proof_serialization_ms: f64,
 }
 
 /// Private opening slice for one structured batched-CP semantic block.

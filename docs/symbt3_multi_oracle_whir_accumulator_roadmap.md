@@ -2,7 +2,7 @@
 
 **Project:** Symphony / WHIR accumulator work  
 **Scope:** Improve the SYMBT3 K6a WHIR accumulator after the current single-oracle WHIR baseline.  
-**Status:** Planning roadmap before milestone-by-milestone implementation work.  
+**Status:** Milestone 0 implemented; later milestones remain roadmap work.
 **Primary goal:** Make the multi-oracle WHIR accumulator verify like one shared WHIR proof plus small batching overhead, rather than like many independent WHIR proofs.
 
 ---
@@ -291,6 +291,41 @@ For every benchmark row, emit a structured report such as:
 ```
 
 The exact schema can differ, but it must be stable and diffable.
+
+### Status
+
+Implemented for the current single-oracle K6a SYMBT3 accumulator benchmark
+path. `symbt3_accumulator_authority_vs_k` now emits the existing
+`SYMBT3_CSV` row plus a stable JSONL row with prefix
+`SYMBT3_MILESTONE0_JSON,` and writes the same JSON object to:
+
+```text
+benchmarks/symbt3_milestone0.jsonl
+```
+
+The JSON schema is `symphony.symbt3.milestone0.v1`. It includes:
+
+- `k_table`, measured `prove_ms`, measured `verify_ms`;
+- total proof/public bytes plus `proof_bytes_by_section` and
+  `public_bytes_by_section`;
+- counters for roots, query positions, Merkle-path proxy, hash/field-operation
+  estimates, peak allocation estimate, proof shape, backend table count, and
+  source-R1CS residual verifier evaluations;
+- verifier timers for transcript, Merkle/PCS opening, field operations,
+  field-extension operations, fold-query evaluation, eq/Lagrange evaluation,
+  constraint batching, accumulator decoding, proof parsing, and public-input
+  parsing;
+- prover timers for oracle construction, WHIR folding, Merkle tree build,
+  Merkle-path materialization, constraint construction/batching, transcript
+  work, field/extension-field operations, allocation/copy proxy time, proof
+  serialization, and Symphony accumulator glue.
+
+This is benchmark hygiene only. It does not change `ProofBundleV2`,
+`PublicProofBundle`, WHIR payload bytes, authority flags, product
+`verify_public` routing, or the K6a NonZK integrity security boundary. Product
+`verify_public` is still expected to pass through the authoritative monolithic
+WHIR typed-CP route; malformed SYMBT3/K6a profile or proof-kind inputs still
+fail closed in the explicit opt-in route.
 
 ---
 

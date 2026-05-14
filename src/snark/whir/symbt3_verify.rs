@@ -9,20 +9,30 @@ fn verify_symbt3_batched_cp_with_profile(
     mut profile: Option<&mut Symbt3VerifierCostProfile>,
 ) -> Option<bool> {
     let total_start = std::time::Instant::now();
-    let transcript_start = std::time::Instant::now();
+    let decode_start = std::time::Instant::now();
     let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
         vk.relation.context.as_ref()?,
     )
     .ok()?;
+    let statement_bytes = statement.canonical_bytes();
     if !statement.matches_relation(&relation)
-        || statement.canonical_bytes().len() != relation.public_statement_bytes()
+        || statement_bytes.len() != relation.public_statement_bytes()
     {
         if let Some(profile) = profile.as_deref_mut() {
-            profile.verify_transcript_ms += elapsed_ms(transcript_start);
+            let elapsed = elapsed_ms(decode_start);
+            profile.verify_accumulator_decoding_ms += elapsed;
+            profile.verify_public_input_parsing_ms += elapsed;
             profile.verify_total_ms = elapsed_ms(total_start);
         }
         return Some(false);
     }
+    if let Some(profile) = profile.as_deref_mut() {
+        let elapsed = elapsed_ms(decode_start);
+        profile.verify_accumulator_decoding_ms += elapsed;
+        profile.verify_public_input_parsing_ms += elapsed;
+    }
+
+    let proof_decode_start = std::time::Instant::now();
     if proof.is_output
         || !proof.sumcheck_rounds_3.is_empty()
         || !proof.linear_checks.is_empty()
@@ -30,11 +40,16 @@ fn verify_symbt3_batched_cp_with_profile(
         || !relation.has_symbt3_i_families()
     {
         if let Some(profile) = profile.as_deref_mut() {
-            profile.verify_transcript_ms += elapsed_ms(transcript_start);
+            profile.verify_proof_deserialization_ms += elapsed_ms(proof_decode_start);
             profile.verify_total_ms = elapsed_ms(total_start);
         }
         return Some(false);
     }
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.verify_proof_deserialization_ms += elapsed_ms(proof_decode_start);
+    }
+
+    let transcript_start = std::time::Instant::now();
     if let Some(profile) = profile.as_deref_mut() {
         profile.verify_transcript_ms += elapsed_ms(transcript_start);
     }
@@ -57,6 +72,12 @@ fn verify_symbt3_batched_cp_with_profile(
     if let Some(profile) = profile.as_deref_mut() {
         let elapsed = elapsed_ms(constraint_start);
         profile.verify_final_constraint_eval_ms += elapsed;
+        profile.verify_constraint_batching_ms += elapsed;
+        profile.verify_field_ops_ms += elapsed;
+        profile.verify_field_extension_ops_ms += claims.eval_profile.verify_sumcheck_rounds_ms;
+        profile.verify_fold_query_eval_ms += claims.eval_profile.verify_final_eval_folded_boundary_ms;
+        profile.verify_eq_lagrange_eval_ms += claims.eval_profile.verify_sumcheck_rounds_ms
+            + claims.eval_profile.verify_final_eval_product_residual_ms;
         profile.verify_sumcheck_rounds_ms += claims.eval_profile.verify_sumcheck_rounds_ms;
         profile.verify_final_eval_manifest_ms += claims.eval_profile.verify_final_eval_manifest_ms;
         profile.verify_final_eval_source_r1cs_ms +=

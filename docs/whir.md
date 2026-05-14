@@ -834,6 +834,20 @@ integrity only, explicit opt-in, and not the default `verify_public` route. It
 does not implement K5 masking and does not support private manifest
 membership. Product `verify_public` remains unchanged, and K5/private
 manifest/native multi-oracle product work remains deferred.
+The SYMBT3 multi-oracle accumulator roadmap Milestone 0 instrumentation is now
+implemented for the same K6a single-oracle benchmark path. In addition to the
+existing `SYMBT3_CSV` rows, `symbt3_accumulator_authority_vs_k` emits
+`SYMBT3_MILESTONE0_JSON` rows and writes stable JSONL to
+`benchmarks/symbt3_milestone0.jsonl` using schema
+`symphony.symbt3.milestone0.v1`. Each row records K-table, prove/verify time,
+proof/public bytes by section, proof-shape counters, query/Merkle/hash/field
+operation estimates, accumulator-boundary counters, and coarse prover/verifier
+timers for transcript work, Merkle/PCS opening, field and extension-field
+operations, fold-query/eq evaluation, constraint batching, accumulator glue,
+proof serialization/parsing, and public-input parsing. These are benchmark
+attribution counters only; WHIR payload bytes, `ProofBundleV2`, product
+`verify_public`, and the explicit K6a NonZK integrity security boundary are
+unchanged.
 The first `symbt3_e_vs_k` benchmark preserved the one-proof guard while
 switching the default product law to `RqNegacyclicConvolutionV1` and beta action
 to `RingCoefficientActionV1`: `k=1` measured 395,418 proof bytes, 6.4393 ms
