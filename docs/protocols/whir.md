@@ -1271,6 +1271,90 @@ SYMBT3-N1b hardens descriptor roots and envelope metadata:
 - role, schedule, specs, descriptors, eval requests, eval claims, and envelope
   metadata all have stable canonical bytes and digest helpers.
 
+## N1bench Native Multi-Oracle WHIR Costs
+
+SYMBT3-N1bench isolates the N1 native multi-oracle WHIR layer from K6a, K6b,
+and N6b routing. It adds three benchmark groups:
+
+| Benchmark | Purpose |
+| --- | --- |
+| `symbt3_native_multi_oracle_vs_oracle_count` | Scales the number of native WHIR oracles at fixed domain size. |
+| `symbt3_native_multi_oracle_vs_num_vars` | Scales each oracle domain while keeping native oracle count fixed. |
+| `symbt3_native_multi_oracle_batch_axis_vs_k` | Validates the N4b shape where batch size grows inside `num_vars`, not oracle count. |
+
+The current whir-p3 integration exposes one internal PCS opening payload per
+native oracle, so `native_oracle_pcs_opening_count` scales with
+`native_oracle_count`. This is expected for N1bench and is reported separately
+from `family_columnar_subproof_count`, which remains zero. The batch-axis
+benchmark validates that batch size can live inside the oracle domain axis,
+keeping native oracle count and PCS opening count constant for fixed
+`round_count`.
+
+N1bench is an infrastructure benchmark only. It is NonZK, does not implement
+K5, does not change product routing, and is not K6a or an N6b full accumulator
+benchmark.
+
+## M1a Instrumented Multi-Oracle Benchmark Schema
+
+M1a adds `symbt3_instrumented_multi_oracle`, a JSONL benchmark report for the
+native multi-oracle layer itself. Rows are emitted with prefix
+`SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON` to
+`benchmarks/symbt3_instrumented_multi_oracle.jsonl` under schema
+`symphony.symbt3.instrumented_multi_oracle.v1`.
+
+The current implementation is honestly labeled as a logical compatibility
+envelope:
+
+- `native_multi_oracle = false`;
+- `logical_envelope = true`;
+- `compat_internal_pcs_payloads = true`;
+- `whir_instance_count = root_count = logical_oracle_count`;
+- `tuple_leaf_layout = "none"`;
+- `product_verify_public_allowed = false`.
+
+Future tuple-leaf WHIR can use the reserved shape
+`tuple_leaf_layout = "same_domain_tuple_leaf_v1"` only when
+`native_multi_oracle = true`, `whir_instance_count = 1`, and `root_count = 1`
+are actually true. M1a does not change protocol semantics, K6a/K6b/N6b
+routing, product verification, or K5/ZK status.
+
+## M1b Same-Domain RLC Tuple-Leaf Multi-Oracle WHIR
+
+M1b adds the true one-WHIR-instance benchmark/proof shape for same-domain
+logical oracles. Because the current whir-p3 API commits to one scalar
+evaluation vector rather than vector-valued Merkle leaves, M1b uses an honest
+RLC tuple-leaf simulation:
+
+```text
+F_tuple(x) = sum_j gamma_j * f_j(x)
+```
+
+The verifier-derived `gamma_j` challenges are bound to the relation id, public
+statement digest, WHIR parameter digest, ordered logical oracle descriptors,
+layout name, logical oracle count, and shared `num_vars`. M1b rows are labeled
+`tuple_leaf_layout = "same_domain_rlc_tuple_leaf_v1"`, not
+`same_domain_tuple_leaf_v1`.
+
+For `logical_oracle_count > 1`, M1b rows must report:
+
+- `native_multi_oracle = true`;
+- `logical_envelope = false`;
+- `compat_internal_pcs_payloads = false`;
+- `whir_instance_count = query_schedule_count = transcript_count = 1`;
+- `root_count = native_oracle_pcs_opening_count = 1`;
+- `same_domain = same_field = same_rate = same_folding_parameter = true`;
+- `product_verify_public_allowed = false`.
+
+M1b only supports same-domain BabyBear logical oracles with identical
+`num_vars`, compatible shared schedules, and the same WHIR parameters. Mixed
+domains, duplicate/unsorted descriptors, and per-oracle schedules reject. RLC
+mode has random-linear-combination collision soundness and must carry
+`rlc_batching_bits` accounting before any authority or product use.
+
+M1b is a dev benchmark/proof path only. It does not replace the M1a
+compatibility-envelope rows, change product `verify_public`, alter K6a/K6b/N6b
+behavior, implement K5/ZK, or claim privacy.
+
 ## N2 Native Manifest/Source Membership Development Path
 
 SYMBT3-N2 uses the N1 native multi-oracle envelope to implement the
@@ -1465,9 +1549,155 @@ The implementation exposes:
 - `profile_meets_native_non_zk_folding_integrity`;
 - `symbt3_non_zk_folding_integrity_profile_report`.
 
-K6a remains the existing explicit `PublicCanonicalManifestViewV1` route. Future
-N6 is expected to add a versioned proof envelope and opt-in native route if the
-native profile is promoted. K5 masking remains required for any ZK claim.
+K6a remains the existing explicit `PublicCanonicalManifestViewV1` route. K5
+masking remains required for any ZK claim.
+
+## N6a Integrated Native Folding-Integrity Proof
+
+SYMBT3-N6a adds `Symbt3NativeFoldingIntegrityProof`, an additive wrapper around
+the existing WHIR proof and one N1 native multi-oracle envelope. The wrapper
+contains the main SYMBT3 WHIR proof, native manifest/source openings, native CP
+round-message openings, counters, and
+`native_folding_integrity_binding_digest(...)`.
+
+The N6a smoke shape is:
+
+- one main WHIR proof;
+- one logical native-oracle envelope;
+- manifest/source oracle count `= 2`;
+- native message oracle count `= round_count`;
+- total native oracle and PCS opening count `= 2 + round_count`;
+- `family_columnar_subproof_count = 0`;
+- `message_to_trace_binding_count = 0`;
+- one accumulator transition claim.
+
+The verifier requires the N5 native NonZK folding-integrity gate, recomputes the
+public statement and binding digests, verifies the main WHIR proof, verifies the
+combined native envelope, checks manifest/source equality, and checks the N4b
+round-message prefix challenge schedule. N2 and N4 claims are in one native
+envelope ordered by oracle id (`1`, `2`, then `1000 + round`).
+
+N6a is still NonZK and development/infrastructure only. It does not change
+product `verify_public`, does not alter K6a, does not add byte transcript
+reconstruction, does not implement K5/masking, and does not make a privacy
+claim for committed-private data. N6b, below, adds the explicit opt-in native
+route before any product-default promotion.
+
+## N6b Explicit Native NonZK Public Route
+
+SYMBT3-N6b adds an explicit opt-in public route for the N6a wrapper. The route
+uses `Symbt3NativeFoldingProofKind::Symbt3NativeNonZkFoldingIntegrityV1` and the
+public helpers:
+
+- `prove_public_symbt3_native_folding_integrity_non_zk`;
+- `verify_public_symbt3_native_folding_integrity_non_zk`;
+- `Symbt3NativeFoldingIntegrityPublicProfile`;
+- `Symbt3NativeFoldingIntegrityRouteStatus`.
+
+The public verifier dispatches only on the native proof kind and requires the
+explicit native NonZK or research-only route status. It still requires the N5
+gate, `CanonicalWhirRootV1`, native manifest/source policies, native round
+message policies, valid wrapper binding, a verified main WHIR proof, a verified
+native envelope, and the native-oracle counters
+`native_oracle_count = native_oracle_pcs_opening_count = 2 + round_count`.
+
+K6a separation is explicit: `PublicCanonicalManifestViewV1` / K6a proof-kind
+discriminators do not verify as N6b, and an N6b proof-kind discriminator does
+not verify as K6a or monolithic typed CP. N6b is still not the default
+`verify_public` route, does not implement K5/ZK masking, does not claim privacy,
+and never falls back to a monolithic proof. N7 may consider default-route
+candidacy only after a broader negative matrix and benchmark review.
+
+## K6a vs N6b Route Distinction
+
+K6b real product comparison:
+
+| Route | Benchmark | Scope |
+| --- | --- | --- |
+| Public product verifier | `public_verify_v2_vs_k` | Real product public-verifier comparison target. |
+| K6a | K6a public-canonical accumulator benchmark | Explicit `PublicCanonicalManifestViewV1` full accumulator NonZK integrity route. |
+
+N6c route matrix:
+
+| Route | Benchmark label | Scope |
+| --- | --- | --- |
+| typed CP smoke | `typed_cp_smoke` | Standalone typed CP smoke baseline, not `public_verify_v2`. |
+| K6a | `k6a=full_accumulator_public_canonical` | Explicit public-canonical full accumulator workload. |
+| N6b | `n6b=native_oracle_smoke_not_full_accumulator` | Explicit native-oracle folding-integrity route boundary and smoke profile. |
+
+N6c route matrix is for route-shape comparison; it is not the heavy monolithic
+product benchmark unless explicitly using public_verify_v2.
+
+K6a remains the current full accumulator NonZK integrity route. N6b proves the
+native manifest/source/message oracle envelope binding and route separation, but
+the current smoke benchmark must not be read as a full K6a workload replacement.
+Neither K6a nor N6b is ZK, neither is default `verify_public`, and typed CP smoke
+does not replace the compatibility/product-authoritative baseline.
+
+## N7 Native Accumulator Authority Smoke Route
+
+SYMBT3-N7 currently exposes a native NonZK accumulator-authority smoke profile:
+`prove_symbt3_native_accumulator_authority_non_zk` and
+`verify_symbt3_native_accumulator_authority_non_zk`. This is explicitly
+`workload_kind = N7SmokeProfileV1`, with
+`full_accumulator_workload = false` and `smoke_profile = true`. It is not the
+full K6a accumulator workload.
+
+The proof wrapper is `Symbt3NativeAccumulatorAuthorityProof`; it binds a tiny
+synthetic main WHIR proof to the M1b `same_domain_rlc_tuple_leaf_v1`
+multi-oracle proof with `native_accumulator_authority_binding_digest`.
+
+The native side is RLC tuple-leaf, not true vector tuple leaves. The expected
+shape is:
+
+- `native_multi_oracle = true`;
+- `tuple_leaf_layout = same_domain_rlc_tuple_leaf_v1`;
+- `whir_instance_count = root_count = query_schedule_count = transcript_count = 1`;
+- `native_oracle_pcs_opening_count = 1`;
+- `logical_oracle_count = 2 + round_count`;
+- `family_columnar_subproof_count = 0`.
+
+N7 uses `profile_meets_native_accumulator_authority` to require canonical WHIR
+roots, native manifest/source policies, native round-message oracles, NonZK
+status, production semantic families, accumulator transition consistency, and
+RLC batching soundness bits in the profile. The route rejects
+`PublicCanonicalManifestViewV1`, digest-only message roots, `DebugDevelopmentOnly`,
+compatibility-envelope shapes, monolithic fallback, K6a proof kinds, and
+`ZkRequired` without K5.
+
+The benchmark is `symbt3_native_accumulator_authority_vs_k` and emits
+`NATIVE_ACCUMULATOR_AUTHORITY_SMOKE_CSV` plus the explicit note:
+"N7 smoke profile, not full accumulator workload". It is still not default
+`verify_public`. N7 is NonZK only, not privacy-preserving, uses RLC tuple-leaf
+batching rather than vector tuple leaves, and leaves K5 masking deferred.
+
+## N7b Full Workload Status
+
+SYMBT3-N7b is reserved for
+`Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1`. The full route
+must integrate the native RLC tuple-leaf multi-oracle envelope with the real K6a
+accumulator WHIR relation and repeated RLC soundness accounting. A typed K6a
+native workload adapter now extracts the K6a profile digest, accumulator
+instance digest, public statement digest, WHIR parameter digest, relation id,
+main proof digest, old/new accumulator digests, batch manifest root,
+manifest/message roots, and batch counters from verified K6a objects. The full
+wrapper now composes those adapter fields with M1b tuple-leaf proof/profile
+parts and builds the full N7b binding digest. The route is still blocked because
+repeated RLC tuple-leaf proof evidence is not wired. The placeholder helpers
+`prove_symbt3_native_accumulator_authority_full_non_zk` and
+`verify_symbt3_native_accumulator_authority_full_non_zk` fail closed for the
+current smoke proof.
+
+The full-profile gate `profile_meets_native_accumulator_authority_full` rejects
+`smoke_profile = true`, requires `full_accumulator_workload = true`, requires
+`workload_kind = FullK6aAccumulatorV1`, and requires at least four RLC
+repetitions before a full authority claim can be reported. The wrapper also
+rejects missing tuple-leaf parts, binding mismatches, fallback use, family
+subproofs, and stale K6a adapter/proof matches. The current M1b
+tuple-leaf route is RLC batching, not true vector tuple leaves. It is not
+privacy-preserving, K5 remains deferred, default `verify_public` remains
+unchanged, and external cryptographic review is still required before any
+production claim.
 
 ---
 

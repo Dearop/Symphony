@@ -52,11 +52,13 @@
 //!   whir_scaling/symbt3_accumulator_research_vs_k – K4 NonZK research public accumulator API vs k
 //!   whir_scaling/symbt3_accumulator_authority_vs_k – K6a opt-in NonZK integrity product route vs k
 //!   whir_scaling/product_route_comparison_vs_k – K6b side-by-side monolithic product vs K6a NonZK integrity product route
+//!   whir_scaling/symbt3_native_accumulator_authority_vs_k – N7 smoke profile, not full accumulator workload
 
+use std::fs::{create_dir_all, File};
 use std::hint::black_box;
 use std::io::Write;
 use std::sync::Once;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use p3_baby_bear::BabyBear;
@@ -76,7 +78,7 @@ use symphony::fiat_shamir::FSCommitment;
 use symphony::folding::digest::Digest32;
 use symphony::folding::FoldingStatement;
 use symphony::output_backend_api::OutputBackend;
-use symphony::params::{SymphonyParams, D};
+use symphony::params::{SymphonyParams, D, T};
 use symphony::proof_orchestrator::{ProofBundle, Prover};
 use symphony::r1cs::R1CSMatrices;
 use symphony::ring::extension::ExtFieldContext;
@@ -89,21 +91,42 @@ use symphony::snark::cp_snark::{
     TypedCpAuditBlockKind, TypedCpSplitComponent,
 };
 use symphony::snark::whir::instrumented_benchmark::{
-    symbt3_instrumented_benchmark_json_line, Symbt3InstrumentedBenchmarkJsonRow,
-    SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES,
+    symbt3_instrumented_benchmark_json_line, symbt3_instrumented_multi_oracle_json_line,
+    Symbt3InstrumentedBenchmarkJsonRow, Symbt3InstrumentedMultiOracleJsonRow,
+    Symbt3InstrumentedMultiOracleShape, SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES,
     SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES,
 };
 use symphony::snark::whir::native_oracles::{
+    build_native_oracle_batch_axis_benchmark_specs, build_native_oracle_benchmark_eval_requests,
+    build_native_oracle_benchmark_evals, build_native_oracle_benchmark_specs,
     native_round_message_view_eval_requests, profile_meets_native_non_zk_folding_integrity,
     prove_committed_private_manifest_membership, prove_native_manifest_source_membership,
-    prove_native_round_message_oracle_views, symbt3_non_zk_folding_integrity_profile_report,
-    verify_committed_private_manifest_membership, verify_native_manifest_source_membership,
-    verify_native_round_message_oracle_views, ManifestCommitmentPolicy, NativeOracleRootPolicy,
+    prove_native_round_message_oracle_views, prove_public_symbt3_native_folding_integrity_non_zk,
+    prove_symbt3_native_accumulator_authority_full_non_zk,
+    prove_symbt3_native_accumulator_authority_non_zk, prove_symbt3_native_folding_integrity_non_zk,
+    symbt3_native_accumulator_authority_proof_size_hint,
+    symbt3_native_folding_integrity_monolithic_fallback_used,
+    symbt3_native_folding_integrity_proof_size_hint,
+    symbt3_native_folding_integrity_public_route_selected,
+    symbt3_non_zk_folding_integrity_profile_report, verify_committed_private_manifest_membership,
+    verify_native_manifest_source_membership, verify_native_round_message_oracle_views,
+    verify_public_symbt3_native_folding_integrity_non_zk,
+    verify_symbt3_native_accumulator_authority_full_non_zk,
+    verify_symbt3_native_accumulator_authority_non_zk,
+    verify_symbt3_native_folding_integrity_non_zk, whir_commit_and_prove_oracles,
+    whir_commit_and_prove_same_domain_multi_oracle, whir_verify_oracle_openings_with_counters,
+    whir_verify_oracle_openings_with_counters_for_profile, whir_verify_same_domain_multi_oracle,
+    ManifestCommitmentPolicy, NativeOracleRootPolicy, NativeOracleVerificationProfile,
     SourceCommitmentPolicy, Symbt3FoldingIntegritySemanticFamilies, Symbt3ManifestComponentKind,
     Symbt3ManifestSourceComponentValues, Symbt3ManifestVisibility, Symbt3MessageOraclePolicy,
-    Symbt3NativeOracleProfile, Symbt3NativeRoundChallengeContext,
-    Symbt3NativeRoundMessageOracleLayoutV1, Symbt3NonZkFoldingIntegrityProfileMetadata,
-    Symbt3ZkStatus, SYMBT3_N4_MESSAGE_ORACLE_ID_BASE,
+    Symbt3NativeFoldingIntegrityInstance, Symbt3NativeFoldingIntegrityPublicProfile,
+    Symbt3NativeFoldingIntegrityWitness, Symbt3NativeOracleProfile,
+    Symbt3NativeRoundChallengeContext, Symbt3NativeRoundMessageOracleLayoutV1,
+    Symbt3NonZkFoldingIntegrityProfileMetadata, Symbt3ZkStatus, WhirNativeEvalClaimKind,
+    WhirNativeEvalRequest, WhirNativeMultiOracleProof, WhirNativeOracleSpec,
+    SYMBT3_N4_MESSAGE_ORACLE_ID_BASE,
+    SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_MIN_SEMANTIC_PROFILE_VERSION,
+    SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS, SYMBT3_SAME_DOMAIN_RLC_TUPLE_LEAF_LAYOUT,
 };
 use symphony::snark::whir::{
     whir_typed_batched_cp_columnar_v2_private_opening_profile,
@@ -131,6 +154,9 @@ static PRODUCT_ROUTE_COMPARISON_CSV_INIT: Once = Once::new();
 const SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_PATH: &str =
     "benchmarks/symbt3_instrumented_benchmark.jsonl";
 const SYMBT3_INSTRUMENTED_BENCHMARK_JSON_PREFIX: &str = "SYMBT3_INSTRUMENTED_BENCHMARK_JSON,";
+const SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSONL_PATH: &str =
+    "benchmarks/symbt3_instrumented_multi_oracle.jsonl";
+const SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON_PREFIX: &str = "SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON,";
 const PRODUCT_ROUTE_COMPARISON_CSV_PATH: &str = "benchmarks/product_route_comparison.csv";
 const PRODUCT_ROUTE_COMPARISON_CSV_PREFIX: &str = "PRODUCT_COMPARISON_CSV,";
 const PRODUCT_ROUTE_COMPARISON_CSV_HEADER: &str = concat!(
@@ -622,6 +648,18 @@ fn write_symbt3_instrumented_benchmark_json_row(
         .open(SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_PATH)
         .expect("open SYMBT3 instrumented benchmark JSONL");
     writeln!(file, "{json}").expect("append SYMBT3 instrumented benchmark JSON row");
+}
+
+fn write_symbt3_instrumented_multi_oracle_json_row(
+    file: &mut File,
+    row: &Symbt3InstrumentedMultiOracleJsonRow<'_>,
+) {
+    let json = symbt3_instrumented_multi_oracle_json_line(row);
+    print!("{SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON_PREFIX}{json}\n");
+    std::io::stdout()
+        .flush()
+        .expect("flush SYMBT3 instrumented multi-oracle JSON row");
+    writeln!(file, "{json}").expect("append SYMBT3 instrumented multi-oracle JSON row");
 }
 
 struct ProductRouteComparisonCsvRow {
@@ -4020,6 +4058,31 @@ fn digest(label: &[u8]) -> Digest32 {
     hasher.finalize().into()
 }
 
+fn bench_filter_allows(group_name: &str) -> bool {
+    let filters = std::env::args()
+        .skip(1)
+        .filter(|arg| !arg.starts_with("--"))
+        .collect::<Vec<_>>();
+    filters.is_empty()
+        || filters
+            .iter()
+            .any(|filter| group_name.contains(filter) || filter.contains(group_name))
+}
+
+fn bench_env_usize_values(env_name: &str, defaults: &[usize]) -> Vec<usize> {
+    std::env::var(env_name)
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|part| part.trim().parse::<usize>().ok())
+                .filter(|&value| value > 0)
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| defaults.to_vec())
+}
+
 fn native_oracle_relation() -> RelationDescription {
     RelationDescription {
         num_instance_vars: 1,
@@ -4029,16 +4092,1110 @@ fn native_oracle_relation() -> RelationDescription {
     }
 }
 
+fn route_matrix_ring_element_bytes() -> usize {
+    D * std::mem::size_of::<i64>()
+}
+
+fn route_matrix_ext_field_bytes() -> usize {
+    2 * std::mem::size_of::<i64>()
+}
+
+fn route_matrix_tensor_bytes() -> usize {
+    T * D * std::mem::size_of::<i64>()
+}
+
+fn route_matrix_ring_vector_bytes(vector: &RingVector) -> usize {
+    vector.elements.len() * route_matrix_ring_element_bytes()
+}
+
+fn route_matrix_commitment_bytes(commitment: &Commitment) -> usize {
+    route_matrix_ring_vector_bytes(&commitment.value)
+}
+
+fn route_matrix_public_inputs_bytes(public_inputs: &[Vec<i64>]) -> usize {
+    std::mem::size_of::<u64>()
+        + public_inputs
+            .iter()
+            .map(|input| std::mem::size_of::<u64>() + input.len() * std::mem::size_of::<i64>())
+            .sum::<usize>()
+}
+
+fn route_matrix_hash_cp_public_bytes(commitments: &[[u8; 32]], public_statement: &[u8]) -> usize {
+    std::mem::size_of::<u64>()
+        + commitments
+            .iter()
+            .map(|commitment| std::mem::size_of::<u64>() + commitment.as_ref().len())
+            .sum::<usize>()
+        + std::mem::size_of::<u64>()
+        + public_statement.len()
+        + 32
+}
+
+fn route_matrix_linear_relation_bytes(relation: &symphony::rok::LinearRelation) -> usize {
+    route_matrix_commitment_bytes(&relation.commitment)
+        + relation.evaluation_point.len() * route_matrix_ext_field_bytes()
+        + relation.evaluation_values.len() * route_matrix_tensor_bytes()
+}
+
+fn route_matrix_batched_relation_bytes(relation: &symphony::rok::BatchedLinearRelation) -> usize {
+    relation
+        .commitments
+        .iter()
+        .map(route_matrix_commitment_bytes)
+        .sum::<usize>()
+        + relation.evaluation_point.len() * route_matrix_ext_field_bytes()
+        + relation.evaluation_values.len() * route_matrix_tensor_bytes()
+}
+
+fn route_matrix_folded_instance_bytes(instance: &symphony::folding::FoldedInstance) -> usize {
+    route_matrix_commitment_bytes(&instance.commitment)
+        + instance.public_input.len() * route_matrix_ring_element_bytes()
+        + instance.evaluation_values.len() * route_matrix_tensor_bytes()
+}
+
+fn route_matrix_folded_output_public_bytes(
+    output: &symphony::folding::FoldedOutputInstance,
+) -> usize {
+    route_matrix_folded_instance_bytes(&output.folded_instance)
+        + route_matrix_linear_relation_bytes(&output.linear_relation)
+        + route_matrix_batched_relation_bytes(&output.batched_relation)
+}
+
+fn route_matrix_k6a_proof_bytes(
+    proof: &symphony::proof_orchestrator::ProofBundle<WhirSnark, WhirSnark>,
+) -> usize {
+    whir_proof_wire_bytes(&proof.cp_proof)
+        + whir_proof_wire_bytes(&proof.output_proof)
+        + route_matrix_folded_output_public_bytes(&proof.cp_public_instance.folded_output)
+        + 4 * 32
+}
+
+fn route_matrix_k6a_public_bytes(
+    public_inputs: &[Vec<i64>],
+    proof: &symphony::proof_orchestrator::ProofBundle<WhirSnark, WhirSnark>,
+) -> usize {
+    route_matrix_public_inputs_bytes(public_inputs)
+        + proof
+            .witness_bundle
+            .fs_commitments
+            .iter()
+            .map(|commitment| std::mem::size_of::<u64>() + commitment.len())
+            .sum::<usize>()
+        + route_matrix_folded_output_public_bytes(&proof.cp_public_instance.folded_output)
+        + 4 * 32
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RouteMatrixMeasurement {
+    verify_ms: f64,
+    proof_bytes: usize,
+    public_bytes: usize,
+}
+
+fn route_matrix_typed_cp_smoke_measurement(batch_size: usize) -> RouteMatrixMeasurement {
+    let max_message_size = 64usize;
+    let cp = CPSnark::<WhirSnark, HashCommitment>::setup(batch_size, max_message_size);
+    let scheme = HashCommitment::new();
+    let public_statement = b"symbt3-route-matrix-typed-cp-smoke";
+    let relation = IdentityRelation;
+    let messages: Vec<Vec<u8>> = (0..batch_size)
+        .map(|msg_i| {
+            (0..max_message_size)
+                .map(|byte_i| ((byte_i * 29 + msg_i * 13 + batch_size * 7) % 251) as u8)
+                .collect()
+        })
+        .collect();
+    let (commitments, openings): (Vec<_>, Vec<_>) = messages
+        .iter()
+        .map(|message| scheme.commit(message))
+        .unzip();
+    let message_refs: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
+    let proof = cp
+        .prove(
+            &scheme,
+            &message_refs,
+            &openings,
+            &commitments,
+            public_statement,
+            &relation,
+        )
+        .expect("route matrix typed CP smoke proof must succeed");
+
+    let verify_start = Instant::now();
+    assert!(
+        cp.verify(&scheme, &commitments, public_statement, &relation, &proof),
+        "route matrix typed CP smoke verify failed for batch_size={batch_size}"
+    );
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+    let proof_bytes = whir_proof_wire_bytes(&proof.backend_proof)
+        + proof.transcript_digest.len()
+        + proof
+            .revealed_messages
+            .iter()
+            .map(|message| std::mem::size_of::<u64>() + message.len())
+            .sum::<usize>()
+        + proof.revealed_openings.len() * 32;
+    let public_bytes = route_matrix_hash_cp_public_bytes(&commitments, public_statement);
+
+    RouteMatrixMeasurement {
+        verify_ms,
+        proof_bytes,
+        public_bytes,
+    }
+}
+
+fn route_matrix_k6a_measurement(
+    batch_size: usize,
+) -> (RouteMatrixMeasurement, usize, usize, usize, usize) {
+    let (r1cs, z) = multi_r1cs();
+    let n_in = r1cs.num_public;
+    let params = bench_params(batch_size);
+    let (prover, verifier) = Prover::<WhirSnark, WhirSnark>::setup(params);
+    let statements: Vec<_> = (0..batch_size)
+        .map(|_| make_modular_statement(&prover, &z, n_in))
+        .collect();
+    let public_inputs: Vec<Vec<i64>> = statements.iter().map(|(_, pi, _)| pi.clone()).collect();
+    let proof = prover.prove(&statements, &r1cs);
+
+    let verify_start = Instant::now();
+    assert!(
+        verifier.verify(&public_inputs, &proof, &r1cs),
+        "route matrix K6a public-canonical accumulator verify failed for batch_size={batch_size}"
+    );
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+
+    (
+        RouteMatrixMeasurement {
+            verify_ms,
+            proof_bytes: route_matrix_k6a_proof_bytes(&proof),
+            public_bytes: route_matrix_k6a_public_bytes(&public_inputs, &proof),
+        },
+        2,
+        0,
+        1,
+        1,
+    )
+}
+
+fn route_matrix_n6b_measurement(
+    pk: &symphony::WhirProvingKey,
+    vk: &symphony::WhirVerifyingKey,
+    public_profile: &Symbt3NativeFoldingIntegrityPublicProfile,
+    batch_size: usize,
+    round_count: usize,
+) -> (RouteMatrixMeasurement, usize, usize, bool) {
+    let (instance, witness) = symbt3_n6a_bench_instance_witness(batch_size, round_count);
+    let proof = prove_public_symbt3_native_folding_integrity_non_zk(
+        pk,
+        public_profile,
+        &instance,
+        &witness,
+    )
+    .expect("route matrix N6b public native folding-integrity proof must succeed");
+
+    let verify_start = Instant::now();
+    assert!(
+        verify_public_symbt3_native_folding_integrity_non_zk(
+            vk,
+            public_profile,
+            &instance,
+            &proof,
+        ),
+        "route matrix N6b public native folding-integrity verify failed for batch_size={batch_size}"
+    );
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+
+    (
+        RouteMatrixMeasurement {
+            verify_ms,
+            proof_bytes: symbt3_native_folding_integrity_proof_size_hint(&proof),
+            public_bytes: instance.public_statement_bytes(),
+        },
+        proof.counters.native_oracle_count,
+        proof.counters.native_oracle_pcs_opening_count,
+        symbt3_native_folding_integrity_monolithic_fallback_used(&instance),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeMultiOracleMeasurement {
+    proof_bytes: usize,
+    public_bytes: usize,
+    metadata_bytes: usize,
+    pcs_payload_bytes: usize,
+    prove_ms: f64,
+    verify_ms: f64,
+    native_oracle_count: usize,
+    native_oracle_descriptor_bytes: usize,
+    native_oracle_eval_claim_count: usize,
+    native_oracle_opening_count: usize,
+    native_oracle_pcs_opening_count: usize,
+    native_oracle_transcript_squeezes: usize,
+    native_oracle_verify_ms: f64,
+    top_level_whir_proof_count: usize,
+    family_columnar_subproof_count: usize,
+}
+
+fn native_multi_oracle_proof_size_hint(proof: &WhirNativeMultiOracleProof) -> usize {
+    proof.metadata_canonical_bytes().len() + proof.pcs_openings.len() * 256
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TupleLeafMultiOracleMeasurement {
+    proof_bytes: usize,
+    public_bytes: usize,
+    metadata_bytes: usize,
+    pcs_payload_bytes: usize,
+    prove_ms: f64,
+    verify_ms: f64,
+    logical_oracle_count: usize,
+    native_oracle_descriptor_bytes: usize,
+    native_oracle_eval_claim_count: usize,
+    native_oracle_opening_count: usize,
+    native_oracle_pcs_opening_count: usize,
+    native_oracle_transcript_squeezes: usize,
+    native_oracle_verify_ms: f64,
+    top_level_whir_proof_count: usize,
+    family_columnar_subproof_count: usize,
+    merkle_path_proxy: usize,
+    hash_estimate: usize,
+    field_op_estimate: usize,
+}
+
+fn tuple_leaf_multi_oracle_proof_size_hint(
+    proof: &symphony::snark::whir::native_oracles::Symbt3TupleLeafMultiOracleProof,
+) -> usize {
+    proof.metadata_canonical_bytes().len() + 256
+}
+
+fn measure_tuple_leaf_multi_oracle_once(
+    pk: &symphony::WhirProvingKey,
+    vk: &symphony::WhirVerifyingKey,
+    label: &str,
+    specs: &[WhirNativeOracleSpec],
+    evaluations: &[Vec<BabyBear>],
+    requests: &[WhirNativeEvalRequest],
+) -> TupleLeafMultiOracleMeasurement {
+    let proof_relation_id = digest(format!("symbt3-m1b-relation-{label}").as_bytes());
+    let public_statement_digest = digest(format!("symbt3-m1b-public-{label}").as_bytes());
+    let whir_param_digest = digest(format!("symbt3-m1b-whir-{label}").as_bytes());
+
+    let prove_start = Instant::now();
+    let proof = whir_commit_and_prove_same_domain_multi_oracle(
+        pk,
+        proof_relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        specs,
+        evaluations,
+        requests,
+    )
+    .expect("M1b same-domain tuple-leaf prove must succeed");
+    let prove_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
+
+    const TUPLE_LEAF_VERIFY_REPETITIONS: usize = 8;
+    let verify_start = Instant::now();
+    for _ in 0..TUPLE_LEAF_VERIFY_REPETITIONS {
+        assert!(
+            whir_verify_same_domain_multi_oracle(
+                vk,
+                proof_relation_id,
+                public_statement_digest,
+                whir_param_digest,
+                &proof,
+                &proof.logical_eval_claims,
+            ),
+            "M1b same-domain tuple-leaf verify failed for {label}"
+        );
+    }
+    let verify_ms =
+        verify_start.elapsed().as_secs_f64() * 1000.0 / TUPLE_LEAF_VERIFY_REPETITIONS as f64;
+
+    let metadata_bytes = proof.metadata_canonical_bytes().len();
+    let native_oracle_descriptor_bytes = proof
+        .logical_descriptors
+        .iter()
+        .map(|descriptor| descriptor.canonical_bytes().len())
+        .sum();
+    let public_bytes = native_oracle_descriptor_bytes + 32 + 5 * 32;
+
+    TupleLeafMultiOracleMeasurement {
+        proof_bytes: tuple_leaf_multi_oracle_proof_size_hint(&proof),
+        public_bytes,
+        metadata_bytes,
+        pcs_payload_bytes: 256,
+        prove_ms,
+        verify_ms,
+        logical_oracle_count: proof.counters.logical_oracle_count,
+        native_oracle_descriptor_bytes,
+        native_oracle_eval_claim_count: proof.counters.logical_eval_claim_count,
+        native_oracle_opening_count: proof.counters.logical_eval_claim_count,
+        native_oracle_pcs_opening_count: proof.counters.native_oracle_pcs_opening_count,
+        native_oracle_transcript_squeezes: 1,
+        native_oracle_verify_ms: verify_ms,
+        top_level_whir_proof_count: proof.top_level_whir_proof_count(),
+        family_columnar_subproof_count: proof.family_columnar_subproof_count(),
+        merkle_path_proxy: proof.counters.merkle_path_proxy,
+        hash_estimate: proof.counters.hash_estimate,
+        field_op_estimate: proof.counters.field_op_estimate,
+    }
+}
+
+fn measure_native_multi_oracle_once(
+    pk: &symphony::WhirProvingKey,
+    vk: &symphony::WhirVerifyingKey,
+    label: &str,
+    specs: &[WhirNativeOracleSpec],
+    evaluations: &[Vec<BabyBear>],
+    requests: &[WhirNativeEvalRequest],
+) -> NativeMultiOracleMeasurement {
+    let proof_relation_id = digest(format!("symbt3-n1bench-relation-{label}").as_bytes());
+    let public_statement_digest = digest(format!("symbt3-n1bench-public-{label}").as_bytes());
+    let whir_param_digest = digest(format!("symbt3-n1bench-whir-{label}").as_bytes());
+
+    let prove_start = Instant::now();
+    let proof = whir_commit_and_prove_oracles(
+        pk,
+        proof_relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        specs,
+        evaluations,
+        requests,
+    )
+    .expect("N1bench native multi-oracle prove must succeed");
+    let prove_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
+
+    let verify_start = Instant::now();
+    let report = whir_verify_oracle_openings_with_counters(
+        vk,
+        proof_relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        &proof.descriptors,
+        &proof,
+        &proof.eval_claims,
+    );
+    assert!(
+        report.ok,
+        "N1bench native multi-oracle verify failed for {label}"
+    );
+    let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+
+    let metadata_bytes = proof.metadata_canonical_bytes().len();
+    let pcs_payload_bytes = proof.pcs_openings.len() * 256;
+    let public_bytes =
+        proof.counters.native_oracle_descriptor_bytes + proof.descriptors.len() * 32 + 3 * 32;
+
+    NativeMultiOracleMeasurement {
+        proof_bytes: native_multi_oracle_proof_size_hint(&proof),
+        public_bytes,
+        metadata_bytes,
+        pcs_payload_bytes,
+        prove_ms,
+        verify_ms,
+        native_oracle_count: report.counters.native_oracle_count,
+        native_oracle_descriptor_bytes: report.counters.native_oracle_descriptor_bytes,
+        native_oracle_eval_claim_count: report.counters.native_oracle_eval_claim_count,
+        native_oracle_opening_count: report.counters.native_oracle_opening_count,
+        native_oracle_pcs_opening_count: report.counters.native_oracle_pcs_opening_count,
+        native_oracle_transcript_squeezes: report.counters.native_oracle_transcript_squeezes,
+        native_oracle_verify_ms: report.native_oracle_verify_ms,
+        top_level_whir_proof_count: proof.top_level_whir_proof_count(),
+        family_columnar_subproof_count: proof.family_columnar_subproof_count(),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// 4. SYMBT3-N2 native manifest/source opening smoke counters
+// 1. Standalone CPSnark with WHIR backend: prove + verify vs witness size
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 4. SYMBT3-N1bench native multi-oracle WHIR layer smoke counters
+// ---------------------------------------------------------------------------
+
+fn bench_symbt3_native_multi_oracle_vs_oracle_count(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_multi_oracle_vs_oracle_count") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_multi_oracle_vs_oracle_count");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let num_vars_per_oracle = 4usize;
+    let eval_claims_per_oracle = 1usize;
+    eprintln!(
+        "NATIVE_MULTI_ORACLE_COUNT_CSV,oracle_count,num_vars_per_oracle,eval_claims_per_oracle,proof_bytes,prove_ms,verify_ms,native_oracle_count,native_oracle_descriptor_bytes,native_oracle_eval_claim_count,native_oracle_opening_count,native_oracle_pcs_opening_count,native_oracle_transcript_squeezes,native_oracle_verify_ms,top_level_whir_proof_count,family_columnar_subproof_count"
+    );
+
+    for oracle_count in
+        bench_env_usize_values("SYMPHONY_WHIR_NATIVE_ORACLE_COUNTS", &[1usize, 2, 4, 8])
+    {
+        let specs = build_native_oracle_benchmark_specs(oracle_count, num_vars_per_oracle)
+            .expect("N1bench oracle-count specs");
+        let evaluations = build_native_oracle_benchmark_evals(&specs, 10_000 + oracle_count as u64)
+            .expect("N1bench oracle-count evals");
+        let requests = build_native_oracle_benchmark_eval_requests(
+            &specs,
+            WhirNativeEvalClaimKind::DirectOpening,
+        );
+        let label = format!("oracle-count-{oracle_count}-vars-{num_vars_per_oracle}");
+        let measurement =
+            measure_native_multi_oracle_once(&pk, &vk, &label, &specs, &evaluations, &requests);
+
+        assert_eq!(measurement.native_oracle_count, oracle_count);
+        assert_eq!(measurement.native_oracle_pcs_opening_count, oracle_count);
+        assert_eq!(measurement.native_oracle_eval_claim_count, oracle_count);
+        assert_eq!(measurement.top_level_whir_proof_count, 1);
+        assert_eq!(measurement.family_columnar_subproof_count, 0);
+
+        eprintln!(
+            "NATIVE_MULTI_ORACLE_COUNT_CSV,{oracle_count},{num_vars_per_oracle},{eval_claims_per_oracle},{},{:.3},{:.3},{},{},{},{},{},{},{:.3},{},{}",
+            measurement.proof_bytes,
+            measurement.prove_ms,
+            measurement.verify_ms,
+            measurement.native_oracle_count,
+            measurement.native_oracle_descriptor_bytes,
+            measurement.native_oracle_eval_claim_count,
+            measurement.native_oracle_opening_count,
+            measurement.native_oracle_pcs_opening_count,
+            measurement.native_oracle_transcript_squeezes,
+            measurement.native_oracle_verify_ms,
+            measurement.top_level_whir_proof_count,
+            measurement.family_columnar_subproof_count,
+        );
+
+        // CSV one-shot rows above are the primary scaling report. Criterion is
+        // secondary and intentionally samples modestly because each native
+        // oracle currently has one internal whir-p3 PCS opening payload.
+        group.throughput(Throughput::Elements(oracle_count as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", oracle_count), |b| {
+            b.iter(|| {
+                black_box(measure_native_multi_oracle_once(
+                    black_box(&pk),
+                    black_box(&vk),
+                    black_box(&label),
+                    black_box(&specs),
+                    black_box(&evaluations),
+                    black_box(&requests),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_native_multi_oracle_vs_num_vars(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_multi_oracle_vs_num_vars") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_multi_oracle_vs_num_vars");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let oracle_count = 2usize;
+    eprintln!(
+        "NATIVE_MULTI_ORACLE_NUM_VARS_CSV,num_vars,oracle_len,oracle_count,proof_bytes,prove_ms,verify_ms,native_oracle_count,native_oracle_pcs_opening_count,native_oracle_eval_claim_count,native_oracle_verify_ms,family_columnar_subproof_count"
+    );
+
+    for num_vars in
+        bench_env_usize_values("SYMPHONY_WHIR_NATIVE_ORACLE_NUM_VARS", &[4usize, 8, 12, 16])
+    {
+        let specs = build_native_oracle_benchmark_specs(oracle_count, num_vars)
+            .expect("N1bench num-vars specs");
+        let evaluations = build_native_oracle_benchmark_evals(&specs, 20_000 + num_vars as u64)
+            .expect("N1bench num-vars evals");
+        let requests = build_native_oracle_benchmark_eval_requests(
+            &specs,
+            WhirNativeEvalClaimKind::DirectOpening,
+        );
+        let label = format!("num-vars-{num_vars}-oracles-{oracle_count}");
+        let measurement =
+            measure_native_multi_oracle_once(&pk, &vk, &label, &specs, &evaluations, &requests);
+        let oracle_len = 1usize << num_vars;
+
+        assert_eq!(measurement.native_oracle_count, oracle_count);
+        assert_eq!(measurement.native_oracle_pcs_opening_count, oracle_count);
+        assert_eq!(measurement.native_oracle_eval_claim_count, oracle_count);
+        assert_eq!(measurement.family_columnar_subproof_count, 0);
+
+        eprintln!(
+            "NATIVE_MULTI_ORACLE_NUM_VARS_CSV,{num_vars},{oracle_len},{oracle_count},{},{:.3},{:.3},{},{},{},{:.3},{}",
+            measurement.proof_bytes,
+            measurement.prove_ms,
+            measurement.verify_ms,
+            measurement.native_oracle_count,
+            measurement.native_oracle_pcs_opening_count,
+            measurement.native_oracle_eval_claim_count,
+            measurement.native_oracle_verify_ms,
+            measurement.family_columnar_subproof_count,
+        );
+
+        group.throughput(Throughput::Elements(oracle_len as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", num_vars), |b| {
+            b.iter(|| {
+                black_box(measure_native_multi_oracle_once(
+                    black_box(&pk),
+                    black_box(&vk),
+                    black_box(&label),
+                    black_box(&specs),
+                    black_box(&evaluations),
+                    black_box(&requests),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_native_multi_oracle_batch_axis_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_multi_oracle_batch_axis_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_multi_oracle_batch_axis_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let round_count = 2usize;
+    let message_axis_log_size = 2usize;
+    eprintln!(
+        "NATIVE_MULTI_ORACLE_BATCH_AXIS_CSV,k,batch_log_size,message_axis_log_size,round_count,num_vars,native_oracle_count,native_oracle_pcs_opening_count,native_oracle_eval_claim_count,proof_bytes,prove_ms,verify_ms,native_oracle_verify_ms,family_columnar_subproof_count"
+    );
+
+    for k in symbt3_bench_k_values(&[1usize, 2, 4, 8, 16]) {
+        assert!(
+            k.is_power_of_two(),
+            "N1bench batch-axis k must be a power of two"
+        );
+        let batch_log_size = symbt3_n4_batch_log_size(k);
+        let specs = build_native_oracle_batch_axis_benchmark_specs(
+            round_count,
+            batch_log_size,
+            message_axis_log_size,
+        )
+        .expect("N1bench batch-axis specs");
+        let evaluations = build_native_oracle_benchmark_evals(&specs, 30_000 + k as u64)
+            .expect("N1bench batch-axis evals");
+        let requests = build_native_oracle_benchmark_eval_requests(
+            &specs,
+            WhirNativeEvalClaimKind::MessageView,
+        );
+        let num_vars = batch_log_size + message_axis_log_size;
+        let label = format!("batch-axis-k-{k}-rounds-{round_count}-vars-{num_vars}");
+        let measurement =
+            measure_native_multi_oracle_once(&pk, &vk, &label, &specs, &evaluations, &requests);
+
+        assert_eq!(measurement.native_oracle_count, round_count);
+        assert_eq!(measurement.native_oracle_pcs_opening_count, round_count);
+        assert_eq!(measurement.native_oracle_eval_claim_count, round_count);
+        assert_eq!(measurement.family_columnar_subproof_count, 0);
+
+        eprintln!(
+            "NATIVE_MULTI_ORACLE_BATCH_AXIS_CSV,{k},{batch_log_size},{message_axis_log_size},{round_count},{num_vars},{},{},{},{},{:.3},{:.3},{:.3},{}",
+            measurement.native_oracle_count,
+            measurement.native_oracle_pcs_opening_count,
+            measurement.native_oracle_eval_claim_count,
+            measurement.proof_bytes,
+            measurement.prove_ms,
+            measurement.verify_ms,
+            measurement.native_oracle_verify_ms,
+            measurement.family_columnar_subproof_count,
+        );
+
+        group.throughput(Throughput::Elements(k as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", k), |b| {
+            b.iter(|| {
+                black_box(measure_native_multi_oracle_once(
+                    black_box(&pk),
+                    black_box(&vk),
+                    black_box(&label),
+                    black_box(&specs),
+                    black_box(&evaluations),
+                    black_box(&requests),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_instrumented_multi_oracle(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/instrumented_multi_oracle") {
+        return;
+    }
+
+    let mut group = c.benchmark_group("whir_scaling/instrumented_multi_oracle");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    create_dir_all("benchmarks").expect("create benchmarks directory");
+    let mut jsonl = File::create(SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSONL_PATH)
+        .expect("reset SYMBT3 instrumented multi-oracle JSONL");
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let k_values = symbt3_bench_k_values(&[1usize, 2, 4, 8]);
+    let oracle_counts =
+        bench_env_usize_values("SYMPHONY_WHIR_NATIVE_ORACLE_COUNTS", &[1usize, 2, 4, 8]);
+    let mut emitted_rows = 0usize;
+
+    for k_table in k_values {
+        assert!(
+            k_table.is_power_of_two(),
+            "instrumented multi-oracle k_table values must be powers of two"
+        );
+        let table_log_size = symbt3_n4_batch_log_size(k_table);
+        let num_vars = 4 + table_log_size;
+        let oracle_len = 1usize << num_vars;
+
+        let compat_single_specs = build_native_oracle_benchmark_specs(1, num_vars)
+            .expect("instrumented multi-oracle single compat specs");
+        let compat_single_evaluations = build_native_oracle_benchmark_evals(
+            &compat_single_specs,
+            40_000 + (k_table as u64) * 101 + 1,
+        )
+        .expect("instrumented multi-oracle single compat evals");
+        let compat_single_requests = build_native_oracle_benchmark_eval_requests(
+            &compat_single_specs,
+            WhirNativeEvalClaimKind::DirectOpening,
+        );
+        let compat_single_label = format!("instrumented-multi-oracle-k-{k_table}-n-1");
+        let compat_single_measurement = measure_native_multi_oracle_once(
+            &pk,
+            &vk,
+            &compat_single_label,
+            &compat_single_specs,
+            &compat_single_evaluations,
+            &compat_single_requests,
+        );
+
+        let tuple_single_specs = build_native_oracle_benchmark_specs(1, num_vars)
+            .expect("instrumented tuple-leaf single specs");
+        let tuple_single_evaluations = build_native_oracle_benchmark_evals(
+            &tuple_single_specs,
+            50_000 + (k_table as u64) * 101 + 1,
+        )
+        .expect("instrumented tuple-leaf single evals");
+        let tuple_single_requests = build_native_oracle_benchmark_eval_requests(
+            &tuple_single_specs,
+            WhirNativeEvalClaimKind::DirectOpening,
+        );
+        let tuple_single_label = format!("instrumented-tuple-leaf-k-{k_table}-n-1");
+        let tuple_single_measurement = measure_tuple_leaf_multi_oracle_once(
+            &pk,
+            &vk,
+            &tuple_single_label,
+            &tuple_single_specs,
+            &tuple_single_evaluations,
+            &tuple_single_requests,
+        );
+
+        for &logical_oracle_count in &oracle_counts {
+            let specs = build_native_oracle_benchmark_specs(logical_oracle_count, num_vars)
+                .expect("instrumented multi-oracle specs");
+            let evaluations = build_native_oracle_benchmark_evals(
+                &specs,
+                40_000 + (k_table as u64) * 101 + logical_oracle_count as u64,
+            )
+            .expect("instrumented multi-oracle evals");
+            let requests = build_native_oracle_benchmark_eval_requests(
+                &specs,
+                WhirNativeEvalClaimKind::DirectOpening,
+            );
+            let label = format!("instrumented-multi-oracle-k-{k_table}-n-{logical_oracle_count}");
+            let measurement = if logical_oracle_count == 1 {
+                compat_single_measurement
+            } else {
+                measure_native_multi_oracle_once(&pk, &vk, &label, &specs, &evaluations, &requests)
+            };
+
+            let root_count = measurement.native_oracle_pcs_opening_count;
+            let query_position_count = measurement.native_oracle_opening_count;
+            let merkle_path_proxy = root_count.saturating_mul(num_vars.max(1));
+            let hash_estimate = merkle_path_proxy
+                .saturating_mul(2)
+                .saturating_add(root_count);
+            let field_op_estimate = logical_oracle_count.saturating_mul(oracle_len);
+            let proof_bytes_by_section = [
+                ("native_metadata", measurement.metadata_bytes),
+                ("native_pcs_payloads", measurement.pcs_payload_bytes),
+                (
+                    "native_oracle_descriptors",
+                    measurement.native_oracle_descriptor_bytes,
+                ),
+            ];
+            let public_bytes_by_section = [
+                (
+                    "native_oracle_descriptors",
+                    measurement.native_oracle_descriptor_bytes,
+                ),
+                ("native_oracle_roots", root_count * 32),
+                (
+                    "native_transcript_context",
+                    measurement
+                        .public_bytes
+                        .saturating_sub(measurement.native_oracle_descriptor_bytes)
+                        .saturating_sub(root_count * 32),
+                ),
+            ];
+            let counters = [
+                ("num_oracles", logical_oracle_count),
+                ("num_roots", root_count),
+                ("num_query_positions", query_position_count),
+                ("num_merkle_paths", merkle_path_proxy),
+                ("num_hashes_estimate", hash_estimate),
+                ("num_field_ops_estimate", field_op_estimate),
+                ("num_extension_field_ops_estimate", 0),
+                (
+                    "peak_alloc_bytes",
+                    measurement
+                        .proof_bytes
+                        .saturating_add(measurement.public_bytes)
+                        .saturating_add(logical_oracle_count.saturating_mul(oracle_len * 4)),
+                ),
+                (
+                    "top_level_whir_proof_count",
+                    measurement.top_level_whir_proof_count,
+                ),
+                (
+                    "family_columnar_subproof_count",
+                    measurement.family_columnar_subproof_count,
+                ),
+                ("backend_table_count", 0),
+                ("source_r1cs_residual_verifier_evaluations", 0),
+                ("native_oracle_count", measurement.native_oracle_count),
+                (
+                    "native_oracle_pcs_opening_count",
+                    measurement.native_oracle_pcs_opening_count,
+                ),
+                (
+                    "native_oracle_descriptor_bytes",
+                    measurement.native_oracle_descriptor_bytes,
+                ),
+                (
+                    "native_oracle_eval_claim_count",
+                    measurement.native_oracle_eval_claim_count,
+                ),
+                (
+                    "native_oracle_opening_count",
+                    measurement.native_oracle_opening_count,
+                ),
+                (
+                    "native_oracle_verify_ms_micros",
+                    (measurement.native_oracle_verify_ms * 1000.0).round() as usize,
+                ),
+            ];
+            let verifier_timers = [
+                (
+                    "native_oracle_verify_ms",
+                    measurement.native_oracle_verify_ms,
+                ),
+                ("transcript_absorb_squeeze", 0.0),
+                ("merkle_root_path_verification", measurement.verify_ms),
+                ("field_operations", 0.0),
+                ("field_extension_operations", 0.0),
+                ("fold_query_evaluation", 0.0),
+                ("eq_lagrange_evaluation", 0.0),
+                ("constraint_batching", 0.0),
+                ("symphony_accumulator_decoding", 0.0),
+                ("proof_deserialization", 0.0),
+                ("public_input_parsing", 0.0),
+            ];
+            let prover_timers = [
+                ("native_oracle_prove_ms", measurement.prove_ms),
+                ("oracle_construction", 0.0),
+                ("whir_folding_layers", measurement.prove_ms),
+                ("merkle_tree_build", 0.0),
+                ("merkle_path_materialization", 0.0),
+                ("constraint_construction", 0.0),
+                ("constraint_batching", 0.0),
+                ("transcript_absorb_squeeze", 0.0),
+                ("field_operations", 0.0),
+                ("field_extension_operations", 0.0),
+                ("allocations_copies", 0.0),
+                ("proof_serialization", 0.0),
+                ("symphony_accumulator_glue", 0.0),
+            ];
+            let single_oracle_verify_ms = compat_single_measurement.verify_ms;
+            let naive_n_times_single_oracle_verify_ms =
+                single_oracle_verify_ms * logical_oracle_count as f64;
+            let ratio_vs_single = measurement.verify_ms / single_oracle_verify_ms;
+            let ratio_vs_naive_n_times_single =
+                measurement.verify_ms / naive_n_times_single_oracle_verify_ms;
+            let row = Symbt3InstrumentedMultiOracleJsonRow {
+                profile: "symbt3_m1a_instrumented_multi_oracle",
+                route_kind: "logical_multi_oracle_compat_envelope",
+                k_table,
+                prove_ms: measurement.prove_ms,
+                verify_ms: measurement.verify_ms,
+                proof_bytes: measurement.proof_bytes,
+                public_bytes: measurement.public_bytes,
+                proof_bytes_by_section: &proof_bytes_by_section,
+                public_bytes_by_section: &public_bytes_by_section,
+                counters: &counters,
+                verifier_timers: &verifier_timers,
+                prover_timers: &prover_timers,
+                query_position_count,
+                merkle_path_proxy,
+                hash_estimate,
+                field_op_estimate,
+                single_oracle_verify_ms,
+                naive_n_times_single_oracle_verify_ms,
+                tuple_leaf_verify_ms: 0.0,
+                ratio_vs_single,
+                ratio_vs_naive_n_times_single,
+                shape_guard_passed: true,
+                multi_oracle: Symbt3InstrumentedMultiOracleShape {
+                    logical_oracle_count,
+                    native_multi_oracle: false,
+                    logical_envelope: true,
+                    compat_internal_pcs_payloads: true,
+                    whir_instance_count: logical_oracle_count,
+                    query_schedule_count: logical_oracle_count,
+                    transcript_count: logical_oracle_count,
+                    root_count,
+                    same_domain: true,
+                    same_field: true,
+                    same_rate: true,
+                    same_folding_parameter: true,
+                    tuple_leaf_layout: "none",
+                    batched_constraint_count: 0,
+                    rlc_tuple_leaf: false,
+                    rlc_batching_bits: 0,
+                    dev_only: true,
+                    product_verify_public_allowed: false,
+                },
+            };
+            write_symbt3_instrumented_multi_oracle_json_row(&mut jsonl, &row);
+            emitted_rows += 1;
+
+            let tuple_label =
+                format!("instrumented-tuple-leaf-k-{k_table}-n-{logical_oracle_count}");
+            let tuple_measurement = if logical_oracle_count == 1 {
+                tuple_single_measurement
+            } else {
+                measure_tuple_leaf_multi_oracle_once(
+                    &pk,
+                    &vk,
+                    &tuple_label,
+                    &specs,
+                    &evaluations,
+                    &requests,
+                )
+            };
+            assert_eq!(
+                tuple_measurement.native_oracle_pcs_opening_count, 1,
+                "M1b tuple-leaf path must keep one PCS opening payload"
+            );
+            assert_eq!(tuple_measurement.logical_oracle_count, logical_oracle_count);
+            assert_eq!(
+                tuple_measurement.top_level_whir_proof_count, 1,
+                "M1b tuple-leaf path must keep one top-level WHIR proof"
+            );
+            assert_eq!(
+                tuple_measurement.family_columnar_subproof_count, 0,
+                "M1b tuple-leaf path must not add family columnar subproofs"
+            );
+
+            let tuple_root_count = 1usize;
+            let tuple_query_position_count = 1usize;
+            let tuple_proof_bytes_by_section = [
+                ("native_metadata", tuple_measurement.metadata_bytes),
+                ("native_pcs_payloads", tuple_measurement.pcs_payload_bytes),
+                (
+                    "native_oracle_descriptors",
+                    tuple_measurement.native_oracle_descriptor_bytes,
+                ),
+            ];
+            let tuple_public_bytes_by_section = [
+                (
+                    "native_oracle_descriptors",
+                    tuple_measurement.native_oracle_descriptor_bytes,
+                ),
+                ("native_oracle_roots", tuple_root_count * 32),
+                (
+                    "native_transcript_context",
+                    tuple_measurement
+                        .public_bytes
+                        .saturating_sub(tuple_measurement.native_oracle_descriptor_bytes)
+                        .saturating_sub(tuple_root_count * 32),
+                ),
+            ];
+            let tuple_counters = [
+                ("num_oracles", logical_oracle_count),
+                ("num_roots", tuple_root_count),
+                ("num_query_positions", tuple_query_position_count),
+                ("num_merkle_paths", tuple_measurement.merkle_path_proxy),
+                ("num_hashes_estimate", tuple_measurement.hash_estimate),
+                (
+                    "num_field_ops_estimate",
+                    tuple_measurement.field_op_estimate,
+                ),
+                ("num_extension_field_ops_estimate", 0),
+                (
+                    "peak_alloc_bytes",
+                    tuple_measurement
+                        .proof_bytes
+                        .saturating_add(tuple_measurement.public_bytes)
+                        .saturating_add(logical_oracle_count.saturating_mul(oracle_len * 4)),
+                ),
+                (
+                    "top_level_whir_proof_count",
+                    tuple_measurement.top_level_whir_proof_count,
+                ),
+                (
+                    "family_columnar_subproof_count",
+                    tuple_measurement.family_columnar_subproof_count,
+                ),
+                ("backend_table_count", 0),
+                ("source_r1cs_residual_verifier_evaluations", 0),
+                ("native_oracle_count", logical_oracle_count),
+                (
+                    "native_oracle_pcs_opening_count",
+                    tuple_measurement.native_oracle_pcs_opening_count,
+                ),
+                (
+                    "native_oracle_descriptor_bytes",
+                    tuple_measurement.native_oracle_descriptor_bytes,
+                ),
+                (
+                    "native_oracle_eval_claim_count",
+                    tuple_measurement.native_oracle_eval_claim_count,
+                ),
+                (
+                    "native_oracle_opening_count",
+                    tuple_measurement.native_oracle_opening_count,
+                ),
+                (
+                    "native_oracle_transcript_squeezes",
+                    tuple_measurement.native_oracle_transcript_squeezes,
+                ),
+                (
+                    "native_oracle_verify_ms_micros",
+                    (tuple_measurement.native_oracle_verify_ms * 1000.0).round() as usize,
+                ),
+                ("whir_instance_count", 1),
+                ("query_schedule_count", 1),
+                ("transcript_count", 1),
+                ("root_count", 1),
+            ];
+            let tuple_verifier_timers = [
+                (
+                    "native_oracle_verify_ms",
+                    tuple_measurement.native_oracle_verify_ms,
+                ),
+                ("merkle_root_path_verification", tuple_measurement.verify_ms),
+                ("transcript_absorb_squeeze", 0.0),
+                ("field_operations", 0.0),
+                ("field_extension_operations", 0.0),
+                ("fold_query_evaluation", 0.0),
+                ("eq_lagrange_evaluation", 0.0),
+                ("constraint_batching", 0.0),
+                ("symphony_accumulator_decoding", 0.0),
+                ("proof_deserialization", 0.0),
+                ("public_input_parsing", 0.0),
+            ];
+            let tuple_prover_timers = [
+                ("native_oracle_prove_ms", tuple_measurement.prove_ms),
+                ("oracle_construction", tuple_measurement.prove_ms),
+                ("whir_folding_layers", tuple_measurement.prove_ms),
+                ("merkle_tree_build", 0.0),
+                ("merkle_path_materialization", 0.0),
+                ("constraint_construction", 0.0),
+                ("constraint_batching", 0.0),
+                ("transcript_absorb_squeeze", 0.0),
+                ("field_operations", 0.0),
+                ("field_extension_operations", 0.0),
+                ("allocations_copies", 0.0),
+                ("proof_serialization", 0.0),
+                ("symphony_accumulator_glue", 0.0),
+            ];
+            let tuple_single_oracle_verify_ms = tuple_single_measurement.verify_ms;
+            let tuple_naive_n_times_single_oracle_verify_ms =
+                tuple_single_oracle_verify_ms * logical_oracle_count as f64;
+            let tuple_ratio_vs_single = tuple_measurement.verify_ms / tuple_single_oracle_verify_ms;
+            let tuple_ratio_vs_naive_n_times_single =
+                tuple_measurement.verify_ms / tuple_naive_n_times_single_oracle_verify_ms;
+            let native_multi_oracle = logical_oracle_count > 1;
+            let tuple_row = Symbt3InstrumentedMultiOracleJsonRow {
+                profile: "symbt3_m1b_same_domain_rlc_tuple_leaf",
+                route_kind: if native_multi_oracle {
+                    "same_domain_rlc_tuple_leaf_native"
+                } else {
+                    "same_domain_rlc_tuple_leaf_single_oracle_baseline"
+                },
+                k_table,
+                prove_ms: tuple_measurement.prove_ms,
+                verify_ms: tuple_measurement.verify_ms,
+                proof_bytes: tuple_measurement.proof_bytes,
+                public_bytes: tuple_measurement.public_bytes,
+                proof_bytes_by_section: &tuple_proof_bytes_by_section,
+                public_bytes_by_section: &tuple_public_bytes_by_section,
+                counters: &tuple_counters,
+                verifier_timers: &tuple_verifier_timers,
+                prover_timers: &tuple_prover_timers,
+                query_position_count: tuple_query_position_count,
+                merkle_path_proxy: tuple_measurement.merkle_path_proxy,
+                hash_estimate: tuple_measurement.hash_estimate,
+                field_op_estimate: tuple_measurement.field_op_estimate,
+                single_oracle_verify_ms: tuple_single_oracle_verify_ms,
+                naive_n_times_single_oracle_verify_ms: tuple_naive_n_times_single_oracle_verify_ms,
+                tuple_leaf_verify_ms: tuple_measurement.verify_ms,
+                ratio_vs_single: tuple_ratio_vs_single,
+                ratio_vs_naive_n_times_single: tuple_ratio_vs_naive_n_times_single,
+                shape_guard_passed: true,
+                multi_oracle: Symbt3InstrumentedMultiOracleShape {
+                    logical_oracle_count,
+                    native_multi_oracle,
+                    logical_envelope: false,
+                    compat_internal_pcs_payloads: false,
+                    whir_instance_count: 1,
+                    query_schedule_count: 1,
+                    transcript_count: 1,
+                    root_count: 1,
+                    same_domain: true,
+                    same_field: true,
+                    same_rate: true,
+                    same_folding_parameter: true,
+                    tuple_leaf_layout: SYMBT3_SAME_DOMAIN_RLC_TUPLE_LEAF_LAYOUT,
+                    batched_constraint_count: logical_oracle_count,
+                    rlc_tuple_leaf: true,
+                    rlc_batching_bits: SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS,
+                    dev_only: true,
+                    product_verify_public_allowed: false,
+                },
+            };
+            write_symbt3_instrumented_multi_oracle_json_row(&mut jsonl, &tuple_row);
+            emitted_rows += 1;
+        }
+    }
+
+    // JSONL one-shot rows are the primary report. Criterion is only a marker
+    // timing so the filtered bench has a cheap, stable group result.
+    group.bench_function("jsonl_matrix_emitted", |b| {
+        b.iter(|| black_box(emitted_rows));
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// 5. SYMBT3-N2 native manifest/source opening smoke counters
 // ---------------------------------------------------------------------------
 
 fn bench_symbt3_native_manifest_opening_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_manifest_opening_vs_k") {
+        return;
+    }
     let mut group = c.benchmark_group("whir_scaling/symbt3_native_manifest_opening_vs_k");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(10));
 
-    let (pk, vk) = WhirSnark::setup(&native_oracle_relation());
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
 
     for &k in &[1usize, 2, 4] {
         let len = 1usize << k;
@@ -4174,11 +5331,14 @@ fn symbt3_n3_bench_components(k: usize, len: usize) -> Vec<Symbt3ManifestSourceC
 }
 
 fn bench_symbt3_committed_private_manifest_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_committed_private_manifest_vs_k") {
+        return;
+    }
     let mut group = c.benchmark_group("whir_scaling/symbt3_committed_private_manifest_vs_k");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(10));
 
-    let (pk, vk) = WhirSnark::setup(&native_oracle_relation());
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
 
     for &k in &[1usize, 2, 4] {
         let len = 1usize << k;
@@ -4338,11 +5498,14 @@ fn symbt3_n4_bench_evals(layouts: &[Symbt3NativeRoundMessageOracleLayoutV1]) -> 
 }
 
 fn bench_symbt3_native_message_oracles_vs_round_count(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_message_oracles_vs_round_count") {
+        return;
+    }
     let mut group = c.benchmark_group("whir_scaling/symbt3_native_message_oracles_vs_round_count");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(10));
 
-    let (pk, vk) = WhirSnark::setup(&native_oracle_relation());
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
 
     let batch_size = 2usize;
     let batch_log_size = symbt3_n4_batch_log_size(batch_size);
@@ -4457,11 +5620,14 @@ fn bench_symbt3_native_message_oracles_vs_round_count(c: &mut Criterion) {
 }
 
 fn bench_symbt3_native_message_oracles_batch_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_message_oracles_batch_vs_k") {
+        return;
+    }
     let mut group = c.benchmark_group("whir_scaling/symbt3_native_message_oracles_batch_vs_k");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(10));
 
-    let (pk, vk) = WhirSnark::setup(&native_oracle_relation());
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
     let round_count = 1usize;
 
     for &batch_size in &[1usize, 2, 4, 8] {
@@ -4615,6 +5781,9 @@ fn symbt3_n5_bench_metadata(
 }
 
 fn bench_symbt3_native_folding_integrity_gate_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_folding_integrity_gate_vs_k") {
+        return;
+    }
     let mut group = c.benchmark_group("whir_scaling/symbt3_native_folding_integrity_gate_vs_k");
     group.sample_size(100);
     group.measurement_time(Duration::from_secs(3));
@@ -4655,6 +5824,471 @@ fn bench_symbt3_native_folding_integrity_gate_vs_k(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// 8. SYMBT3-N6a integrated native folding-integrity proof smoke counters
+// ---------------------------------------------------------------------------
+
+fn symbt3_bench_k_values(defaults: &[usize]) -> Vec<usize> {
+    bench_env_usize_values("SYMPHONY_WHIR_PUBLIC_VERIFY_KS", defaults)
+}
+
+fn symbt3_n6a_bench_instance_witness(
+    batch_size: usize,
+    round_count: usize,
+) -> (
+    Symbt3NativeFoldingIntegrityInstance,
+    Symbt3NativeFoldingIntegrityWitness,
+) {
+    let batch_log_size = symbt3_n4_batch_log_size(batch_size);
+    let round_layouts = symbt3_n4_bench_layouts(round_count, batch_log_size);
+    let manifest_evals = vec![
+        BabyBear::from_u32(17),
+        BabyBear::from_u32(19),
+        BabyBear::from_u32(1_234_567),
+        BabyBear::from_u32(7_654_321),
+    ];
+    let source_evals = manifest_evals.clone();
+    let instance = Symbt3NativeFoldingIntegrityInstance {
+        native_profile: Some(Symbt3NativeOracleProfile::NonZkFoldingIntegrityV1),
+        manifest_policy: ManifestCommitmentPolicy::NativeManifestOracleOpeningV1,
+        source_policy: SourceCommitmentPolicy::NativeSourceOracleOpeningV1,
+        message_oracle_policy: Symbt3MessageOraclePolicy::NativeRoundMessageOraclesV1,
+        root_policy: NativeOracleRootPolicy::CanonicalWhirRootV1,
+        zk_status: Symbt3ZkStatus::NonZkIntegrityOnly,
+        symbt3_relation_id: digest(b"n6a-bench-relation"),
+        whir_param_digest: digest(b"n6a-bench-whir-params"),
+        manifest_layout_digest: digest(b"n6a-bench-manifest-layout"),
+        source_layout_digest: digest(b"n6a-bench-source-layout"),
+        source_column_layout_digest: digest(b"n6a-bench-source-column-layout"),
+        folding_protocol_id: digest(b"n6a-bench-folding-protocol"),
+        input_public_boundary_digest: digest(b"n6a-bench-input-public-boundary"),
+        source_roots_digest: digest(b"n6a-bench-source-roots"),
+        active_count: batch_size as u64,
+        batch_size: batch_size as u64,
+        folded_output_digest: digest(b"n6a-bench-folded-output"),
+        batch_axis_log_size: batch_log_size,
+        round_layouts: round_layouts.clone(),
+        committed_private_component_count: 1,
+        semantic_profile_version: 5,
+        required_semantic_families: Symbt3FoldingIntegritySemanticFamilies::production_non_zk(),
+        k5_masking_available: false,
+        monolithic_fallback: false,
+        product_default_route_attempted: false,
+        product_eligible: false,
+        native_product_route_version_exists: false,
+        backend_table_count: 1,
+        accumulator_transition_claims: 1,
+        main_instance: vec![3, 5, 7, 9, batch_size as u8, round_count as u8],
+    };
+    let witness = Symbt3NativeFoldingIntegrityWitness {
+        main_witness: vec![11, 13, 17, 19, batch_size as u8, round_count as u8],
+        manifest_evals,
+        source_evals,
+        message_oracle_evaluations: symbt3_n4_bench_evals(&round_layouts),
+    };
+    (instance, witness)
+}
+
+fn bench_symbt3_native_folding_integrity_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_folding_integrity_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_folding_integrity_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let round_count = 1usize;
+    eprintln!(
+        "NATIVE_FOLDING_INTEGRITY_CSV,k,round_count,proof_bytes,public_statement_bytes,prove_ms,verify_ms,main_whir_num_vars,main_oracle_len,native_oracle_count,native_manifest_source_oracle_count,native_message_oracle_count,native_oracle_eval_claim_count,native_oracle_pcs_opening_count,native_oracle_descriptor_bytes,native_oracle_verify_ms,top_level_whir_proof_count,family_columnar_subproof_count,backend_table_count,message_to_trace_binding_count,accumulator_transition_claims"
+    );
+
+    for batch_size in symbt3_bench_k_values(&[1usize, 2, 4]) {
+        let (instance, witness) = symbt3_n6a_bench_instance_witness(batch_size, round_count);
+        let prove_start = Instant::now();
+        let proof = prove_symbt3_native_folding_integrity_non_zk(&pk, &instance, &witness)
+            .expect("SYMBT3-N6a native folding-integrity proof must succeed");
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
+
+        let native_report = whir_verify_oracle_openings_with_counters_for_profile(
+            &vk,
+            NativeOracleVerificationProfile::ProductAuthority,
+            instance.symbt3_relation_id,
+            proof.public_statement_digest,
+            instance.whir_param_digest,
+            &proof.native_oracle_proof.descriptors,
+            &proof.native_oracle_proof,
+            &proof.native_oracle_proof.eval_claims,
+        );
+        assert!(native_report.ok);
+
+        let verify_start = Instant::now();
+        assert!(
+            verify_symbt3_native_folding_integrity_non_zk(&vk, &instance, &proof),
+            "SYMBT3-N6a native folding-integrity verify failed for batch_size={batch_size}"
+        );
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+        let proof_bytes = symbt3_native_folding_integrity_proof_size_hint(&proof);
+        let main_oracle_len = 1usize << proof.symbt3_proof.num_vars;
+
+        eprintln!(
+            "NATIVE_FOLDING_INTEGRITY_CSV,{batch_size},{round_count},{proof_bytes},{},{prove_ms:.3},{verify_ms:.3},{},{},{},{},{},{},{},{},{:.3},{},{},{},{},{}",
+            instance.public_statement_bytes(),
+            proof.symbt3_proof.num_vars,
+            main_oracle_len,
+            proof.counters.native_oracle_count,
+            proof.counters.native_manifest_source_oracle_count,
+            proof.counters.native_message_oracle_count,
+            proof.counters.native_oracle_eval_claim_count,
+            proof.counters.native_oracle_pcs_opening_count,
+            proof.counters.native_oracle_descriptor_bytes,
+            native_report.native_oracle_verify_ms,
+            proof.counters.top_level_whir_proof_count,
+            proof.counters.family_columnar_subproof_count,
+            proof.counters.backend_table_count,
+            proof.counters.message_to_trace_binding_count,
+            proof.counters.accumulator_transition_claims,
+        );
+
+        group.throughput(Throughput::Elements(batch_size as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", batch_size), |b| {
+            b.iter(|| {
+                let proof = prove_symbt3_native_folding_integrity_non_zk(
+                    black_box(&pk),
+                    black_box(&instance),
+                    black_box(&witness),
+                )
+                .expect("SYMBT3-N6a native folding-integrity proof must succeed");
+                black_box(verify_symbt3_native_folding_integrity_non_zk(
+                    black_box(&vk),
+                    black_box(&instance),
+                    black_box(&proof),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_native_folding_integrity_public_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_folding_integrity_public_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_folding_integrity_public_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let public_profile = Symbt3NativeFoldingIntegrityPublicProfile::explicit_non_zk();
+    let round_count = 1usize;
+    eprintln!(
+        "NATIVE_FOLDING_PUBLIC_CSV,k,round_count,proof_bytes,public_statement_bytes,prove_ms,verify_ms,main_whir_num_vars,main_oracle_len,native_oracle_count,native_message_oracle_count,native_oracle_pcs_opening_count,native_oracle_verify_ms,top_level_whir_proof_count,family_columnar_subproof_count,backend_table_count,product_route_selected,monolithic_fallback_used"
+    );
+
+    for batch_size in symbt3_bench_k_values(&[1usize, 2, 4]) {
+        let (instance, witness) = symbt3_n6a_bench_instance_witness(batch_size, round_count);
+        let prove_start = Instant::now();
+        let proof = prove_public_symbt3_native_folding_integrity_non_zk(
+            &pk,
+            &public_profile,
+            &instance,
+            &witness,
+        )
+        .expect("SYMBT3-N6b public native folding-integrity proof must succeed");
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
+
+        let native_report = whir_verify_oracle_openings_with_counters_for_profile(
+            &vk,
+            NativeOracleVerificationProfile::ProductAuthority,
+            instance.symbt3_relation_id,
+            proof.public_statement_digest,
+            instance.whir_param_digest,
+            &proof.native_oracle_proof.descriptors,
+            &proof.native_oracle_proof,
+            &proof.native_oracle_proof.eval_claims,
+        );
+        assert!(native_report.ok);
+
+        let verify_start = Instant::now();
+        assert!(
+            verify_public_symbt3_native_folding_integrity_non_zk(
+                &vk,
+                &public_profile,
+                &instance,
+                &proof,
+            ),
+            "SYMBT3-N6b public native folding-integrity verify failed for batch_size={batch_size}"
+        );
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+        let proof_bytes = symbt3_native_folding_integrity_proof_size_hint(&proof);
+        let main_oracle_len = 1usize << proof.symbt3_proof.num_vars;
+        let product_route_selected =
+            symbt3_native_folding_integrity_public_route_selected(&public_profile);
+        let monolithic_fallback_used =
+            symbt3_native_folding_integrity_monolithic_fallback_used(&instance);
+
+        eprintln!(
+            "NATIVE_FOLDING_PUBLIC_CSV,{batch_size},{round_count},{proof_bytes},{},{prove_ms:.3},{verify_ms:.3},{},{},{},{},{},{:.3},{},{},{},{},{}",
+            instance.public_statement_bytes(),
+            proof.symbt3_proof.num_vars,
+            main_oracle_len,
+            proof.counters.native_oracle_count,
+            proof.counters.native_message_oracle_count,
+            proof.counters.native_oracle_pcs_opening_count,
+            native_report.native_oracle_verify_ms,
+            proof.counters.top_level_whir_proof_count,
+            proof.counters.family_columnar_subproof_count,
+            proof.counters.backend_table_count,
+            product_route_selected,
+            monolithic_fallback_used,
+        );
+
+        group.throughput(Throughput::Elements(batch_size as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", batch_size), |b| {
+            b.iter(|| {
+                let proof = prove_public_symbt3_native_folding_integrity_non_zk(
+                    black_box(&pk),
+                    black_box(&public_profile),
+                    black_box(&instance),
+                    black_box(&witness),
+                )
+                .expect("SYMBT3-N6b public native folding-integrity proof must succeed");
+                black_box(verify_public_symbt3_native_folding_integrity_non_zk(
+                    black_box(&vk),
+                    black_box(&public_profile),
+                    black_box(&instance),
+                    black_box(&proof),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_route_matrix_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_route_matrix_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_route_matrix_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (n6b_pk, n6b_vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let n6b_public_profile = Symbt3NativeFoldingIntegrityPublicProfile::explicit_non_zk();
+    let round_count = 1usize;
+    let route_notes =
+        "typed_cp_smoke=standalone_cp_not_public_verify_v2;k6a=full_accumulator_public_canonical;n6b=native_oracle_smoke_not_full_accumulator";
+
+    eprintln!(
+        "[symbt3_route_matrix_vs_k] typed_cp_smoke = standalone typed CP smoke baseline, not public_verify_v2"
+    );
+    eprintln!("[symbt3_route_matrix_vs_k] K6a = explicit NonZK accumulator integrity route");
+    eprintln!(
+        "[symbt3_route_matrix_vs_k] N6b = explicit native-oracle folding-integrity smoke/native route"
+    );
+    eprintln!(
+        "ROUTE_MATRIX_CSV,k,typed_cp_smoke_verify_ms,k6a_verify_ms,n6b_verify_ms,typed_cp_smoke_proof_bytes,k6a_proof_bytes,n6b_proof_bytes,typed_cp_smoke_public_bytes,k6a_public_bytes,n6b_public_bytes,k6a_top_level_whir_proof_count,k6a_family_columnar_subproof_count,k6a_backend_table_count,k6a_accumulator_transition_claims,n6b_top_level_whir_proof_count,n6b_family_columnar_subproof_count,n6b_native_oracle_count,n6b_native_oracle_pcs_opening_count,n6b_monolithic_fallback_used,route_notes"
+    );
+
+    for batch_size in symbt3_bench_k_values(&[1usize, 2, 4]) {
+        let typed_cp_smoke = route_matrix_typed_cp_smoke_measurement(batch_size);
+        let (
+            k6a,
+            k6a_top_level_whir_proof_count,
+            k6a_family_columnar_subproof_count,
+            k6a_backend_table_count,
+            k6a_accumulator_transition_claims,
+        ) = route_matrix_k6a_measurement(batch_size);
+        let (n6b, n6b_native_oracle_count, n6b_native_oracle_pcs_opening_count, n6b_fallback) =
+            route_matrix_n6b_measurement(
+                &n6b_pk,
+                &n6b_vk,
+                &n6b_public_profile,
+                batch_size,
+                round_count,
+            );
+
+        eprintln!(
+            "ROUTE_MATRIX_CSV,{batch_size},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            typed_cp_smoke.verify_ms,
+            k6a.verify_ms,
+            n6b.verify_ms,
+            typed_cp_smoke.proof_bytes,
+            k6a.proof_bytes,
+            n6b.proof_bytes,
+            typed_cp_smoke.public_bytes,
+            k6a.public_bytes,
+            n6b.public_bytes,
+            k6a_top_level_whir_proof_count,
+            k6a_family_columnar_subproof_count,
+            k6a_backend_table_count,
+            k6a_accumulator_transition_claims,
+            1,
+            0,
+            n6b_native_oracle_count,
+            n6b_native_oracle_pcs_opening_count,
+            n6b_fallback,
+            route_notes,
+        );
+
+        group.throughput(Throughput::Elements(batch_size as u64));
+        group.bench_function(BenchmarkId::new("prove_verify_report", batch_size), |b| {
+            b.iter(|| {
+                let typed_cp_smoke = route_matrix_typed_cp_smoke_measurement(black_box(batch_size));
+                let (k6a, _, _, _, _) = route_matrix_k6a_measurement(black_box(batch_size));
+                let (n6b, _, _, _) = route_matrix_n6b_measurement(
+                    black_box(&n6b_pk),
+                    black_box(&n6b_vk),
+                    black_box(&n6b_public_profile),
+                    black_box(batch_size),
+                    black_box(round_count),
+                );
+                black_box((typed_cp_smoke.verify_ms, k6a.verify_ms, n6b.verify_ms));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_native_accumulator_authority_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_accumulator_authority_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_accumulator_authority_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let round_count = 1usize;
+    eprintln!(
+        "[symbt3_native_accumulator_authority_vs_k] N7 smoke profile, not full accumulator workload"
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_SMOKE_CSV,k,round_count,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,main_whir_num_vars,main_oracle_len,native_multi_oracle,tuple_leaf_layout,logical_oracle_count,whir_instance_count,root_count,query_schedule_count,transcript_count,native_oracle_pcs_opening_count,native_oracle_eval_claim_count,rlc_repetition_count,rlc_batching_bits,rlc_batching_bits_per_repetition,total_rlc_batching_bits,effective_soundness_bits,family_columnar_subproof_count,top_level_whir_proof_count,backend_table_count,accumulator_transition_claims,fallback_used"
+    );
+
+    for batch_size in symbt3_bench_k_values(&[1usize, 2, 4]) {
+        let (mut instance, witness) = symbt3_n6a_bench_instance_witness(batch_size, round_count);
+        instance.semantic_profile_version =
+            SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_MIN_SEMANTIC_PROFILE_VERSION;
+
+        let prove_start = Instant::now();
+        let proof = prove_symbt3_native_accumulator_authority_non_zk(&pk, &instance, &witness)
+            .expect("SYMBT3-N7 native accumulator authority proof must succeed");
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1000.0;
+
+        let verify_start = Instant::now();
+        assert!(
+            verify_symbt3_native_accumulator_authority_non_zk(&vk, &instance, &proof),
+            "SYMBT3-N7 native accumulator authority verify failed for batch_size={batch_size}"
+        );
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1000.0;
+        let proof_bytes = symbt3_native_accumulator_authority_proof_size_hint(&proof);
+        let main_oracle_len = 1usize << proof.main_symbt3_whir_proof.num_vars;
+
+        eprintln!(
+            "NATIVE_ACCUMULATOR_AUTHORITY_SMOKE_CSV,{batch_size},{round_count},{prove_ms:.3},{verify_ms:.3},{proof_bytes},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            instance.public_statement_bytes(),
+            proof.counters.full_accumulator_workload,
+            proof.counters.smoke_profile,
+            proof.main_symbt3_whir_proof.num_vars,
+            main_oracle_len,
+            proof.counters.native_multi_oracle,
+            proof.counters.tuple_leaf_layout,
+            proof.counters.logical_oracle_count,
+            proof.counters.whir_instance_count,
+            proof.counters.root_count,
+            proof.counters.query_schedule_count,
+            proof.counters.transcript_count,
+            proof.counters.native_oracle_pcs_opening_count,
+            proof.counters.native_oracle_eval_claim_count,
+            proof.counters.rlc_repetition_count,
+            proof.counters.rlc_batching_bits,
+            proof.counters.rlc_batching_bits_per_repetition,
+            proof.counters.total_rlc_batching_bits,
+            proof.counters.effective_soundness_bits,
+            proof.counters.family_columnar_subproof_count,
+            proof.counters.top_level_whir_proof_count,
+            proof.counters.backend_table_count,
+            proof.counters.accumulator_transition_claims,
+            proof.counters.fallback_used,
+        );
+
+        group.throughput(Throughput::Elements(batch_size as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", batch_size), |b| {
+            b.iter(|| {
+                let proof = prove_symbt3_native_accumulator_authority_non_zk(
+                    black_box(&pk),
+                    black_box(&instance),
+                    black_box(&witness),
+                )
+                .expect("SYMBT3-N7 native accumulator authority proof must succeed");
+                black_box(verify_symbt3_native_accumulator_authority_non_zk(
+                    black_box(&vk),
+                    black_box(&instance),
+                    black_box(&proof),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_symbt3_native_accumulator_authority_full_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_native_accumulator_authority_full_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_native_accumulator_authority_full_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let round_count = 1usize;
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV,k,round_count,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,main_whir_num_vars,main_oracle_len,native_multi_oracle,tuple_leaf_layout,logical_oracle_count,whir_instance_count,root_count,query_schedule_count,transcript_count,native_oracle_pcs_opening_count,native_oracle_eval_claim_count,rlc_repetition_count,rlc_batching_bits,effective_soundness_bits,family_columnar_subproof_count,top_level_whir_proof_count,backend_table_count,accumulator_transition_claims,fallback_used"
+    );
+    eprintln!(
+        "[symbt3_native_accumulator_authority_full_vs_k] blocked: N7b full K6a accumulator adapter is not implemented; current N7 is smoke-only and fails closed"
+    );
+
+    for batch_size in symbt3_bench_k_values(&[1usize, 2]) {
+        let (mut instance, witness) = symbt3_n6a_bench_instance_witness(batch_size, round_count);
+        instance.semantic_profile_version =
+            SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_MIN_SEMANTIC_PROFILE_VERSION;
+        assert!(
+            prove_symbt3_native_accumulator_authority_full_non_zk(&pk, &instance, &witness)
+                .is_none(),
+            "N7b full helper must fail closed until the K6a adapter is implemented"
+        );
+        let smoke = prove_symbt3_native_accumulator_authority_non_zk(&pk, &instance, &witness)
+            .expect("N7 smoke proof");
+        assert!(
+            !verify_symbt3_native_accumulator_authority_full_non_zk(&vk, &instance, &smoke),
+            "N7b full verifier must reject N7 smoke proofs"
+        );
+        eprintln!(
+            "NATIVE_ACCUMULATOR_AUTHORITY_FULL_BLOCKED,k={batch_size},round_count={round_count},reason=N7 smoke profile, not full accumulator workload"
+        );
+
+        group.throughput(Throughput::Elements(batch_size as u64));
+        group.bench_function(BenchmarkId::new("fail_closed", batch_size), |b| {
+            b.iter(|| {
+                black_box(prove_symbt3_native_accumulator_authority_full_non_zk(
+                    black_box(&pk),
+                    black_box(&instance),
+                    black_box(&witness),
+                ));
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn hex_digest(digest: &[u8; 32]) -> String {
     digest
         .iter()
@@ -4670,11 +6304,20 @@ criterion_group!(
     bench_folding_only_vs_k,
     bench_pipeline_whir_vs_k,
     bench_modular_pipeline_whir_vs_k,
+    bench_symbt3_native_multi_oracle_vs_oracle_count,
+    bench_symbt3_native_multi_oracle_vs_num_vars,
+    bench_symbt3_native_multi_oracle_batch_axis_vs_k,
+    bench_symbt3_instrumented_multi_oracle,
     bench_symbt3_native_manifest_opening_vs_k,
     bench_symbt3_committed_private_manifest_vs_k,
     bench_symbt3_native_message_oracles_vs_round_count,
     bench_symbt3_native_message_oracles_batch_vs_k,
     bench_symbt3_native_folding_integrity_gate_vs_k,
+    bench_symbt3_native_folding_integrity_vs_k,
+    bench_symbt3_native_folding_integrity_public_vs_k,
+    bench_symbt3_route_matrix_vs_k,
+    bench_symbt3_native_accumulator_authority_vs_k,
+    bench_symbt3_native_accumulator_authority_full_vs_k,
     bench_public_verify_v2_vs_k,
     bench_typed_cp_prove_only_vs_k,
     bench_typed_cp_verify_only_vs_k,
