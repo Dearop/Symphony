@@ -263,6 +263,281 @@ The `SymphonyProof<WhirSnark>` contains both proofs, and the verifier checks bot
 
 ---
 
+## N1 Native Multi-Oracle WHIR Evaluation Layer
+
+`src/snark/whir/native_oracles.rs` adds the SYMBT3-N1 native multi-oracle
+evaluation layer. It is infrastructure only: it does not change
+`verify_public`, does not promote product routing, does not implement K5/ZK,
+and does not implement private manifest membership or native CP message
+semantics.
+
+N1 uses one logical native-oracle proof envelope:
+
+```rust
+WhirNativeMultiOracleProof {
+    root_policy,
+    descriptors,
+    eval_claims,
+    native_oracle_eval_claims_digest,
+    native_multi_oracle_envelope_digest,
+    pcs_openings,
+    counters,
+    ...
+}
+```
+
+Each descriptor binds:
+
+- `oracle_id`;
+- `role` (`Manifest`, `Source`, `MessageRound`, `Accumulator`,
+  `FoldedBoundary`, or `Auxiliary`);
+- `layout_digest`;
+- `num_vars`;
+- `root`;
+- `opening_schedule`.
+
+Because the current whir-p3 integration commits and opens one polynomial per
+PCS proof, N1 stores one internal WHIR PCS opening payload per native oracle
+inside the single logical envelope. These payloads are counted as
+`native_oracle_pcs_opening_count`, not as `family_columnar_subproof_count`; N1
+does not create a SYMBT2F-style proof forest.
+
+The descriptor digest is:
+
+```text
+H("SYMBT3_NATIVE_ORACLE_DESCRIPTORS_V1", ordered descriptors)
+```
+
+Descriptors must be strictly sorted by `oracle_id`; duplicates and unsorted
+descriptors reject. Opening challenge derivation binds the proof relation id,
+public statement digest, WHIR parameter digest, ordered descriptor/root digest,
+root policy, opening schedule, and claim kind.
+
+For equality checks, use `WhirNativeEvalClaimKind::EqualitySide` on all compared
+oracles with `TranscriptDerived { domain_separator }`. This derives a shared
+domain-separated point from the ordered descriptor/root digest, so a future
+check such as:
+
+```text
+ManifestOracle(zeta) = SourceOracle(zeta)
+```
+
+opens both sides at the same `zeta`. Use `PerOraclePoint` only for independent
+claims. `SamePoint` has a fixed N1 domain label
+`SYMBT3_NATIVE_ORACLE_SAME_POINT_V1`.
+
+SYMBT3-N1b hardens descriptor roots and envelope metadata:
+
+- the default root policy is `NativeOracleRootPolicy::CanonicalWhirRootV1`;
+- the WHIR initial commitment is serialized canonically from the typed
+  `MerkleCap<BabyBear, [BabyBear; 8]>` roots, using canonical BabyBear words;
+- `DebugDevelopmentOnly` remains as an explicit quarantined policy for
+  development fixtures only;
+- product, authority, native-manifest, and native-message verification profiles
+  reject `DebugDevelopmentOnly`;
+- role, schedule, specs, descriptors, eval requests, eval claims, and envelope
+  metadata all have stable canonical bytes and digest helpers.
+
+## N2 Native Manifest/Source Membership Development Path
+
+SYMBT3-N2 uses the N1 native multi-oracle envelope to implement the
+`NativeManifestOracleOpeningV1` development path. It proves the NonZK semantic
+check:
+
+```text
+ManifestOracle(zeta_manifest_source) = SourceOracle(zeta_manifest_source)
+```
+
+The N2 smoke profile keeps the N1 logical proof shape:
+
+- `top_level_whir_proof_count = 1`;
+- `family_columnar_subproof_count = 0`;
+- `native_oracle_count = 2`;
+- `native_oracle_pcs_opening_count = 2`.
+
+The manifest oracle uses role `Manifest`; the source oracle uses role `Source`.
+Both descriptors use `WhirNativeEvalClaimKind::EqualitySide`, stable oracle IDs
+1 and 2, and the N2 transcript domain
+`SYMBT3_N2_MANIFEST_SOURCE_EQUALITY`. N2 v1 requires equal `num_vars` for the
+manifest and source layouts; mismatched domains reject rather than applying a
+layout map.
+
+N2 adds the public manifest binding:
+
+```text
+batch_manifest_root = H(
+    "SYMBT3_NATIVE_MANIFEST",
+    manifest_layout_digest,
+    manifest_oracle_root,
+    native_oracle_root_policy_digest
+)
+```
+
+The verifier recomputes this root from the manifest descriptor root and rejects
+mismatches. The equality-point transcript binds the proof relation id, public
+statement digest, WHIR parameter digest, ordered native descriptor/root digest,
+manifest/source layout digests, `batch_manifest_root`, the canonical root policy
+digest, and the `NativeManifestOracleOpeningV1`/N2 domain. This challenge is a
+proof-checking challenge; it is not beta and does not affect folded output beta.
+
+N2 is deliberately not a product route:
+
+- it does not change `verify_public` or the current v2 public verifier route;
+- it does not replace the existing K6a `PublicCanonicalManifestViewV1` route;
+- it does not implement K5/ZK or masking;
+- it does not claim private-manifest product authority;
+- it is the prerequisite infrastructure for committed/private manifest
+  membership in N3;
+- native CP message oracles remain deferred to N4.
+
+## N3 Committed-Private NonZK Manifest Membership
+
+SYMBT3-N3 builds on the N2 native manifest/source opening path and adds a
+committed-private manifest/source development policy. In this milestone,
+private means only "not serialized as full values in the public API boundary."
+It is not a privacy claim: WHIR verifier openings may reveal queried coordinates.
+
+N3 introduces `Symbt3ManifestVisibility::CommittedPrivateNonZk` and typed
+manifest/source component rows backed by BabyBear values. The prover supplies
+the full public and committed-private rows as witness-side native oracle
+evaluations. The public statement serializes only roots, layout digests,
+component metadata, value counts, and public-boundary component values.
+Committed-private component values are omitted from public canonical bytes, and
+the N3 smoke fixture reports `committed_private_public_bytes = 0`.
+
+Authority gates are intentionally narrow:
+
+- `PublicCanonicalManifestViewV1` rejects committed-private components;
+- `NativeManifestOracleOpeningV1` plus `NativeSourceOracleOpeningV1` accepts
+  `CommittedPrivateNonZk` only with `NonZkIntegrityOnly` or explicit NonZK
+  research status;
+- ZK-required status rejects committed-private components until K5 masking
+  exists;
+- `DebugDevelopmentOnly` roots remain rejected under native-manifest authority.
+
+N3 keeps the N2 native opening shape. The manifest and source native oracles
+still use equal `num_vars`, two `EqualitySide` claims, and the same
+`batch_manifest_root` binding. The smoke counters remain:
+
+- `top_level_whir_proof_count = 1`;
+- `family_columnar_subproof_count = 0`;
+- `native_oracle_count = 2`;
+- `native_oracle_pcs_opening_count = 2`.
+
+N3 does not change `verify_public`, does not replace K6a, and does not promote a
+private-manifest product route. K5 masking is still required for any future ZK
+claim, and native CP message oracles remain deferred to N4.
+
+## N4 Native CP Round-Message Oracles
+
+SYMBT3-N4 adds native CP round-message oracles as a development and
+infrastructure path. Each CP round message `M_i(T, U_i)` is committed as its own
+native WHIR oracle with role `MessageRound { round: i }`, stable oracle id
+`1000 + i`, and a `MessageView` opening under the
+`SYMBT3_N4_ROUND_MESSAGE_VIEW` domain.
+
+N4 introduces:
+
+- `Symbt3MessageOraclePolicy::NativeRoundMessageOraclesV1`;
+- `Symbt3NativeRoundMessageOracleLayoutV1`;
+- compressed `message_oracle_roots_digest`;
+- compressed `message_round_layouts_digest`;
+- `message_oracle_policy_digest`;
+- prefix-derived native round challenges.
+
+N4b fixes the batch-axis shape: each round oracle is `M_i(T, U_i)`, where `T`
+is the batch item axis inside the native oracle domain and `U_i` is the typed
+coordinate axis for round `i`. The layout records `batch_axis_log_size`,
+`message_axis_log_size`, and `total_num_vars = batch_axis_log_size +
+message_axis_log_size`. There is one native oracle per CP round, not one native
+oracle per batch item.
+
+Round message oracles may have different `message_axis_log_size`; unlike N2
+manifest/source membership, N4 does not require equal domains across rounds.
+For fixed `round_count`, increasing batch size only increases the round
+oracle's `total_num_vars`. The N1 envelope is unchanged: there is one logical
+native multi-oracle proof, no `family_columnar_subproofs`, and no
+SYMBT2F-style per-family proof forest.
+
+Round challenges are derived from ordered input-side prefix roots:
+
+```text
+round_challenge_i = H(
+    "SYMBT3_ROUND_CHALLENGE_V1",
+    folding_protocol_id,
+    input_public_boundary_digest,
+    batch_manifest_root,
+    source_roots_digest,
+    native_message_oracle_roots[0..=i],
+    round_index = i,
+    round_layout_digest_i,
+    active_count,
+    batch_size
+)
+```
+
+Changing root `j <= i` changes challenge `i`; changing a later root does not
+affect earlier challenges. Folded output and WHIR PCS opening payloads are not
+inputs to these folding challenges. Native proof-checking opening challenges
+remain separate and continue to bind the proof relation id, public statement
+digest, WHIR parameter digest, descriptor/root digest, root policy, schedule,
+and claim kind.
+
+N4 is deliberately not a product route:
+
+- it does not change `verify_public` or v2 product routing;
+- it does not replace K6a or the `PublicCanonicalManifestViewV1` route;
+- it does not implement K5/ZK or masking;
+- it does not prove byte transcript reconstruction;
+- it does not add `message_trace_values`, `message_trace_col`, or
+  message-to-trace reconstruction bindings;
+- its native-oracle count scales with CP round count, not batch size;
+- it prepares the native message layer needed before a future
+  `Symbt3NonZkFoldingIntegrityV1` promotion.
+
+## N5 Native NonZK Folding-Integrity Profile Gate
+
+SYMBT3-N5 adds `Symbt3NativeOracleProfile::NonZkFoldingIntegrityV1` as a
+metadata gate for a future versioned native product route. It is still
+infrastructure only: it does not change `verify_public`, does not promote a
+default route, does not implement K5/ZK, and does not add byte transcript
+reconstruction.
+
+The gate requires the native stack assembled by N2/N3/N4b:
+
+- manifest policy `NativeManifestOracleOpeningV1`;
+- source policy `NativeSourceOracleOpeningV1`;
+- message policy `NativeRoundMessageOraclesV1`;
+- native root policy `CanonicalWhirRootV1`;
+- committed-private components only in `NonZkIntegrityOnly` or explicit NonZK
+  research status;
+- no `DebugDevelopmentOnly` roots;
+- no `PublicCanonicalManifestViewV1` under the native profile;
+- no row-byte or digest-only message-root policy;
+- one logical native-oracle envelope;
+- `top_level_whir_proof_count = 1`;
+- `family_columnar_subproof_count = 0`;
+- manifest/source native oracle count `= 2`;
+- native message oracle count `= round_count`, not batch size.
+
+N5 also gates semantic readiness for folding accumulator integrity. The profile
+must report the N2 manifest evaluation claim, accumulator transition
+consistency, K1/K2/K3/K4 semantic families, and the production-shaped norm/range
+bundle. A monolithic fallback flag or product-default route attempt rejects.
+
+The implementation exposes:
+
+- `Symbt3NonZkFoldingIntegrityProfileMetadata`;
+- `Symbt3NonZkFoldingIntegrityProfileReport`;
+- `profile_meets_native_non_zk_folding_integrity`;
+- `symbt3_non_zk_folding_integrity_profile_report`.
+
+K6a remains the existing explicit `PublicCanonicalManifestViewV1` route. Future
+N6 is expected to add a versioned proof envelope and opt-in native route if the
+native profile is promoted. K5 masking remains required for any ZK claim.
+
+---
+
 ## Dependencies
 
 All WHIR-specific dependencies are feature-gated behind `whir`:

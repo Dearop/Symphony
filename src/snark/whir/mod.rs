@@ -21,6 +21,7 @@
 //! For the classical (non-PQ) alternative, see [`SpartanSnark`](super::spartan::SpartanSnark).
 
 pub mod field;
+pub mod native_oracles;
 pub mod serialize;
 
 use sha2::{Digest, Sha256};
