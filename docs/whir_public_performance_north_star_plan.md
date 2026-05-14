@@ -883,6 +883,23 @@ not monolithic typed CP and not the K4 research verifier. It reports
 the K4.5/K4.6 proof-shape and public-boundary counters. The default product
 `verify_public` benchmark remains the monolithic typed-CP route.
 
+Milestone 0 for the separate SYMBT3 multi-oracle roadmap (the SYMBT3
+instrumented benchmark baseline) is complete on this branch as a single-oracle
+K6a instrumentation baseline only. It does not add multi-oracle profiles,
+tuple-leaf layouts, shared-query routing, or multi-oracle verifier semantics.
+The stable JSONL comparison contract is
+`benchmarks/symbt3_instrumented_benchmark.jsonl` with schema
+`symphony.symbt3.instrumented_benchmark.v1` and top-level fields `schema`,
+`k_table`,
+`prove_ms`, `verify_ms`, `proof_bytes`, `public_bytes`,
+`proof_bytes_by_section`, `public_bytes_by_section`, `counters`,
+`verifier_timers`, and `prover_timers`. The JSONL rows are benchmark hygiene
+only: `ProofBundleV2`, `PublicProofBundle`, WHIR/public proof payload bytes,
+authority flags, product `verify_public`, and K6a NonZK integrity semantics
+remain unchanged. Product `verify_public` remains on the authoritative
+monolithic WHIR typed-CP route and malformed SYMBT3/K6a profile or proof-kind
+inputs still fail closed in the explicit opt-in route.
+
 K6b adds the consolidated side-by-side reporter:
 
 ```text

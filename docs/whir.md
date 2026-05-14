@@ -834,20 +834,29 @@ integrity only, explicit opt-in, and not the default `verify_public` route. It
 does not implement K5 masking and does not support private manifest
 membership. Product `verify_public` remains unchanged, and K5/private
 manifest/native multi-oracle product work remains deferred.
-The SYMBT3 multi-oracle accumulator roadmap Milestone 0 instrumentation is now
-implemented for the same K6a single-oracle benchmark path. In addition to the
-existing `SYMBT3_CSV` rows, `symbt3_accumulator_authority_vs_k` emits
-`SYMBT3_MILESTONE0_JSON` rows and writes stable JSONL to
-`benchmarks/symbt3_milestone0.jsonl` using schema
-`symphony.symbt3.milestone0.v1`. Each row records K-table, prove/verify time,
-proof/public bytes by section, proof-shape counters, query/Merkle/hash/field
-operation estimates, accumulator-boundary counters, and coarse prover/verifier
-timers for transcript work, Merkle/PCS opening, field and extension-field
-operations, fold-query/eq evaluation, constraint batching, accumulator glue,
-proof serialization/parsing, and public-input parsing. These are benchmark
-attribution counters only; WHIR payload bytes, `ProofBundleV2`, product
-`verify_public`, and the explicit K6a NonZK integrity security boundary are
-unchanged.
+The SYMBT3 instrumented benchmark baseline (originally tracked as multi-oracle
+roadmap Milestone 0) is complete on this branch as the single-oracle K6a
+accumulator instrumentation baseline. Multi-oracle WHIR implementation is
+intentionally out of scope here and lives on a separate branch. In addition to
+the existing `SYMBT3_CSV` rows, `symbt3_accumulator_authority_vs_k` emits
+`SYMBT3_INSTRUMENTED_BENCHMARK_JSON` rows and writes stable JSONL to
+`benchmarks/symbt3_instrumented_benchmark.jsonl` using schema
+`symphony.symbt3.instrumented_benchmark.v1`. The top-level comparison contract
+for the multi-oracle branch is: `schema`, `k_table`, `prove_ms`, `verify_ms`,
+`proof_bytes`, `public_bytes`, `proof_bytes_by_section`,
+`public_bytes_by_section`, `counters`, `verifier_timers`, and
+`prover_timers`. Each row records proof-shape counters fixed to one top-level
+WHIR proof, zero family subproofs, one backend table, one oracle, and one root,
+plus query/Merkle/hash/field-operation estimates and coarse prover/verifier
+timers. `scripts/analyze_symbt3_instrumented_benchmark.py` summarizes the JSONL
+baseline.
+These are benchmark attribution counters only; WHIR payload bytes,
+`ProofBundleV2`, `PublicProofBundle`, public proof payload bytes, authority
+flags, product `verify_public`, and the explicit K6a NonZK integrity security
+boundary are unchanged. Product `verify_public` remains on the authoritative
+monolithic WHIR typed-CP route and is expected to pass there; malformed
+SYMBT3/K6a profile or proof-kind inputs still fail closed in the explicit
+opt-in route.
 The first `symbt3_e_vs_k` benchmark preserved the one-proof guard while
 switching the default product law to `RqNegacyclicConvolutionV1` and beta action
 to `RingCoefficientActionV1`: `k=1` measured 395,418 proof bytes, 6.4393 ms

@@ -21,6 +21,7 @@
 //! For the classical (non-PQ) alternative, see [`SpartanSnark`](super::spartan::SpartanSnark).
 
 pub mod field;
+pub mod instrumented_benchmark;
 pub mod serialize;
 
 use std::collections::HashMap;

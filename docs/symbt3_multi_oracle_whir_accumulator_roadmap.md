@@ -261,9 +261,9 @@ num_merkle_paths
 num_hashes_estimate
 num_field_ops_estimate
 num_extension_field_ops_estimate
-proof_bytes_total
+proof_bytes
 proof_bytes_by_section
-public_bytes_total
+public_bytes
 public_bytes_by_section
 peak_alloc_bytes
 ```
@@ -294,16 +294,36 @@ The exact schema can differ, but it must be stable and diffable.
 
 ### Status
 
-Implemented for the current single-oracle K6a SYMBT3 accumulator benchmark
-path. `symbt3_accumulator_authority_vs_k` now emits the existing
+Complete for the current single-oracle K6a SYMBT3 accumulator benchmark
+baseline branch. Multi-oracle WHIR implementation is intentionally out of scope
+for this branch and lives in a separate branch. `symbt3_accumulator_authority_vs_k`
+now emits the existing
 `SYMBT3_CSV` row plus a stable JSONL row with prefix
-`SYMBT3_MILESTONE0_JSON,` and writes the same JSON object to:
+`SYMBT3_INSTRUMENTED_BENCHMARK_JSON,` and writes the same JSON object to:
 
 ```text
-benchmarks/symbt3_milestone0.jsonl
+benchmarks/symbt3_instrumented_benchmark.jsonl
 ```
 
-The JSON schema is `symphony.symbt3.milestone0.v1`. It includes:
+The JSON schema is `symphony.symbt3.instrumented_benchmark.v1`. It is the
+comparison contract consumed by the separate multi-oracle branch. Required
+top-level fields are:
+
+```text
+schema
+k_table
+prove_ms
+verify_ms
+proof_bytes
+public_bytes
+proof_bytes_by_section
+public_bytes_by_section
+counters
+verifier_timers
+prover_timers
+```
+
+Each row includes:
 
 - `k_table`, measured `prove_ms`, measured `verify_ms`;
 - total proof/public bytes plus `proof_bytes_by_section` and
@@ -321,11 +341,17 @@ The JSON schema is `symphony.symbt3.milestone0.v1`. It includes:
   serialization, and Symphony accumulator glue.
 
 This is benchmark hygiene only. It does not change `ProofBundleV2`,
-`PublicProofBundle`, WHIR payload bytes, authority flags, product
-`verify_public` routing, or the K6a NonZK integrity security boundary. Product
-`verify_public` is still expected to pass through the authoritative monolithic
-WHIR typed-CP route; malformed SYMBT3/K6a profile or proof-kind inputs still
-fail closed in the explicit opt-in route.
+`PublicProofBundle`, WHIR payload bytes, public proof payload bytes, authority
+flags, product `verify_public` routing, or the K6a NonZK integrity security
+boundary. Product `verify_public` remains on the authoritative monolithic WHIR
+typed-CP route and is expected to pass there; malformed SYMBT3/K6a profile or
+proof-kind inputs still fail closed in the explicit opt-in route.
+
+Use the helper below to summarize the frozen baseline JSONL:
+
+```text
+python3 scripts/analyze_symbt3_instrumented_benchmark.py benchmarks/symbt3_instrumented_benchmark.jsonl
+```
 
 ---
 

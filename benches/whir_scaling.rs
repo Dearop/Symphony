@@ -84,6 +84,11 @@ use symphony::snark::cp_snark::{
     generate_typed_cp_digest_r1cs_with_audit, typed_cp_digest_input_lengths_from_setup,
     TypedCpAuditBlockKind, TypedCpSplitComponent,
 };
+use symphony::snark::whir::instrumented_benchmark::{
+    symbt3_instrumented_benchmark_json_line, Symbt3InstrumentedBenchmarkJsonRow,
+    SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES,
+    SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES,
+};
 use symphony::snark::whir::{
     whir_typed_batched_cp_columnar_v2_private_opening_profile,
     whir_typed_batched_cp_family_columnar_v2_private_opening_profile,
@@ -104,11 +109,12 @@ use symphony::{
 };
 
 static SYMBT3_SCALING_CSV_INIT: Once = Once::new();
-static SYMBT3_MILESTONE0_JSONL_INIT: Once = Once::new();
+static SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_INIT: Once = Once::new();
 static PRODUCT_ROUTE_COMPARISON_CSV_INIT: Once = Once::new();
 
-const SYMBT3_MILESTONE0_JSONL_PATH: &str = "benchmarks/symbt3_milestone0.jsonl";
-const SYMBT3_MILESTONE0_JSON_PREFIX: &str = "SYMBT3_MILESTONE0_JSON,";
+const SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_PATH: &str =
+    "benchmarks/symbt3_instrumented_benchmark.jsonl";
+const SYMBT3_INSTRUMENTED_BENCHMARK_JSON_PREFIX: &str = "SYMBT3_INSTRUMENTED_BENCHMARK_JSON,";
 const PRODUCT_ROUTE_COMPARISON_CSV_PATH: &str = "benchmarks/product_route_comparison.csv";
 const PRODUCT_ROUTE_COMPARISON_CSV_PREFIX: &str = "PRODUCT_COMPARISON_CSV,";
 const PRODUCT_ROUTE_COMPARISON_CSV_HEADER: &str = concat!(
@@ -324,22 +330,6 @@ fn write_symbt3_scaling_csv_row(row: &Symbt3ScalingCsvRow<'_>) {
         .expect("append SYMBT3 scaling CSV row");
 }
 
-fn json_usize_object(fields: &[(&str, usize)]) -> String {
-    let entries = fields
-        .iter()
-        .map(|(key, value)| format!("\"{key}\":{value}"))
-        .collect::<Vec<_>>();
-    format!("{{{}}}", entries.join(","))
-}
-
-fn json_f64_object(fields: &[(&str, f64)]) -> String {
-    let entries = fields
-        .iter()
-        .map(|(key, value)| format!("\"{key}\":{value:.6}"))
-        .collect::<Vec<_>>();
-    format!("{{{}}}", entries.join(","))
-}
-
 fn i64_vec_wire_bytes(values: &[i64]) -> usize {
     8 + values.len() * 8
 }
@@ -360,23 +350,35 @@ fn whir_proof_bytes_by_section(proof: &WhirProof) -> Vec<(&'static str, usize)> 
     let pcs_bytes =
         serde_json::to_vec(&proof.whir_pcs_proof).expect("WHIR PCS proof must serialize");
     let sections = vec![
-        ("header", 8 + 2 + 1 + 8),
         (
-            "sumcheck_rounds_3",
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[0],
+            8 + 2 + 1 + 8,
+        ),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[1],
             8 + proof.sumcheck_rounds_3.len() * 3 * 4,
         ),
         (
-            "sumcheck_rounds_4",
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[2],
             8 + proof.sumcheck_rounds_4.len() * 4 * 4,
         ),
-        ("evaluations_and_z_eval", 4 * 4),
-        ("linear_checks", linear_checks),
+        (SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[3], 4 * 4),
         (
-            "private_opening_evals",
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[4],
+            linear_checks,
+        ),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[5],
             8 + proof.private_opening_evals.len() * 4,
         ),
-        ("family_columnar_subproofs", family_columnar_subproofs),
-        ("whir_pcs_json", 8 + pcs_bytes.len()),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[6],
+            family_columnar_subproofs,
+        ),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PROOF_SECTION_NAMES[7],
+            8 + pcs_bytes.len(),
+        ),
     ];
     debug_assert_eq!(
         sections.iter().map(|(_, bytes)| *bytes).sum::<usize>(),
@@ -390,20 +392,29 @@ fn accumulator_public_bytes_by_section(
 ) -> Vec<(&'static str, usize)> {
     vec![
         (
-            "domain",
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[0],
             8 + b"symphony-symbt3-accumulator-instance-v2".len(),
         ),
-        ("profile_and_shape", 32 + 32 + 8 + 8),
         (
-            "accumulator_boundary",
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[1],
+            32 + 32 + 8 + 8,
+        ),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[2],
             32 + 32
                 + i64_vec_wire_bytes(&instance.old_accumulator_coordinates)
                 + i64_vec_wire_bytes(&instance.new_accumulator_coordinates),
         ),
-        ("manifest_and_layouts", 32 + 32 + 32 + 4 + 8 * 32),
-        ("batch_source_message_digests", 7 * 32),
         (
-            "folded_values",
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[3],
+            32 + 32 + 32 + 4 + 8 * 32,
+        ),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[4],
+            7 * 32,
+        ),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[5],
             i64_vec_wire_bytes(&instance.folded_public_input)
                 + i64_vec_wire_bytes(&instance.folded_commitment)
                 + i64_vec_wire_bytes(&instance.folded_evaluation)
@@ -412,20 +423,24 @@ fn accumulator_public_bytes_by_section(
                 + i64_vec_wire_bytes(&instance.folded_ajtai_commitment)
                 + 32,
         ),
-        ("relation_and_output_digests", 12 * 32),
+        (
+            SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[6],
+            12 * 32,
+        ),
     ]
 }
 
-fn write_symbt3_milestone0_json_row(
+fn write_symbt3_instrumented_benchmark_json_row(
     row: &Symbt3ScalingCsvRow<'_>,
     accumulator_instance: &Symbt3AccumulatorInstance,
     proof: &WhirProof,
     prover_profile: &Symbt3ProverCostProfile,
     verifier_profile: &Symbt3VerifierCostProfile,
 ) {
-    SYMBT3_MILESTONE0_JSONL_INIT.call_once(|| {
+    SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_INIT.call_once(|| {
         std::fs::create_dir_all("benchmarks").expect("create benchmarks directory");
-        std::fs::write(SYMBT3_MILESTONE0_JSONL_PATH, "").expect("reset SYMBT3 Milestone 0 JSONL");
+        std::fs::write(SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_PATH, "")
+            .expect("reset SYMBT3 instrumented benchmark JSONL");
     });
 
     let proof_bytes_total = canonical_whir_proof_bytes(proof).len();
@@ -454,154 +469,143 @@ fn write_symbt3_milestone0_json_row(
         .saturating_add(public_bytes_total);
 
     let mut public_sections = public_bytes_by_section;
-    public_sections.push(("other", public_other));
+    public_sections.push((
+        SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES[7],
+        public_other,
+    ));
 
-    let json = format!(
-        concat!(
-            "{{",
-            "\"schema\":\"symphony.symbt3.milestone0.v1\",",
-            "\"profile\":\"{}\",",
-            "\"route_kind\":\"{}\",",
-            "\"k_table\":{},",
-            "\"verify_ms\":{:.6},",
-            "\"prove_ms\":{:.6},",
-            "\"proof_bytes_total\":{},",
-            "\"proof_bytes_by_section\":{},",
-            "\"public_bytes_total\":{},",
-            "\"public_bytes_by_section\":{},",
-            "\"counters\":{},",
-            "\"verifier_timers_ms\":{},",
-            "\"prover_timers_ms\":{}",
-            "}}"
+    let counters = [
+        ("num_oracles", 1),
+        ("num_roots", 1),
+        ("num_query_positions", num_query_positions),
+        ("num_merkle_paths", num_query_positions),
+        ("num_hashes_estimate", num_hashes_estimate),
+        ("num_field_ops_estimate", num_field_ops_estimate),
+        (
+            "num_extension_field_ops_estimate",
+            num_extension_field_ops_estimate,
         ),
-        row.profile,
-        row.route_kind,
-        row.k,
-        verifier_profile.verify_total_ms,
-        prover_profile.prove_total_ms,
-        proof_bytes_total,
-        json_usize_object(&proof_bytes_by_section),
-        public_bytes_total,
-        json_usize_object(&public_sections),
-        json_usize_object(&[
-            ("num_oracles", 1),
-            ("num_roots", 1),
-            ("num_query_positions", num_query_positions),
-            ("num_merkle_paths", num_query_positions),
-            ("num_hashes_estimate", num_hashes_estimate),
-            ("num_field_ops_estimate", num_field_ops_estimate),
-            (
-                "num_extension_field_ops_estimate",
-                num_extension_field_ops_estimate,
-            ),
-            ("peak_alloc_bytes", peak_alloc_bytes),
-            ("top_level_whir_proof_count", row.top_level_whir_proof_count),
-            (
-                "family_columnar_subproof_count",
-                row.family_columnar_subproof_count,
-            ),
-            ("backend_table_count", row.backend_table_count),
-            (
-                "source_r1cs_residual_verifier_evaluations",
-                row.source_r1cs_residual_verifier_evaluations,
-            ),
-        ]),
-        json_f64_object(&[
-            (
-                "transcript_absorb_squeeze",
-                verifier_profile.verify_transcript_ms,
-            ),
-            (
-                "merkle_root_path_verification",
-                verifier_profile.verify_merkle_or_pcs_opening_ms,
-            ),
-            ("field_operations", verifier_profile.verify_field_ops_ms),
-            (
-                "field_extension_operations",
-                verifier_profile.verify_field_extension_ops_ms,
-            ),
-            (
-                "fold_query_evaluation",
-                verifier_profile.verify_fold_query_eval_ms,
-            ),
-            (
-                "eq_lagrange_evaluation",
-                verifier_profile.verify_eq_lagrange_eval_ms,
-            ),
-            (
-                "constraint_batching",
-                verifier_profile.verify_constraint_batching_ms,
-            ),
-            (
-                "symphony_accumulator_decoding",
-                verifier_profile.verify_accumulator_decoding_ms,
-            ),
-            (
-                "proof_deserialization",
-                verifier_profile.verify_proof_deserialization_ms,
-            ),
-            (
-                "public_input_parsing",
-                verifier_profile.verify_public_input_parsing_ms,
-            ),
-        ]),
-        json_f64_object(&[
-            (
-                "oracle_construction",
-                prover_profile.prove_oracle_construction_ms
-            ),
-            (
-                "whir_folding_layers",
-                prover_profile.prove_whir_folding_layers_ms,
-            ),
-            (
-                "merkle_tree_build",
-                prover_profile.prove_merkle_tree_build_ms
-            ),
-            (
-                "merkle_path_materialization",
-                prover_profile.prove_merkle_path_materialization_ms,
-            ),
-            (
-                "constraint_construction",
-                prover_profile.prove_constraint_construction_ms,
-            ),
-            (
-                "constraint_batching",
-                prover_profile.prove_constraint_batching_ms,
-            ),
-            (
-                "transcript_absorb_squeeze",
-                prover_profile.prove_transcript_ms,
-            ),
-            ("field_operations", prover_profile.prove_field_ops_ms),
-            (
-                "field_extension_operations",
-                prover_profile.prove_field_extension_ops_ms,
-            ),
-            (
-                "allocations_copies",
-                prover_profile.prove_allocations_copies_ms,
-            ),
-            (
-                "proof_serialization",
-                prover_profile.prove_proof_serialization_ms,
-            ),
-            (
-                "symphony_accumulator_glue",
-                prover_profile.prove_accumulator_glue_ms,
-            ),
-        ]),
-    );
-    print!("{SYMBT3_MILESTONE0_JSON_PREFIX}{json}\n");
+        ("peak_alloc_bytes", peak_alloc_bytes),
+        ("top_level_whir_proof_count", row.top_level_whir_proof_count),
+        (
+            "family_columnar_subproof_count",
+            row.family_columnar_subproof_count,
+        ),
+        ("backend_table_count", row.backend_table_count),
+        (
+            "source_r1cs_residual_verifier_evaluations",
+            row.source_r1cs_residual_verifier_evaluations,
+        ),
+    ];
+    let verifier_timers = [
+        (
+            "transcript_absorb_squeeze",
+            verifier_profile.verify_transcript_ms,
+        ),
+        (
+            "merkle_root_path_verification",
+            verifier_profile.verify_merkle_or_pcs_opening_ms,
+        ),
+        ("field_operations", verifier_profile.verify_field_ops_ms),
+        (
+            "field_extension_operations",
+            verifier_profile.verify_field_extension_ops_ms,
+        ),
+        (
+            "fold_query_evaluation",
+            verifier_profile.verify_fold_query_eval_ms,
+        ),
+        (
+            "eq_lagrange_evaluation",
+            verifier_profile.verify_eq_lagrange_eval_ms,
+        ),
+        (
+            "constraint_batching",
+            verifier_profile.verify_constraint_batching_ms,
+        ),
+        (
+            "symphony_accumulator_decoding",
+            verifier_profile.verify_accumulator_decoding_ms,
+        ),
+        (
+            "proof_deserialization",
+            verifier_profile.verify_proof_deserialization_ms,
+        ),
+        (
+            "public_input_parsing",
+            verifier_profile.verify_public_input_parsing_ms,
+        ),
+    ];
+    let prover_timers = [
+        (
+            "oracle_construction",
+            prover_profile.prove_oracle_construction_ms,
+        ),
+        (
+            "whir_folding_layers",
+            prover_profile.prove_whir_folding_layers_ms,
+        ),
+        (
+            "merkle_tree_build",
+            prover_profile.prove_merkle_tree_build_ms,
+        ),
+        (
+            "merkle_path_materialization",
+            prover_profile.prove_merkle_path_materialization_ms,
+        ),
+        (
+            "constraint_construction",
+            prover_profile.prove_constraint_construction_ms,
+        ),
+        (
+            "constraint_batching",
+            prover_profile.prove_constraint_batching_ms,
+        ),
+        (
+            "transcript_absorb_squeeze",
+            prover_profile.prove_transcript_ms,
+        ),
+        ("field_operations", prover_profile.prove_field_ops_ms),
+        (
+            "field_extension_operations",
+            prover_profile.prove_field_extension_ops_ms,
+        ),
+        (
+            "allocations_copies",
+            prover_profile.prove_allocations_copies_ms,
+        ),
+        (
+            "proof_serialization",
+            prover_profile.prove_proof_serialization_ms,
+        ),
+        (
+            "symphony_accumulator_glue",
+            prover_profile.prove_accumulator_glue_ms,
+        ),
+    ];
+    let json = symbt3_instrumented_benchmark_json_line(&Symbt3InstrumentedBenchmarkJsonRow {
+        profile: row.profile,
+        route_kind: row.route_kind,
+        k_table: row.k,
+        prove_ms: prover_profile.prove_total_ms,
+        verify_ms: verifier_profile.verify_total_ms,
+        proof_bytes: proof_bytes_total,
+        public_bytes: public_bytes_total,
+        proof_bytes_by_section: &proof_bytes_by_section,
+        public_bytes_by_section: &public_sections,
+        counters: &counters,
+        verifier_timers: &verifier_timers,
+        prover_timers: &prover_timers,
+    });
+    print!("{SYMBT3_INSTRUMENTED_BENCHMARK_JSON_PREFIX}{json}\n");
     std::io::stdout()
         .flush()
-        .expect("flush SYMBT3 Milestone 0 JSON row");
+        .expect("flush SYMBT3 instrumented benchmark JSON row");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
-        .open(SYMBT3_MILESTONE0_JSONL_PATH)
-        .expect("open SYMBT3 Milestone 0 JSONL");
-    writeln!(file, "{json}").expect("append SYMBT3 Milestone 0 JSON row");
+        .open(SYMBT3_INSTRUMENTED_BENCHMARK_JSONL_PATH)
+        .expect("open SYMBT3 instrumented benchmark JSONL");
+    writeln!(file, "{json}").expect("append SYMBT3 instrumented benchmark JSON row");
 }
 
 struct ProductRouteComparisonCsvRow {
@@ -3864,7 +3868,7 @@ fn bench_symbt3_accumulator_authority_vs_k(c: &mut Criterion) {
         );
 
         write_symbt3_scaling_csv_row(row);
-        write_symbt3_milestone0_json_row(
+        write_symbt3_instrumented_benchmark_json_row(
             row,
             &measurement.accumulator_instance,
             &measurement.proof,
