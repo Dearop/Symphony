@@ -418,6 +418,21 @@ proof size 951 bytes, and public envelope size 1,221,492 bytes. Criterion
 history under `target/criterion` must be reset or interpreted as local history
 before using `change` percentages as a regression signal.
 
+The SYMBT3 instrumented benchmark baseline (the multi-oracle roadmap's
+Milestone 0) is also complete as a benchmark-hygiene baseline on the
+single-oracle K6a accumulator branch. The K6a benchmark emits
+`SYMBT3_INSTRUMENTED_BENCHMARK_JSON` rows and writes
+`benchmarks/symbt3_instrumented_benchmark.jsonl` with schema
+`symphony.symbt3.instrumented_benchmark.v1`; that JSONL schema is the
+comparison contract for the separate multi-oracle branch. Multi-oracle profiles,
+tuple-leaf layouts, shared-query routing, and multi-oracle verifier semantics
+are intentionally out of scope here. This does not change `ProofBundleV2`,
+`PublicProofBundle`, WHIR/public proof payload bytes, authority flags, product
+`verify_public`, or K6a NonZK integrity semantics. Product `verify_public`
+remains on the authoritative monolithic WHIR typed-CP route and is expected to
+pass there; malformed SYMBT3/K6a profile or proof-kind inputs fail closed only
+inside the explicit opt-in SYMBT3 route.
+
 ### Production Milestone E - Performance Reduction Pass
 
 Goal: reduce public verification and proving cost without weakening the public

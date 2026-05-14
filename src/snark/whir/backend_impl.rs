@@ -722,37 +722,7 @@ impl BackendSnark for WhirSnark {
         statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
         witness: &crate::batched_cp::BatchedCpSymbt3Witness,
     ) -> Option<Self::Proof> {
-        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
-            pk.relation.context.as_ref()?,
-        )
-        .ok()?;
-        if !statement.matches_relation(&relation)
-            || statement.canonical_bytes().len() != relation.public_statement_bytes()
-            || witness.message_oracles.len() != relation.oracle_layout.message_oracles.len()
-            || !relation.has_symbt3_i_families()
-        {
-            return None;
-        }
-        let claims =
-            symbt3_c_table_and_claims(&pk.seed, &relation, statement, Some(witness), None, None)?;
-        let table = claims.table.as_ref()?;
-        let (whir_pcs_proof, evals) =
-            whir_commit_and_prove_multi(&pk.seed, claims.num_vars, table, &claims.points);
-        if evals != claims.claimed {
-            return None;
-        }
-        Some(WhirProof {
-            sumcheck_rounds_3: Vec::new(),
-            sumcheck_rounds_4: claims.product_sumcheck_rounds,
-            evaluations: claims.evaluations,
-            whir_pcs_proof,
-            z_eval: claims.z_eval,
-            linear_checks: Vec::new(),
-            private_opening_evals: claims.claimed,
-            family_columnar_subproofs: Vec::new(),
-            num_vars: claims.num_vars,
-            is_output: false,
-        })
+        prove_symbt3_batched_cp_with_profile(pk, statement, witness, None)
     }
 
     fn verify_symbt3_batched_cp(
@@ -890,7 +860,163 @@ impl BackendSnark for WhirSnark {
     }
 }
 
+fn prove_symbt3_batched_cp_with_profile(
+    pk: &WhirProvingKey,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+    mut profile: Option<&mut Symbt3ProverCostProfile>,
+) -> Option<WhirProof> {
+    let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+        pk.relation.context.as_ref()?,
+    )
+    .ok()?;
+    if !statement.matches_relation(&relation)
+        || statement.canonical_bytes().len() != relation.public_statement_bytes()
+        || witness.message_oracles.len() != relation.oracle_layout.message_oracles.len()
+        || !relation.has_symbt3_i_families()
+    {
+        return None;
+    }
+
+    let claims_start = std::time::Instant::now();
+    let claims =
+        symbt3_c_table_and_claims(&pk.seed, &relation, statement, Some(witness), None, None)?;
+    let claims_ms = elapsed_ms(claims_start);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.prove_constraint_construction_ms += claims_ms;
+        profile.prove_constraint_batching_ms += claims.eval_profile.verify_sumcheck_rounds_ms;
+        profile.prove_field_ops_ms += claims_ms;
+        profile.prove_allocations_copies_ms += claims_ms;
+    }
+
+    let table = claims.table.as_ref()?;
+    let (whir_pcs_proof, evals) = whir_commit_and_prove_multi_with_profile(
+        &pk.seed,
+        claims.num_vars,
+        table,
+        &claims.points,
+        profile.as_deref_mut(),
+    );
+    if evals != claims.claimed {
+        return None;
+    }
+
+    Some(WhirProof {
+        sumcheck_rounds_3: Vec::new(),
+        sumcheck_rounds_4: claims.product_sumcheck_rounds,
+        evaluations: claims.evaluations,
+        whir_pcs_proof,
+        z_eval: claims.z_eval,
+        linear_checks: Vec::new(),
+        private_opening_evals: claims.claimed,
+        family_columnar_subproofs: Vec::new(),
+        num_vars: claims.num_vars,
+        is_output: false,
+    })
+}
+
 impl WhirSnark {
+    /// Prove a SYMBT3 public statement and return coarse prover-cost
+    /// attribution for benchmark hygiene.
+    #[must_use]
+    pub fn profile_symbt3_batched_cp_prover(
+        pk: &WhirProvingKey,
+        statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+        witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+    ) -> Option<(WhirProof, Symbt3ProverCostProfile)> {
+        let total_start = std::time::Instant::now();
+        let mut profile = Symbt3ProverCostProfile::default();
+        let proof = prove_symbt3_batched_cp_with_profile(
+            pk,
+            statement,
+            witness,
+            Some(&mut profile),
+        )?;
+        profile.prove_total_ms = elapsed_ms(total_start);
+        Some((proof, profile))
+    }
+
+    /// Prove through the explicit opt-in K6a NonZK integrity accumulator route
+    /// and return benchmark attribution.
+    ///
+    /// This is a profiling helper for the non-default product-integrity route.
+    /// It does not change product `verify_public` routing and does not add
+    /// fields to the public proof object.
+    #[must_use]
+    pub fn profile_public_symbt3_accumulator_non_zk_integrity_prover(
+        pk: &WhirProvingKey,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+        accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+        witness: &crate::batched_cp::Symbt3AccumulatorWitness,
+    ) -> Option<(WhirProof, Symbt3ProverCostProfile)> {
+        let total_start = std::time::Instant::now();
+        let mut cost = Symbt3ProverCostProfile::default();
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            pk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        let glue_start = std::time::Instant::now();
+        let statement = symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+            profile,
+            accumulator_instance,
+            &relation,
+        )?;
+        let witness = witness.to_symbt3_witness(&relation)?;
+        cost.prove_accumulator_glue_ms += elapsed_ms(glue_start);
+        let proof =
+            prove_symbt3_batched_cp_with_profile(pk, &statement, &witness, Some(&mut cost))?;
+        cost.prove_total_ms = elapsed_ms(total_start);
+        Some((proof, cost))
+    }
+
+    /// Verify through the explicit opt-in K6a NonZK integrity accumulator route
+    /// and return benchmark attribution.
+    #[must_use]
+    pub fn profile_public_symbt3_accumulator_non_zk_integrity_verifier(
+        vk: &WhirVerifyingKey,
+        profile: &crate::batched_cp::Symbt3AuthorityProfile,
+        accumulator_instance: &crate::batched_cp::Symbt3AccumulatorInstance,
+        proof_kind: crate::batched_cp::ProductProofKind,
+        proof: &WhirProof,
+    ) -> Option<(bool, Symbt3VerifierCostProfile)> {
+        let total_start = std::time::Instant::now();
+        let mut cost = Symbt3VerifierCostProfile::default();
+        let proof_decode_start = std::time::Instant::now();
+        if proof_kind != crate::batched_cp::ProductProofKind::Symbt3AccumulatorNonZkIntegrity
+            || proof.is_output
+            || !proof.sumcheck_rounds_3.is_empty()
+            || !proof.linear_checks.is_empty()
+            || !proof.family_columnar_subproofs.is_empty()
+        {
+            cost.verify_proof_deserialization_ms += elapsed_ms(proof_decode_start);
+            cost.verify_total_ms = elapsed_ms(total_start);
+            return Some((false, cost));
+        }
+        cost.verify_proof_deserialization_ms += elapsed_ms(proof_decode_start);
+
+        let decode_start = std::time::Instant::now();
+        let relation = crate::batched_cp::BatchedCpSymbt3RelationDescription::from_context_bytes(
+            vk.relation.context.as_ref()?,
+        )
+        .ok()?;
+        let Some(statement) = symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+            profile,
+            accumulator_instance,
+            &relation,
+        ) else {
+            cost.verify_accumulator_decoding_ms += elapsed_ms(decode_start);
+            cost.verify_total_ms = elapsed_ms(total_start);
+            return Some((false, cost));
+        };
+        let decode_ms = elapsed_ms(decode_start);
+        cost.verify_accumulator_decoding_ms += decode_ms;
+        cost.verify_public_input_parsing_ms += decode_ms;
+
+        let ok = verify_symbt3_batched_cp_with_profile(vk, &statement, proof, Some(&mut cost))?;
+        cost.verify_total_ms = elapsed_ms(total_start);
+        Some((ok, cost))
+    }
+
     /// Verify a SYMBT3 development proof and return coarse verifier-cost
     /// attribution for architecture benchmarks.
     #[must_use]
@@ -1180,4 +1306,3 @@ fn symbt3_accumulator_statement_for_relation(
         None
     }
 }
-

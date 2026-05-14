@@ -1127,6 +1127,24 @@ proof, zero family subproofs, and one backend table. K6b is a cleanup/reporting
 pass only; it does not change protocol semantics, product routing, or the
 K6a opt-in policy.
 
+Milestone 0 for the separate multi-oracle comparison work (the SYMBT3
+instrumented benchmark baseline) is complete on this branch as the
+single-oracle K6a instrumentation baseline. It freezes
+`benchmarks/symbt3_instrumented_benchmark.jsonl` with schema
+`symphony.symbt3.instrumented_benchmark.v1` and required top-level fields
+`schema`,
+`k_table`, `prove_ms`, `verify_ms`, `proof_bytes`, `public_bytes`,
+`proof_bytes_by_section`, `public_bytes_by_section`, `counters`,
+`verifier_timers`, and `prover_timers`. Multi-oracle implementation is
+intentionally out of scope here and lives in a separate branch. This branch does
+not add multi-oracle profiles, tuple-leaf layouts, shared-query routing, or
+multi-oracle verifier semantics, and it does not change `ProofBundleV2`,
+`PublicProofBundle`, WHIR/public proof payload bytes, authority flags, product
+`verify_public`, or K6a NonZK integrity semantics. Product `verify_public`
+remains on the authoritative monolithic WHIR typed-CP route; malformed
+SYMBT3/K6a profile or proof-kind inputs still fail closed in the explicit
+opt-in route.
+
 Run:
 
 ```text
