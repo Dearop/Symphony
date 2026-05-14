@@ -199,8 +199,16 @@ pub fn prove(
         let ring_vec = RingVector {
             elements: padded.clone(),
         };
-        // Create a commitment for monomial vectors (may differ in size from main witness)
-        let mon_ajtai = AjtaiParams::setup(ajtai.kappa, mon_len, ajtai.q, &ajtai.ntt);
+        // Create a deterministic verifier-reconstructable commitment matrix
+        // for monomial vectors. Typed CP uses the same derivation to enforce
+        // opening validity in-circuit.
+        let mon_ajtai = AjtaiParams::setup_deterministic(
+            ajtai.kappa,
+            mon_len,
+            ajtai.q,
+            &ajtai.ntt,
+            b"range-proof-monomial",
+        );
         let (c, _) = mon_ajtai.commit(&ring_vec);
         monomial_commitments.push(c);
         monomial_vectors.push(padded);

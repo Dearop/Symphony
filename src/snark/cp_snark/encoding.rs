@@ -209,6 +209,32 @@ pub fn encode_typed_cp_public_instance(
     buf
 }
 
+/// Encode the expanded typed CP public statement for typed backend CP proving
+/// paths. This binds public inputs, relation dimensions, and digest scheme in
+/// addition to the compact digest instance.
+#[must_use]
+pub fn encode_typed_cp_public_statement(
+    statement: &crate::cp_relation_core::CpPublicStatement,
+) -> Vec<u8> {
+    let mut buf = encode_typed_cp_public_instance(&statement.instance);
+    buf.extend_from_slice(&(statement.public_inputs.len() as u64).to_le_bytes());
+    for public_input in &statement.public_inputs {
+        buf.extend_from_slice(&(public_input.len() as u64).to_le_bytes());
+        for &value in public_input {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    buf.extend_from_slice(&(statement.r1cs_num_constraints as u64).to_le_bytes());
+    buf.extend_from_slice(&(statement.r1cs_num_variables as u64).to_le_bytes());
+    buf.extend_from_slice(&(statement.r1cs_num_public as u64).to_le_bytes());
+    buf.push(match statement.digest_scheme {
+        crate::digest_core::PublicDigestScheme::Sha256 => 0,
+        #[cfg(feature = "whir")]
+        crate::digest_core::PublicDigestScheme::Poseidon2BabyBear => 1,
+    });
+    buf
+}
+
 /// Encode the typed modular/legacy CP witness bundle for typed backend CP
 /// proving paths.
 #[must_use]

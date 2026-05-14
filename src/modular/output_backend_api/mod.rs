@@ -15,6 +15,10 @@ pub trait OutputBackend {
         q: u64,
         d: usize,
     ) -> Option<Vec<u8>>;
+    /// Security gate for public folded-output verification.
+    ///
+    /// Typed output helper hooks are ignored by public routing unless this
+    /// returns true.
     fn has_authoritative_typed_output() -> bool {
         false
     }

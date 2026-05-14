@@ -454,17 +454,25 @@ symphony/
 │   ├── snark/
 │   │   ├── mod.rs            // Construction 6.1 compiler + BackendSnark trait
 │   │   ├── cp_snark.rs       // Commit-and-prove SNARK interface
+│   │   ├── cp_snark/
+│   │   │   └── typed_r1cs/    // Typed CP R1CS layouts, Poseidon, constraints, witness, tests
 │   │   ├── prover.rs         // Full SNARK prover
 │   │   ├── sumcheck_snark.rs // Demo backend (transcript binding checks)
 │   │   ├── spartan/          // Spartan backend (Pedersen + IPA over Ristretto)
 │   │   │   ├── mod.rs, commitment.rs, ipa.rs, r1cs_sumcheck.rs,
 │   │   │   │   scalar_field.rs, serialize.rs, sumcheck.rs
 │   │   └── whir/             // WHIR backend (feature-gated, PQ Merkle PCS)
-│   │       ├── mod.rs, field.rs, serialize.rs
+│   │       ├── mod.rs         // Module root / orchestration facade
+│   │       ├── backend_impl.rs, batched_cp_columnar.rs,
+│   │       │   batched_cp_context.rs, core_protocol.rs, output.rs
+│   │       ├── symbt3_columns.rs, symbt3_verify.rs
+│   │       ├── field.rs, serialize.rs
 │   ├── r1cs/
 │   │   ├── mod.rs            // R1CS relation definition
 │   │   ├── generalized.rs    // Generalized committed R1CS (Eq. 38)
 │   │   └── conversion.rs     // Standard → generalized R1CS conversion
+│   ├── modular/
+│   │   └── batched_cp/        // Structured batched CP and SYMBT3 split sections
 │   └── params.rs             // Global parameter struct (Table 1)
 └── benches/
     └── folding.rs            // Benchmarks for commitment + folding
@@ -673,9 +681,10 @@ MSIS parameters are set for 117-bit security using the lattice estimator. Both |
 4. **Two-layer folding** requires the structured MSIS matrix assumption (Eq. 56), which is slightly stronger than standard MSIS.
 5. **One-pass streaming** for the non-recursive setting remains an open problem. Current algorithm requires 2 + log log(n) passes.
 6. **WHIR output binding is implemented for the R1CS backend path.** The output verifier now checks that the claimed `Az(r*)`, `Bz(r*)`, and `Cz(r*)` values are derived from the same WHIR-committed assignment polynomial `z` using three sparse linear-binding sumchecks plus a constant number of WHIR openings. This keeps the verifier on the intended verifier-centric path from the WHIR/Symphony cost model, while pushing witness-sized work to the prover.
-7. **CP-R1CS q-wrap status.** Phase-A folded commitment/public-input q-wraps are range-constrained in the WHIR CP-R1CS encoding so they cannot be used as free BabyBear slack for forged folded outputs. Phase-B embedded Hadamard rows still use legacy per-row q-wraps and are not an authoritative typed CP proof by themselves.
-8. **Typed public-only CP authority remains open.** The v2 public-only verifier intentionally fails closed until a backend proves the full typed CP relation, including transcript reconstruction, commitment-opening consistency, fold replay, challenge digest binding, folded-output consistency, original witness validity, and folded witness recomputation. The current validated WHIR path is the R1CS/WHIR backend plus mandatory legacy explicit CP checks, not a fully authoritative typed CP verifier.
-9. **WHIR security level** defaults to 100 bits. Tests that need faster parameters should opt into explicit test-only settings rather than weakening the default backend configuration.
+7. **Public proof v2 is the canonical verifier boundary.** `PublicProofBundle` / `PublicSymphonyProof` contain only public inputs supplied out-of-band, public FS commitments/digests, the typed folded output instance, and backend CP/output proofs. The product APIs are `prove_public` / `verify_public`; `prove_v2` / `verify_v2` remain compatibility aliases. The public-boundary digest scheme is backend-selected: SHA-256 remains the compatibility default, and WHIR public proofs use Poseidon2/BabyBear. See `docs/public_proof_v2.md`.
+8. **WHIR typed CP is authoritative for public verification.** WHIR public verification succeeds through `verify_public` without witness-side data. The typed CP proof enforces commitment-opening consistency, fold replay, challenge digest and beta binding, folded-output consistency, original Ajtai openings, and original R1CS witness algebra. Legacy/full `verify` remains available as a compatibility/debug path.
+9. **CP-R1CS q-wrap status.** Phase-A folded commitment/public-input q-wraps are range-constrained in the WHIR CP-R1CS encoding so they cannot be used as free BabyBear slack for forged folded outputs. Phase-B embedded Hadamard rows remain part of the legacy CP-R1CS core, while authoritative public CP verification is provided by the full typed CP R1CS.
+10. **WHIR security level** defaults to 100 bits. Tests that need faster parameters should opt into explicit test-only settings rather than weakening the default backend configuration.
 
 ---
 

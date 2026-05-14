@@ -14,7 +14,8 @@ It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Aj
 - Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`; concrete backends: `SpartanSnark`, `WhirSnark`).
 - **WHIR backend** (feature-gated `whir`): post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from [whir-p3](https://github.com/tcoratger/whir-p3) / Plonky3 over BabyBear. Succinct proofs via Poseidon2-based Merkle commitment + opening — no witness table in proof.
 - **Spartan backend**: R1CS-to-sumcheck reduction with Pedersen commitments and IPA over Ristretto (curve25519-dalek).
-- **Privacy-preserving v2 proof boundary**: `SymphonyProofV2` carries only backend proofs, public Fiat-Shamir commitments/digests, and the folded output instance. Public-only verification fails closed unless a backend advertises authoritative typed CP and output support.
+- **Privacy-preserving v2 proof boundary**: `SymphonyProofV2` carries only backend proofs, public Fiat-Shamir commitments/digests, and the folded output instance. Public-only verification fails closed unless a backend advertises authoritative typed CP and output support. WHIR typed output is authoritative for the final folded R1CS statement; WHIR typed CP remains the open security milestone.
+- **Field-native typed CP specification**: `CpFieldRelation` defines the Poseidon2/BabyBear-friendly CP checks that WHIR must eventually prove, without proving SHA-256 inside WHIR.
 - **Modular CP pipeline** (`src/modular/`): backend-agnostic, split-backend prover/verifier architecture with `ModularProver`/`ModularVerifier` and `ProofBundle` / `ProofBundleV2`, decoupling transcript, digest, folding, and backend concerns into reusable components.
 - Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
 - Integration test suite is split into focused files for maintainability and debugging.
@@ -57,6 +58,7 @@ symphony/
 │   │   ├── prover.rs      #   Full proof generation orchestration
 │   │   ├── cp_snark.rs    #   Commit-and-prove encoding helpers and CP R1CS exports
 │   │   ├── cp_snark/      #   CP instance/witness encoding and CP R1CS layout
+│   │   │   └── typed_r1cs/ #  Typed CP R1CS layout, Poseidon, constraints, witness, tests
 │   │   ├── sumcheck_snark.rs # Sumcheck-backed demo backend (consistency/soundness checks)
 │   │   ├── spartan/       #   Spartan backend (R1CS-to-sumcheck + Pedersen + IPA)
 │   │   │   ├── mod.rs     #     SpartanSnark implementing BackendSnark
@@ -67,11 +69,19 @@ symphony/
 │   │   │   ├── serialize.rs     # SpartanContext serialization
 │   │   │   └── sumcheck.rs      # Sumcheck over Fp
 │   │   └── whir/          #   WHIR backend (feature-gated, post-quantum PCS)
-│   │       ├── mod.rs     #     WhirSnark: sumcheck + WHIR PCS commit/prove/verify
+│   │       ├── mod.rs     #     Module root / orchestration facade
+│   │       ├── backend_impl.rs # BackendSnark impl and typed CP/output routing
+│   │       ├── batched_cp_columnar.rs # Batched CP columnar proof checks
+│   │       ├── batched_cp_context.rs # Batched CP relation context decoding
+│   │       ├── core_protocol.rs # WHIR PCS, CP, sumcheck, and MLE helpers
+│   │       ├── output.rs   #     Typed output proof helpers
+│   │       ├── symbt3_columns.rs # SYMBT3 algebraic columns and claims
+│   │       ├── symbt3_verify.rs # SYMBT3 verifier profile checks
 │   │       ├── field.rs   #     BabyBear byte packing and i64 field conversions
 │   │       └── serialize.rs #   WhirContext serialization
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── modular/           # Reusable modular CP pipeline components
+│   │   ├── batched_cp/        # Structured batched CP and SYMBT3 split sections
 │   │   ├── transcript_core/   # Canonical transcript schema/codec and challenge derivation
 │   │   ├── digest_core/       # Digest/root helpers for transcript and fold bindings
 │   │   ├── folding_core/      # Folding-domain traits and adapters
@@ -106,6 +116,7 @@ symphony/
     ├── symphony_crate_spec.md    # Full implementation specification
     ├── spartan.md                # Spartan backend documentation
     ├── whir.md                   # WHIR backend documentation
+    ├── public_proof_v2.md        # Canonical public verifier proof boundary
     ├── linear_verifier_spec.md   # Linear verifier specification
     ├── lin_verif_design.md       # Linear verifier design notes
     └── modular_cp_pipeline_plan.md # Modular pipeline planning document
@@ -223,12 +234,12 @@ assert!(cp.verify(&scheme, &[c], b"", &IdentityRelation, &proof));
 The `modular` module provides a backend-agnostic, split-backend architecture that decouples the CP-SNARK and output SNARK into independently swappable components:
 
 ```rust
-use symphony::{ModularProver, ModularVerifier, ProofBundle, ProofBundleV2};
+use symphony::{ModularProver, ModularVerifier, ProofBundle, PublicProofBundle};
 ```
 
 Key components:
 - **`ModularProver` / `ModularVerifier`** — end-to-end prover and verifier that orchestrate the full pipeline using separate CP and output backends.
-- **`ProofBundle` / `ProofBundleV2`** — unified proof containers produced by the modular pipeline, including the public-only v2 boundary.
+- **`ProofBundle` / `PublicProofBundle`** — unified proof containers produced by the modular pipeline. `PublicProofBundle` is the canonical public-only verifier boundary; `ProofBundleV2` remains as a compatibility name. See [`docs/public_proof_v2.md`](docs/public_proof_v2.md).
 - **`transcript_core`** — canonical transcript schema, codec, and challenge derivation.
 - **`digest_core`** — digest and root helpers for transcript and fold bindings.
 - **`folding_core`** — folding-domain traits and adapters.
@@ -281,7 +292,7 @@ The test suite covers every protocol layer:
 - `SumcheckSnark` provides stronger tamper-detection and transcript binding checks, but is not a production succinct SNARK backend.
 - `SpartanSnark` implements a full R1CS-to-sumcheck reduction with Pedersen vector commitments and a Bulletproofs-style Inner Product Argument (IPA) over the Ristretto group (`curve25519-dalek`). It provides real cryptographic guarantees and is suitable for CP-SNARK integration testing. Not post-quantum.
 - `WhirSnark` *(feature-gated)* implements a post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from whir-p3 over BabyBear. Uses Poseidon2 hashing/compression in Plonky3's `MerkleTreeMmcs`; Poseidon2 parameters are deterministically derived from a full SHA-256 relation seed using `ChaCha20Rng`. Proofs are succinct (Merkle root + logarithmic opening proof). Plausibly post-quantum since it relies only on hash function security.
-- Backends can optionally provide typed CP and typed output proving/verification. Public-only v2 verification requires these typed paths to be authoritative; otherwise it rejects instead of falling back to witness-side checks.
+- Backends can optionally provide typed CP and typed output proving/verification. Public-only v2 verification requires these typed paths to be authoritative; otherwise it rejects instead of falling back to witness-side checks. WHIR currently has authoritative typed output, a non-authoritative typed CP hook over the existing CP-R1CS core, and a software `CpFieldRelation` spec for typed CP. Public WHIR verification still fails closed because the full typed CP relation is not yet proved inside WHIR.
 - The architecture is ready for plugging in additional backends via `BackendSnark`.
 - For production deployment, run backend-specific security review/benchmarks.
 

@@ -204,8 +204,13 @@ impl<S: BackendSnark, C: FSCommitment> CPSnark<S, C> {
     /// Internally calls `S::setup` with a relation description sized to
     /// hold the commitment checks and one relation constraint.
     pub fn setup(num_messages: usize, max_message_size: usize) -> Self {
+        // Public instances encode only commitments, length prefixes, the
+        // public statement bytes supplied at prove/verify time, and a binding
+        // challenge. Message bytes are private witness data, so increasing
+        // `max_message_size` must not increase the public-instance minimum.
+        let min_instance_size = 8 + num_messages * (8 + 32) + 8 + 32;
         let relation = RelationDescription {
-            num_instance_vars: num_messages * 32 + max_message_size,
+            num_instance_vars: min_instance_size,
             num_witness_vars: num_messages * (max_message_size + 32),
             num_constraints: num_messages + 1,
             context: None,

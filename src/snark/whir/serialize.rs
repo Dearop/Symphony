@@ -3,7 +3,13 @@
 //! Uses the same binary format as Spartan (header "WHIR" instead of "SPRT")
 //! so that the WHIR backend can access R1CS matrices during prove/verify.
 
+use crate::commitment::AjtaiParams;
+use crate::params::D;
 use crate::r1cs::{R1CSMatrices, SparseMatrix};
+use crate::ring::RingElement;
+use crate::snark::cp_snark::CpR1csLayout;
+
+const TYPED_CP_CONTEXT_MAGIC: &[u8; 4] = b"TCP1";
 
 /// WHIR-specific context bundled into the relation description.
 #[derive(Debug, Clone)]
@@ -15,6 +21,18 @@ pub struct WhirContext {
     pub is_output_snark: bool,
     /// True when this context carries the CP-SNARK R1CS (folding constraints).
     pub is_cp_snark: bool,
+    pub typed_cp: Option<WhirTypedCpContext>,
+}
+
+/// Extra public setup material needed to encode a typed CP witness.
+#[derive(Debug, Clone)]
+pub struct WhirTypedCpContext {
+    pub ajtai: AjtaiParams,
+    pub original_r1cs: R1CSMatrices,
+    pub cp_layout: CpR1csLayout,
+    pub lambda_pj: usize,
+    pub ell_h: usize,
+    pub k_g: usize,
 }
 
 /// Serialize a WhirContext to bytes.
@@ -35,6 +53,10 @@ pub fn serialize_context(ctx: &WhirContext) -> Vec<u8> {
     serialize_sparse_matrix(&mut buf, &ctx.r1cs.a);
     serialize_sparse_matrix(&mut buf, &ctx.r1cs.b);
     serialize_sparse_matrix(&mut buf, &ctx.r1cs.c);
+    if let Some(typed_cp) = &ctx.typed_cp {
+        buf.extend_from_slice(TYPED_CP_CONTEXT_MAGIC);
+        serialize_typed_cp_context(&mut buf, typed_cp);
+    }
 
     buf
 }
@@ -61,6 +83,19 @@ pub fn deserialize_context(data: &[u8]) -> Option<WhirContext> {
     let a = deserialize_sparse_matrix(data, &mut pos, num_constraints, num_variables)?;
     let b = deserialize_sparse_matrix(data, &mut pos, num_constraints, num_variables)?;
     let c = deserialize_sparse_matrix(data, &mut pos, num_constraints, num_variables)?;
+    let typed_cp = if pos == data.len() {
+        None
+    } else {
+        if pos + 4 > data.len() || &data[pos..pos + 4] != TYPED_CP_CONTEXT_MAGIC {
+            return None;
+        }
+        pos += 4;
+        let typed_cp = deserialize_typed_cp_context(data, &mut pos)?;
+        if pos != data.len() {
+            return None;
+        }
+        Some(typed_cp)
+    };
 
     Some(WhirContext {
         r1cs: R1CSMatrices {
@@ -76,7 +111,122 @@ pub fn deserialize_context(data: &[u8]) -> Option<WhirContext> {
         n_pub,
         is_output_snark,
         is_cp_snark,
+        typed_cp,
     })
+}
+
+pub fn typed_cp_context_from_descriptor(
+    descriptor: &crate::snark::TypedCpSetupDescriptor,
+) -> WhirTypedCpContext {
+    WhirTypedCpContext {
+        ajtai: descriptor.ajtai.clone(),
+        original_r1cs: descriptor.original_r1cs.clone(),
+        cp_layout: descriptor.cp_layout.clone(),
+        lambda_pj: descriptor.params.lambda_pj,
+        ell_h: descriptor.params.ell_h,
+        k_g: descriptor.params.k_g(),
+    }
+}
+
+fn serialize_typed_cp_context(buf: &mut Vec<u8>, ctx: &WhirTypedCpContext) {
+    buf.extend_from_slice(&(ctx.cp_layout.ell_np as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.cp_layout.kappa as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.cp_layout.n_in as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.original_r1cs.num_constraints as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.lambda_pj as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.ell_h as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.k_g as u64).to_le_bytes());
+    serialize_ajtai(buf, &ctx.ajtai);
+    buf.extend_from_slice(&(ctx.original_r1cs.num_constraints as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.original_r1cs.num_variables as u64).to_le_bytes());
+    buf.extend_from_slice(&(ctx.original_r1cs.num_public as u64).to_le_bytes());
+    serialize_sparse_matrix(buf, &ctx.original_r1cs.a);
+    serialize_sparse_matrix(buf, &ctx.original_r1cs.b);
+    serialize_sparse_matrix(buf, &ctx.original_r1cs.c);
+}
+
+fn deserialize_typed_cp_context(data: &[u8], pos: &mut usize) -> Option<WhirTypedCpContext> {
+    let ell_np = read_u64(data, pos)? as usize;
+    let kappa = read_u64(data, pos)? as usize;
+    let n_in = read_u64(data, pos)? as usize;
+    let cp_m = read_u64(data, pos)? as usize;
+    let lambda_pj = read_u64(data, pos)? as usize;
+    let ell_h = read_u64(data, pos)? as usize;
+    let k_g = read_u64(data, pos)? as usize;
+    let ajtai = deserialize_ajtai(data, pos)?;
+    let num_constraints = read_u64(data, pos)? as usize;
+    let num_variables = read_u64(data, pos)? as usize;
+    let num_public = read_u64(data, pos)? as usize;
+    let a = deserialize_sparse_matrix(data, pos, num_constraints, num_variables)?;
+    let b = deserialize_sparse_matrix(data, pos, num_constraints, num_variables)?;
+    let c = deserialize_sparse_matrix(data, pos, num_constraints, num_variables)?;
+    Some(WhirTypedCpContext {
+        ajtai,
+        original_r1cs: R1CSMatrices {
+            a,
+            b,
+            c,
+            num_constraints,
+            num_variables,
+            num_public,
+        },
+        cp_layout: CpR1csLayout::new(ell_np, kappa, n_in, cp_m),
+        lambda_pj,
+        ell_h,
+        k_g,
+    })
+}
+
+fn serialize_ajtai(buf: &mut Vec<u8>, ajtai: &AjtaiParams) {
+    buf.extend_from_slice(&(ajtai.kappa as u64).to_le_bytes());
+    buf.extend_from_slice(&(ajtai.n as u64).to_le_bytes());
+    buf.extend_from_slice(&ajtai.q.to_le_bytes());
+    for row in &ajtai.a {
+        for elem in row {
+            serialize_ring_element(buf, elem);
+        }
+    }
+}
+
+fn deserialize_ajtai(data: &[u8], pos: &mut usize) -> Option<AjtaiParams> {
+    let kappa = read_u64(data, pos)? as usize;
+    let n = read_u64(data, pos)? as usize;
+    let q = read_u64(data, pos)?;
+    let ntt = crate::ring::ntt::NttContext::new(q);
+    let mut a = Vec::with_capacity(kappa);
+    for _ in 0..kappa {
+        let mut row = Vec::with_capacity(n);
+        for _ in 0..n {
+            row.push(deserialize_ring_element(data, pos)?);
+        }
+        a.push(row);
+    }
+    let a_ntt = a
+        .iter()
+        .map(|row| row.iter().map(|elem| ntt.forward(elem)).collect())
+        .collect();
+    Some(AjtaiParams {
+        a,
+        a_ntt,
+        ntt,
+        kappa,
+        n,
+        q,
+    })
+}
+
+fn serialize_ring_element(buf: &mut Vec<u8>, elem: &RingElement) {
+    for &coeff in &elem.coeffs {
+        buf.extend_from_slice(&coeff.to_le_bytes());
+    }
+}
+
+fn deserialize_ring_element(data: &[u8], pos: &mut usize) -> Option<RingElement> {
+    let mut coeffs = [0i64; D];
+    for coeff in &mut coeffs {
+        *coeff = read_i64(data, pos)?;
+    }
+    Some(RingElement { coeffs })
 }
 
 fn serialize_sparse_matrix(buf: &mut Vec<u8>, mat: &SparseMatrix) {
@@ -146,6 +296,7 @@ mod tests {
             n_pub: 1,
             is_output_snark: true,
             is_cp_snark: false,
+            typed_cp: None,
         };
 
         let bytes = serialize_context(&ctx);

@@ -75,6 +75,65 @@ impl AjtaiParams {
         }
     }
 
+    /// Generate deterministic commitment parameters for typed CP subrelations.
+    ///
+    /// This is intentionally separate from the main public Ajtai setup. The
+    /// range-proof monomial commitments need verifier-reconstructable matrices
+    /// before WHIR can enforce their openings inside the typed CP relation.
+    pub fn setup_deterministic(
+        kappa: usize,
+        n: usize,
+        q: u64,
+        ntt: &NttContext,
+        domain: &[u8],
+    ) -> Self {
+        use rand::{rngs::ChaCha20Rng, RngExt, SeedableRng};
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"symphony-ajtai-deterministic-v1");
+        hasher.update((kappa as u64).to_le_bytes());
+        hasher.update((n as u64).to_le_bytes());
+        hasher.update(q.to_le_bytes());
+        hasher.update((domain.len() as u64).to_le_bytes());
+        hasher.update(domain);
+        let seed: [u8; 32] = hasher.finalize().into();
+        let mut rng = ChaCha20Rng::from_seed(seed);
+
+        let a: Vec<Vec<RingElement>> = (0..kappa)
+            .map(|_| {
+                (0..n)
+                    .map(|_| {
+                        let mut coeffs = [0i64; D];
+                        for c in coeffs.iter_mut() {
+                            let v: u64 = rng.random_range(0..q);
+                            *c = if v > q / 2 {
+                                v as i64 - q as i64
+                            } else {
+                                v as i64
+                            };
+                        }
+                        RingElement { coeffs }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let a_ntt: Vec<Vec<[u64; D]>> = a
+            .iter()
+            .map(|row| row.iter().map(|elem| ntt.forward(elem)).collect())
+            .collect();
+
+        Self {
+            a,
+            a_ntt,
+            ntt: ntt.clone(),
+            kappa,
+            n,
+            q,
+        }
+    }
+
     /// NTT-accelerated matrix-vector product: A · v ∈ Rq^κ.
     ///
     /// Pre-transforms `v` into NTT domain once, then accumulates

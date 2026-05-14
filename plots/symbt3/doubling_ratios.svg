@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+<rect width="100%" height="100%" fill="white"/>
+<text x="450.0" y="30" font-size="18" text-anchor="middle">Doubling ratios: metric(k) / metric(k/2)</text>
+<line x1="80" y1="450" x2="720" y2="450" stroke="black"/>
+<line x1="80" y1="60" x2="80" y2="450" stroke="black"/>
+<line x1="80" y1="449.22" x2="720" y2="449.22" stroke="#999" stroke-dasharray="5,5"/>
+<line x1="80" y1="60.00" x2="720" y2="60.00" stroke="#999" stroke-dasharray="5,5"/>
+<polyline points="80.00,427.77 208.00,449.33 336.00,396.43 464.00,315.14 592.00,372.28 720.00,341.87" fill="none" stroke="#1f77b4" stroke-width="2"/>
+<text x="730" y="60" font-size="12" fill="#1f77b4">verify_ms</text>
+<polyline points="80.00,355.13 208.00,383.27 336.00,229.85 464.00,160.20 592.00,157.70 720.00,128.08" fill="none" stroke="#d62728" stroke-width="2"/>
+<text x="730" y="80" font-size="12" fill="#d62728">prove_ms</text>
+<polyline points="80.00,450.00 208.00,442.58 336.00,426.45 464.00,247.97 592.00,430.06 720.00,438.42" fill="none" stroke="#2ca02c" stroke-width="2"/>
+<text x="730" y="100" font-size="12" fill="#2ca02c">proof_bytes</text>
+<polyline points="80.00,449.22 208.00,449.22 336.00,60.00 464.00,60.00 592.00,60.00 720.00,60.00" fill="none" stroke="#9467bd" stroke-width="2"/>
+<text x="730" y="120" font-size="12" fill="#9467bd">oracle_len</text>
+<polyline points="80.00,449.22 208.00,449.22 336.00,449.22 464.00,449.22 592.00,449.22 720.00,449.22" fill="none" stroke="#ff7f0e" stroke-width="2"/>
+<text x="730" y="140" font-size="12" fill="#ff7f0e">public_statement_bytes</text>
+</svg>

@@ -1,10 +1,10 @@
 //! Full SNARK prover — orchestrates folding, CP-SNARK, and backend SNARK.
 
 use crate::commitment::{AjtaiParams, Commitment};
-use crate::fiat_shamir::hash_commitment::HashCommitment;
-use crate::fiat_shamir::FSCommitment;
-use crate::folding::digest::{
-    digest_challenges, digest_fold_inputs, digest_fs_commitments, digest_transcript_seed, FoldInput,
+use crate::digest_core::{
+    derive_challenges_with_scheme, digest_challenge_digest_with_scheme,
+    digest_fold_root_with_scheme, digest_fs_root_with_scheme, digest_transcript_seed_with_scheme,
+    fs_commit_with_scheme, FoldInput,
 };
 use crate::folding::FoldingStatement;
 use crate::params::SymphonyParams;
@@ -12,9 +12,9 @@ use crate::r1cs::R1CSMatrices;
 use crate::ring::RingVector;
 use crate::snark::cp_snark;
 use crate::snark::{
-    build_canonical_transcript_bytes, range_proof_params, BackendSnark, SymphonyProof,
+    build_canonical_transcript_bytes, range_proof_params, BackendSnark, RelationDescription,
+    SymphonyProof, TypedCpSetupDescriptor,
 };
-use crate::transcript_core::Sha256ChallengeDeriver;
 
 /// Orchestrate the complete proof generation pipeline.
 ///
@@ -29,6 +29,7 @@ pub fn generate_proof<S: BackendSnark>(
     params: &SymphonyParams,
     ajtai: &AjtaiParams,
     cp_pk: &S::ProvingKey,
+    cp_pk_for_relation: &dyn Fn(RelationDescription) -> S::ProvingKey,
     snark_pk: &S::ProvingKey,
     snark_pk_for_context: &dyn Fn(Vec<u8>) -> S::ProvingKey,
     cp_layout: &cp_snark::CpR1csLayout,
@@ -52,6 +53,10 @@ pub fn generate_proof<S: BackendSnark>(
     let rp = range_proof_params(params);
     let ext_ctx = crate::ring::extension::ExtFieldContext::new(params.q);
 
+    #[cfg(feature = "whir")]
+    let (mut folding_proof, mut folded_witness, shared_challenges) =
+        crate::folding::prove(&folding_statements, r1cs, ajtai, &rp, &ext_ctx);
+    #[cfg(not(feature = "whir"))]
     let (folding_proof, folded_witness, shared_challenges) =
         crate::folding::prove(&folding_statements, r1cs, ajtai, &rp, &ext_ctx);
 
@@ -62,19 +67,20 @@ pub fn generate_proof<S: BackendSnark>(
         .iter()
         .map(cp_snark::encode_gr1cs_round_message)
         .collect();
-    let fs_scheme = HashCommitment::new();
+    let digest_scheme = S::public_digest_scheme();
     let mut fs_commitments = Vec::with_capacity(fs_messages.len());
     let mut fs_openings = Vec::with_capacity(fs_messages.len());
     for message in &fs_messages {
-        let (commitment, opening) = fs_scheme.commit(message);
+        let (commitment, opening) = fs_commit_with_scheme(digest_scheme, message);
         fs_commitments.push(commitment.to_vec());
         fs_openings.push(opening.to_vec());
     }
 
     // Step 3b: Compute fs_root and transcript_seed_digest for sublinear verifier.
-    let fs_root = digest_fs_commitments(&fs_commitments);
+    let fs_root = digest_fs_root_with_scheme(digest_scheme, &fs_commitments);
     let public_input_vecs: Vec<Vec<i64>> = statements.iter().map(|(_, pi, _)| pi.clone()).collect();
-    let transcript_seed_digest = digest_transcript_seed(
+    let transcript_seed_digest = digest_transcript_seed_with_scheme(
+        digest_scheme,
         &public_input_vecs,
         r1cs.num_constraints,
         r1cs.num_variables,
@@ -101,7 +107,7 @@ pub fn generate_proof<S: BackendSnark>(
         })
         .collect();
 
-    let fold_root = digest_fold_inputs(&fold_inputs);
+    let fold_root = digest_fold_root_with_scheme(digest_scheme, &fold_inputs);
 
     let t_folding = t0.elapsed();
 
@@ -111,10 +117,37 @@ pub fn generate_proof<S: BackendSnark>(
     // Derive per-round challenges from canonical transcript bytes.
     let transcript_bytes =
         build_canonical_transcript_bytes(&public_input_vecs, r1cs, &fs_commitments);
-    let deriver = Sha256ChallengeDeriver;
-    let derived_challenges =
-        deriver.derive_fixed_32(b"symphony-v1", &transcript_bytes, fs_commitments.len());
-    let challenge_digest = digest_challenges(&derived_challenges);
+    let derived_challenges = derive_challenges_with_scheme(
+        digest_scheme,
+        &public_input_vecs,
+        r1cs.num_constraints,
+        r1cs.num_variables,
+        r1cs.num_public,
+        &fs_commitments,
+    );
+    let challenge_digest = digest_challenge_digest_with_scheme(digest_scheme, &derived_challenges);
+
+    #[cfg(feature = "whir")]
+    if digest_scheme == crate::digest_core::PublicDigestScheme::Poseidon2BabyBear {
+        let typed_beta =
+            crate::snark::cp_snark::typed_r1cs::poseidon_challenges_to_betas(&derived_challenges)
+                .expect("Poseidon2/BabyBear challenge output must map to typed CP beta");
+        assert_eq!(
+            typed_beta.len(),
+            folding_proof.gr1cs_proofs.len(),
+            "typed CP beta count must match folding proof arity",
+        );
+        folding_proof.beta = typed_beta;
+        let original_witnesses: Vec<_> = statements.iter().map(|(_, _, w)| w.clone()).collect();
+        folded_witness = crate::folding::retarget_folding_proof_to_current_beta(
+            &mut folding_proof,
+            &public_input_vecs,
+            &original_witnesses,
+            params.q,
+            params.ntt(),
+        )
+        .expect("typed CP beta must retarget folded state consistently");
+    }
 
     // Build CP instance and witness using R1CS-compatible layout.
     // The instance contains the folded commitment/public input coefficients.
@@ -132,6 +165,13 @@ pub fn generate_proof<S: BackendSnark>(
         x_folded: folding_proof.folded_instance.clone(),
         folded_output: folded_output.clone(),
     };
+    let typed_cp_public_statement = crate::cp_relation_core::CpPublicStatement::new(
+        typed_cp_public_instance.clone(),
+        public_input_vecs.clone(),
+        r1cs,
+        digest_scheme,
+    )
+    .with_fs_commitments(fs_commitments.clone());
     let typed_cp_witness = crate::cp_relation_core::CpWitnessBundle {
         transcript_bytes: transcript_bytes.clone(),
         fs_commitments: fs_commitments.clone(),
@@ -144,6 +184,13 @@ pub fn generate_proof<S: BackendSnark>(
         folded_output_witness: folded_output_witness.clone(),
         folded_witness: folded_witness.clone(),
         folding_proof: folding_proof.clone(),
+        shared_challenges: crate::cp_relation_core::CpSharedChallengeData {
+            sumcheck_seed_had: shared_challenges.sumcheck_seed_had.clone(),
+            alpha: shared_challenges.alpha,
+            hadamard_sumcheck_challenges: shared_challenges.hadamard_sumcheck_challenges.clone(),
+            sumcheck_seed_mon: shared_challenges.sumcheck_seed_mon.clone(),
+            monomial_sumcheck_challenges: shared_challenges.monomial_sumcheck_challenges.clone(),
+        },
     };
     let cp_public_instance = cp_snark::CpPublicInstance {
         fold_root,
@@ -153,7 +200,7 @@ pub fn generate_proof<S: BackendSnark>(
         folded_instance: folding_proof.folded_instance.clone(),
     };
     let cp_instance = cp_snark::encode_cp_backend_instance(&cp_public_instance, cp_layout);
-    let cp_ntt = Some(crate::ring::ntt::NttContext::new(2013265921));
+    let cp_ntt = Some(crate::ring::ntt::NttContext::new(params.q));
     let cp_witness = cp_snark::encode_cp_witness_r1cs(
         &commitments_for_cp,
         &public_input_vecs_for_cp,
@@ -169,10 +216,27 @@ pub fn generate_proof<S: BackendSnark>(
         params.q,
     );
 
-    let cp_proof = if let Some(proof) =
-        S::prove_typed_cp(cp_pk, &typed_cp_public_instance, &typed_cp_witness)
-    {
-        proof
+    let cp_proof = if S::has_authoritative_typed_cp() {
+        let typed_cp_descriptor = TypedCpSetupDescriptor {
+            params: params.clone(),
+            ajtai: ajtai.clone(),
+            original_r1cs: r1cs.clone(),
+            cp_r1cs: cp_snark::generate_cp_r1cs(
+                params.ell_np,
+                params.kappa,
+                params.n_in,
+                params.m,
+                ext_ctx.alpha,
+                params.q,
+            )
+            .0,
+            cp_layout: cp_layout.clone(),
+        };
+        let cp_relation = S::typed_cp_relation_description(&typed_cp_descriptor)
+            .expect("authoritative typed CP backend did not provide a typed relation");
+        let typed_cp_pk = cp_pk_for_relation(cp_relation);
+        S::prove_typed_cp(&typed_cp_pk, &typed_cp_public_statement, &typed_cp_witness)
+            .expect("authoritative typed CP backend rejected the typed CP witness")
     } else {
         S::prove(cp_pk, &cp_instance, &cp_witness)
     };
@@ -197,10 +261,6 @@ pub fn generate_proof<S: BackendSnark>(
         if S::has_authoritative_typed_output() {
             S::prove_typed_output(&output_pk, &folded_output, &folded_output_witness)
                 .expect("authoritative typed output backend rejected folded output relation")
-        } else if let Some(proof) =
-            S::prove_typed_output(&output_pk, &folded_output, &folded_output_witness)
-        {
-            proof
         } else if total_elems <= total_flat {
             S::prove(&output_pk, &output_instance, &output_witness)
         } else {
@@ -239,6 +299,17 @@ pub fn generate_proof<S: BackendSnark>(
             fold_inputs,
             original_witnesses: statements.iter().map(|(_, _, w)| w.clone()).collect(),
             folding_proof,
+            shared_challenges: crate::cp_relation_core::CpSharedChallengeData {
+                sumcheck_seed_had: shared_challenges.sumcheck_seed_had.clone(),
+                alpha: shared_challenges.alpha,
+                hadamard_sumcheck_challenges: shared_challenges
+                    .hadamard_sumcheck_challenges
+                    .clone(),
+                sumcheck_seed_mon: shared_challenges.sumcheck_seed_mon.clone(),
+                monomial_sumcheck_challenges: shared_challenges
+                    .monomial_sumcheck_challenges
+                    .clone(),
+            },
             folded_output_witness,
             folded_witness,
         },
