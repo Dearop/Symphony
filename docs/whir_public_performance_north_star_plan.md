@@ -145,9 +145,13 @@ The analyzer distinguishes compatibility rows from tuple-leaf rows and reports
 ratios against both the single-oracle baseline and the naive `N * single`
 estimate. RLC prover work may still grow with oracle count because the packed
 evaluation vector must be constructed, but verifier shape is one WHIR proof,
-one root, one schedule, and one PCS opening. RLC collision soundness requires
-explicit `rlc_batching_bits` accounting before any authority/product profile can
-use this mode.
+one root, one schedule, and one PCS multi-opening. M1b now carries repeated RLC
+evidence by default: four independently derived repetitions at 31 bits each,
+reported as `rlc_repetition_count = 4`,
+`rlc_batching_bits_per_repetition = 31`,
+`total_rlc_batching_bits = effective_soundness_bits = 124`. The repetitions
+reuse the same tuple-leaf root and WHIR instance; `packed_eval_claims` grows
+with the repetition count while `native_oracle_pcs_opening_count = 1`.
 
 M1b remains a dev benchmark path. It is NonZK, does not implement K5, does not
 change product routing, and does not alter K6a/K6b/N6b behavior.
@@ -1783,10 +1787,13 @@ now has a typed K6a native workload adapter that extracts the K6a product
 profile digest, accumulator instance digest, public statement digest, WHIR
 parameter digest, relation id, main proof digest, old/new accumulator digests,
 batch manifest root, manifest/message roots, and batch counters from verified
-K6a objects. The next wrapper layer now composes those adapter fields with M1b
-tuple-leaf proof parts and builds the N7b full authority binding digest, but it
-still reports fail-closed because repeated RLC tuple-leaf evidence is not yet
-implemented. The full helper names therefore remain fail-closed:
+K6a objects. The product-facing full helper now composes those adapter fields
+with M1b tuple-leaf proof parts, builds the N7b full authority binding digest,
+and verifies through the wrapper. It still fails closed unless every component
+is present and every gate passes. M1b repeated RLC tuple-leaf evidence is now
+implemented, so the wrapper can advance past
+`RepeatedRlcSoundnessMissingOrWeak` when the repeated evidence verifies. The
+full helper names are:
 
 - `prove_symbt3_native_accumulator_authority_full_non_zk`;
 - `verify_symbt3_native_accumulator_authority_full_non_zk`;
@@ -1797,10 +1804,41 @@ fallback use, family subproofs, stale K6a adapter/proof matches, and
 `smoke_profile = true`. The full gate requires
 `full_accumulator_workload = true`, requires the full workload kind, and requires
 four RLC repetitions with enough total/effective soundness before a report may
-label the proof as native accumulator authority. Until repeated RLC proof
-evidence is wired into proof construction and verification, the benchmark
-`symbt3_native_accumulator_authority_full_vs_k` emits blocked/fail-closed rows
-rather than authority measurements.
+label the proof as native accumulator authority. The benchmark
+`symbt3_native_accumulator_authority_full_vs_k` emits
+`NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV` rows only when the full helper proves and
+verifies; otherwise it emits `NATIVE_ACCUMULATOR_AUTHORITY_FULL_BLOCKED` with
+the verifier blocker or prover failure reason. It also emits
+`NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV` rows for evidence-only overhead
+analysis: K6a WHIR proof sections, adapter metadata, tuple-leaf native proof,
+repeated RLC evidence, binding/profile metadata, serialization proxy,
+transcript work, and the tuple-leaf PCS multi-opening verification proxy.
+
+The N7b canonical proof bytes now serialize the tuple-leaf WHIR PCS proof with
+the compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. This is the
+actual canonical N7b proof serialization used by
+`symbt3_n7b_full_authority_proof_size_hint`, not just a benchmark accounting
+estimate. The compact payload is decoded back into the same `WhirPcsProof`
+value before verification, and the serialization test requires the reported
+section total to match the actual canonical N7b proof byte length exactly.
+
+Latest local `symbt3_native_accumulator_authority_full_vs_k` rows:
+
+| k | prove ms | verify ms | proof bytes | tuple-leaf native proof | legacy tuple PCS JSON | compact tuple PCS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.214 | 33.697 | 722,833 | 376,857 | 738,035 | 373,364 |
+| 2 | 42.467 | 35.658 | 742,230 | 406,327 | 799,038 | 402,834 |
+| 4 | 58.223 | 42.941 | 768,420 | 431,087 | 850,049 | 427,594 |
+
+The remaining size bottleneck is verifier-needed MMCS opening material inside
+the tuple-leaf PCS proof: Merkle authentication paths and opened query values.
+Whole Merkle proof payloads and opened-value payloads were not duplicated across
+the measured query openings, so the next size reduction is an architectural
+shared/batched MMCS opening representation rather than metadata-only
+compression. N7b remains NonZK only, has no K5 masking or privacy claim, uses
+RLC tuple-leaf batching rather than true vector tuple leaves, leaves default
+product `verify_public` unchanged, and still requires external cryptographic
+review before a production authority claim.
 
 ## K6a vs N6b Route Distinction
 

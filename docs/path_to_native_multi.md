@@ -148,7 +148,7 @@ query_schedule_count = 1
 transcript_count = 1
 family_columnar_subproof_count = 0
 backend_table_count = 1
-native_oracle_pcs_opening_count = rlc_repetition_count
+native_oracle_pcs_opening_count = 1
 rlc_repetition_count >= 4
 total_rlc_batching_bits >= 120
 effective_soundness_bits >= 100
@@ -361,12 +361,35 @@ Current prerequisite status:
 * The N7b full wrapper layer now composes verified adapter fields with M1b
   native RLC tuple-leaf proof/profile parts and builds the full authority
   binding digest.
-* N7b is still blocked because repeated RLC tuple-leaf proof evidence is not
-  wired. The wrapper must report fail-closed until at least four independent RLC
-  repetitions are verified without adding WHIR instances or roots.
+* M1b repeated RLC tuple-leaf evidence is wired for the wrapper: four
+  independent repetitions are verified without adding WHIR instances or roots.
+  The wrapper advances past `RepeatedRlcSoundnessMissingOrWeak` only when those
+  repetitions verify.
+* The product-facing N7b full helper/benchmark path is wired end to end through
+  the verified K6a adapter, repeated-RLC tuple-leaf proof, and wrapper verifier.
+  It emits full CSV rows only when proving and verification both succeed.
+* N7b canonical proof serialization now stores the tuple-leaf PCS proof as the
+  compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. The benchmark
+  `proof_bytes` value is the actual canonical N7b proof byte length, not a
+  compact-size estimate, and the serialization test requires section accounting
+  to equal that actual length exactly.
 * The fail-closed full helpers must keep rejecting smoke, missing tuple-leaf
   proof parts, binding mismatches, fallback use, family subproofs, and
   incomplete adapter state.
+
+Latest local full-path rows:
+
+| k | prove ms | verify ms | proof bytes | compact tuple PCS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 34.214 | 33.697 | 722,833 | 373,364 |
+| 2 | 42.467 | 35.658 | 742,230 | 402,834 |
+| 4 | 58.223 | 42.941 | 768,420 | 427,594 |
+
+The remaining bottleneck is verifier-needed MMCS opening material: Merkle
+authentication paths and opened query values. The measured full rows did not
+show whole Merkle proof or opened-value payload duplication, so further size
+reduction needs a shared/batched MMCS opening representation rather than another
+metadata-only encoding pass.
 
 ### Tests
 
@@ -482,14 +505,16 @@ Make RLC repetition real.
 For repetition index `r`:
 
 ```text
-γ_{r,j} = H(
-  "SYMBT3_RLC_TUPLE_LEAF_GAMMA_V1",
-  r,
+γ_{r,j}, ζ_r = H(
+  "SYMBT3_RLC_TUPLE_LEAF_PACKING_V1",
+  repetition_index = r,
+  proof_relation_id,
+  public_statement_digest,
+  whir_param_digest,
   descriptor_digest,
   tuple_leaf_layout_digest,
-  profile_digest,
-  public_statement_digest,
-  whir_param_digest
+  logical_oracle_count,
+  num_vars
 )
 ```
 
@@ -514,13 +539,19 @@ native_oracle_pcs_opening_count
 Expected:
 
 ```text
-native_oracle_pcs_opening_count = rlc_repetition_count
+rlc_repetition_count = 4
+rlc_batching_bits_per_repetition = 31
+total_rlc_batching_bits = 124
+effective_soundness_bits = 124
+native_oracle_pcs_opening_count = 1
 ```
 
 not:
 
 ```text
 native_oracle_pcs_opening_count = logical_oracle_count
+whir_instance_count = rlc_repetition_count
+root_count = rlc_repetition_count
 ```
 
 ---

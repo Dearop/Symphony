@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::batched_cp::{
     derive_symbt3_public_statement_digest, BatchedCpSymbt3RelationDescription, ProductProofKind,
     Symbt3AccumulatorInstance, Symbt3AccumulatorWitness, Symbt3AuthorityProfile,
+    Symbt3TypedMessageOracle,
 };
 use crate::folding::digest::Digest32;
 use crate::snark::BackendSnark;
@@ -40,7 +41,9 @@ pub const SYMBT3_TUPLE_LEAF_MULTI_ORACLE_PROOF_VERSION: u64 = 1;
 pub const SYMBT3_TUPLE_LEAF_LAYOUT_VERSION: u64 = 1;
 pub const SYMBT3_SAME_DOMAIN_RLC_TUPLE_LEAF_LAYOUT: &str = "same_domain_rlc_tuple_leaf_v1";
 pub const SYMBT3_SAME_DOMAIN_VECTOR_TUPLE_LEAF_LAYOUT: &str = "same_domain_tuple_leaf_v1";
+pub const SYMBT3_RLC_TUPLE_LEAF_PACKING_DOMAIN: &str = "SYMBT3_RLC_TUPLE_LEAF_PACKING_V1";
 pub const SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS: usize = 31;
+pub const SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT: usize = 4;
 pub const SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_REPETITION_COUNT: usize = 4;
 pub const SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_BATCHING_BITS_PER_REPETITION: usize =
     SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS;
@@ -276,6 +279,10 @@ pub struct Symbt3TupleLeafMultiOracleCounters {
     pub root_count: usize,
     pub native_oracle_pcs_opening_count: usize,
     pub logical_eval_claim_count: usize,
+    pub rlc_repetition_count: usize,
+    pub rlc_batching_bits_per_repetition: usize,
+    pub total_rlc_batching_bits: usize,
+    pub effective_soundness_bits: usize,
     pub tuple_leaf_layout: String,
     pub same_domain: bool,
     pub same_field: bool,
@@ -302,6 +309,35 @@ pub struct Symbt3TupleLeafMultiOracleProof {
     pub logical_eval_claims: Vec<WhirNativeOracleEvalClaim>,
     pub whir_pcs_proof: WhirPcsProof<F, EF, WhirMmcs>,
     pub counters: Symbt3TupleLeafMultiOracleCounters,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Symbt3TupleLeafProofByteSections {
+    pub descriptor_layout_profile_metadata_bytes: usize,
+    pub duplicated_main_k6a_context_bytes: usize,
+    pub logical_eval_claim_bytes: usize,
+    pub repeated_rlc_claim_bytes: usize,
+    pub pcs_payload_length_prefix_bytes: usize,
+    pub pcs_compact_canonical_payload_bytes: usize,
+    pub pcs_legacy_json_payload_bytes: usize,
+    pub pcs_merkle_root_path_payload_bytes: usize,
+    pub pcs_query_value_payload_bytes: usize,
+    pub pcs_transcript_payload_bytes: usize,
+    pub pcs_json_framing_bytes: usize,
+    pub total_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Symbt3N7bFullAuthorityProofByteSections {
+    pub proof_header_bytes: usize,
+    pub main_k6a_whir_proof_bytes: usize,
+    pub k6a_adapter_bytes: usize,
+    pub tuple_leaf_native_proof_bytes: usize,
+    pub native_tuple_leaf_part_metadata_bytes: usize,
+    pub binding_digest_profile_metadata_bytes: usize,
+    pub wrapper_counters_bytes: usize,
+    pub serialization_framing_bytes: usize,
+    pub total_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -784,6 +820,15 @@ pub struct Symbt3N7bFullAuthorityWrapperProof {
     pub counters: Symbt3NativeAccumulatorAuthorityCounters,
 }
 
+#[derive(Debug, Clone)]
+pub struct Symbt3N7bFullAuthorityProof {
+    pub version: u64,
+    pub proof_kind: ProductProofKind,
+    pub workload_kind: Symbt3NativeAccumulatorAuthorityWorkload,
+    pub k6a_main_proof: WhirProof,
+    pub wrapper: Symbt3N7bFullAuthorityWrapperProof,
+}
+
 pub struct Symbt3N7bFullAuthorityVerificationContext<'a> {
     pub k6a_vk: &'a WhirVerifyingKey,
     pub tuple_leaf_vk: &'a WhirVerifyingKey,
@@ -826,6 +871,51 @@ pub struct Symbt3NativeAccumulatorK6aWorkloadAdapter {
     pub backend_table_count: usize,
     pub accumulator_transition_claims: usize,
     pub source_r1cs_residual_verifier_evaluations: usize,
+}
+
+impl Symbt3NativeAccumulatorK6aWorkloadAdapter {
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"SYMBT3_N7B_K6A_WORKLOAD_ADAPTER_V1");
+        push_bytes(&mut out, &self.workload_kind.canonical_bytes());
+        out.push(u8::from(self.full_accumulator_workload));
+        out.push(u8::from(self.smoke_profile));
+        let proof_kind = match self.proof_kind {
+            ProductProofKind::MonolithicTypedCp => b"MonolithicTypedCp".as_slice(),
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity => {
+                b"Symbt3AccumulatorNonZkIntegrity".as_slice()
+            }
+            ProductProofKind::Symbt2F => b"Symbt2F".as_slice(),
+            ProductProofKind::Symbt2C => b"Symbt2C".as_slice(),
+            ProductProofKind::Symbtc => b"Symbtc".as_slice(),
+        };
+        push_bytes(&mut out, proof_kind);
+        push_digest(&mut out, &self.profile_digest);
+        push_digest(&mut out, &self.accumulator_instance_digest);
+        push_digest(&mut out, &self.public_statement_digest);
+        push_digest(&mut out, &self.whir_param_digest);
+        push_digest(&mut out, &self.main_symbt3_relation_id);
+        push_digest(&mut out, &self.main_symbt3_proof_digest);
+        push_digest(&mut out, &self.old_accumulator_digest);
+        push_digest(&mut out, &self.new_accumulator_digest);
+        push_digest(&mut out, &self.batch_manifest_root);
+        push_digest(&mut out, &self.manifest_oracle_root);
+        push_digest(&mut out, &self.native_message_roots_digest);
+        push_u64(&mut out, self.batch_size);
+        push_u64(&mut out, self.active_count);
+        push_u64(&mut out, self.main_whir_num_vars as u64);
+        push_u64(&mut out, self.main_oracle_len as u64);
+        push_u64(&mut out, self.top_level_whir_proof_count as u64);
+        push_u64(&mut out, self.family_columnar_subproof_count as u64);
+        push_u64(&mut out, self.backend_table_count as u64);
+        push_u64(&mut out, self.accumulator_transition_claims as u64);
+        push_u64(
+            &mut out,
+            self.source_r1cs_residual_verifier_evaluations as u64,
+        );
+        out
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1862,6 +1952,10 @@ impl Symbt3TupleLeafMultiOracleCounters {
         push_u64(&mut out, self.root_count as u64);
         push_u64(&mut out, self.native_oracle_pcs_opening_count as u64);
         push_u64(&mut out, self.logical_eval_claim_count as u64);
+        push_u64(&mut out, self.rlc_repetition_count as u64);
+        push_u64(&mut out, self.rlc_batching_bits_per_repetition as u64);
+        push_u64(&mut out, self.total_rlc_batching_bits as u64);
+        push_u64(&mut out, self.effective_soundness_bits as u64);
         push_bytes(&mut out, self.tuple_leaf_layout.as_bytes());
         out.push(u8::from(self.same_domain));
         out.push(u8::from(self.same_field));
@@ -1921,6 +2015,210 @@ impl Symbt3TupleLeafMultiOracleProof {
         push_bytes(&mut out, &self.counters.canonical_bytes());
         out
     }
+
+    #[must_use]
+    pub fn accounting_byte_sections(&self) -> Symbt3TupleLeafProofByteSections {
+        let descriptor_layout_profile_metadata_bytes = encoded_len(|out| {
+            push_bytes(out, b"SYMBT3_TUPLE_LEAF_MULTI_ORACLE_PROOF_METADATA_V1");
+            push_u64(out, self.version);
+            push_bytes(out, &self.mode.canonical_bytes());
+            push_u64(out, self.logical_descriptors.len() as u64);
+            for descriptor in &self.logical_descriptors {
+                push_bytes(out, &descriptor.canonical_bytes());
+            }
+            push_digest(out, &self.descriptor_digest);
+            push_digest(out, &self.tuple_leaf_layout_digest);
+            push_digest(out, &self.packing_challenge_digest);
+            push_digest(out, &self.packed_root);
+            push_bytes(out, &self.counters.canonical_bytes());
+        });
+        let duplicated_main_k6a_context_bytes = encoded_len(|out| {
+            push_digest(out, &self.proof_relation_id);
+            push_digest(out, &self.public_statement_digest);
+            push_digest(out, &self.whir_param_digest);
+        });
+        let repeated_rlc_claim_bytes = encoded_len(|out| {
+            push_u64(out, self.packed_eval_claims.len() as u64);
+            for claim in &self.packed_eval_claims {
+                push_bytes(out, &claim.canonical_bytes());
+            }
+        });
+        let logical_eval_claim_bytes = encoded_len(|out| {
+            push_u64(out, self.logical_eval_claims.len() as u64);
+            for claim in &self.logical_eval_claims {
+                push_bytes(out, &claim.canonical_bytes());
+            }
+        });
+        debug_assert_eq!(
+            self.metadata_canonical_bytes().len(),
+            descriptor_layout_profile_metadata_bytes
+                + duplicated_main_k6a_context_bytes
+                + repeated_rlc_claim_bytes
+                + logical_eval_claim_bytes
+        );
+
+        let pcs_legacy_json_bytes = serde_json::to_vec(&self.whir_pcs_proof)
+            .expect("tuple-leaf WHIR PCS proof must serialize for byte accounting");
+        let pcs_compact_canonical_bytes = whir_pcs_compact_canonical_bytes(&self.whir_pcs_proof)
+            .expect("tuple-leaf WHIR PCS proof must compact-serialize for byte accounting");
+        let pcs_json = serde_json::to_value(&self.whir_pcs_proof)
+            .expect("tuple-leaf WHIR PCS proof must convert to JSON for byte accounting");
+        let (
+            pcs_merkle_root_path_payload_bytes,
+            pcs_query_value_payload_bytes,
+            pcs_transcript_payload_bytes,
+        ) = whir_pcs_json_payload_sections(&pcs_json);
+        let accounted_pcs_bytes = pcs_merkle_root_path_payload_bytes
+            + pcs_query_value_payload_bytes
+            + pcs_transcript_payload_bytes;
+        let pcs_json_framing_bytes = pcs_legacy_json_bytes
+            .len()
+            .saturating_sub(accounted_pcs_bytes);
+        let pcs_payload_length_prefix_bytes = 8;
+        let total_bytes = descriptor_layout_profile_metadata_bytes
+            + duplicated_main_k6a_context_bytes
+            + logical_eval_claim_bytes
+            + repeated_rlc_claim_bytes
+            + pcs_payload_length_prefix_bytes
+            + pcs_compact_canonical_bytes.len();
+
+        Symbt3TupleLeafProofByteSections {
+            descriptor_layout_profile_metadata_bytes,
+            duplicated_main_k6a_context_bytes,
+            logical_eval_claim_bytes,
+            repeated_rlc_claim_bytes,
+            pcs_payload_length_prefix_bytes,
+            pcs_compact_canonical_payload_bytes: pcs_compact_canonical_bytes.len(),
+            pcs_legacy_json_payload_bytes: pcs_legacy_json_bytes.len(),
+            pcs_merkle_root_path_payload_bytes,
+            pcs_query_value_payload_bytes,
+            pcs_transcript_payload_bytes,
+            pcs_json_framing_bytes,
+            total_bytes,
+        }
+    }
+
+    #[must_use]
+    pub fn accounting_serialized_bytes_len(&self) -> usize {
+        self.accounting_byte_sections().total_bytes
+    }
+}
+
+#[must_use]
+pub fn whir_pcs_compact_canonical_bytes(proof: &WhirPcsProof<F, EF, WhirMmcs>) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"WHIR_PCS_COMPACT_JSON_CBOR_V1");
+    let value = serde_json::to_value(proof).ok()?;
+    ciborium::into_writer(&value, &mut out).ok()?;
+    Some(out)
+}
+
+pub fn whir_pcs_from_compact_canonical_bytes(
+    bytes: &[u8],
+) -> Option<WhirPcsProof<F, EF, WhirMmcs>> {
+    let magic = b"WHIR_PCS_COMPACT_JSON_CBOR_V1";
+    let payload = bytes.strip_prefix(magic)?;
+    let value: serde_json::Value = ciborium::from_reader(std::io::Cursor::new(payload)).ok()?;
+    serde_json::from_value(value).ok()
+}
+
+#[must_use]
+pub fn symbt3_tuple_leaf_multi_oracle_proof_canonical_bytes_compact(
+    proof: &Symbt3TupleLeafMultiOracleProof,
+) -> Option<Vec<u8>> {
+    let mut out = proof.metadata_canonical_bytes();
+    let pcs_bytes = whir_pcs_compact_canonical_bytes(&proof.whir_pcs_proof)?;
+    push_bytes(&mut out, &pcs_bytes);
+    Some(out)
+}
+
+fn encoded_len(encode: impl FnOnce(&mut Vec<u8>)) -> usize {
+    let mut out = Vec::new();
+    encode(&mut out);
+    out.len()
+}
+
+fn json_value_len(value: &serde_json::Value) -> usize {
+    serde_json::to_vec(value)
+        .expect("JSON value must serialize for byte accounting")
+        .len()
+}
+
+fn json_object_field_len(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> usize {
+    object.get(key).map_or(0, json_value_len)
+}
+
+fn whir_pcs_query_opening_json_sections(query: &serde_json::Value) -> (usize, usize, usize) {
+    let Some(object) = query.as_object() else {
+        return (0, 0, json_value_len(query));
+    };
+    let merkle_root_path_payload_bytes = json_object_field_len(object, "proof");
+    let query_value_payload_bytes = json_object_field_len(object, "values");
+    let accounted = merkle_root_path_payload_bytes + query_value_payload_bytes;
+    let transcript_payload_bytes = json_value_len(query).saturating_sub(accounted);
+    (
+        merkle_root_path_payload_bytes,
+        query_value_payload_bytes,
+        transcript_payload_bytes,
+    )
+}
+
+fn whir_pcs_query_array_json_sections(queries: &serde_json::Value) -> (usize, usize, usize) {
+    let Some(queries) = queries.as_array() else {
+        return (0, 0, json_value_len(queries));
+    };
+    queries.iter().fold((0, 0, 0), |mut acc, query| {
+        let sections = whir_pcs_query_opening_json_sections(query);
+        acc.0 += sections.0;
+        acc.1 += sections.1;
+        acc.2 += sections.2;
+        acc
+    })
+}
+
+fn whir_pcs_json_payload_sections(pcs_json: &serde_json::Value) -> (usize, usize, usize) {
+    let Some(object) = pcs_json.as_object() else {
+        return (0, 0, json_value_len(pcs_json));
+    };
+    let mut merkle_root_path_payload_bytes = json_object_field_len(object, "initial_commitment");
+    let mut query_value_payload_bytes = 0;
+    let mut transcript_payload_bytes = json_object_field_len(object, "initial_ood_answers")
+        + json_object_field_len(object, "initial_sumcheck")
+        + json_object_field_len(object, "final_poly")
+        + json_object_field_len(object, "final_pow_witness")
+        + json_object_field_len(object, "final_sumcheck");
+
+    if let Some(rounds) = object.get("rounds").and_then(serde_json::Value::as_array) {
+        for round in rounds {
+            let Some(round_object) = round.as_object() else {
+                transcript_payload_bytes += json_value_len(round);
+                continue;
+            };
+            merkle_root_path_payload_bytes += json_object_field_len(round_object, "commitment");
+            transcript_payload_bytes += json_object_field_len(round_object, "ood_answers")
+                + json_object_field_len(round_object, "pow_witness")
+                + json_object_field_len(round_object, "sumcheck");
+            if let Some(queries) = round_object.get("queries") {
+                let query_sections = whir_pcs_query_array_json_sections(queries);
+                merkle_root_path_payload_bytes += query_sections.0;
+                query_value_payload_bytes += query_sections.1;
+                transcript_payload_bytes += query_sections.2;
+            }
+        }
+    }
+
+    if let Some(final_queries) = object.get("final_queries") {
+        let query_sections = whir_pcs_query_array_json_sections(final_queries);
+        merkle_root_path_payload_bytes += query_sections.0;
+        query_value_payload_bytes += query_sections.1;
+        transcript_payload_bytes += query_sections.2;
+    }
+
+    (
+        merkle_root_path_payload_bytes,
+        query_value_payload_bytes,
+        transcript_payload_bytes,
+    )
 }
 
 #[must_use]
@@ -1974,6 +2272,63 @@ pub fn symbt3_tuple_leaf_layout_digest(layout: &Symbt3TupleLeafLayoutV1) -> Dige
     digest_bytes(&layout.canonical_bytes())
 }
 
+fn symbt3_tuple_leaf_repetition_log_size(rlc_repetition_count: usize) -> Option<usize> {
+    if rlc_repetition_count == 0 || !rlc_repetition_count.is_power_of_two() {
+        return None;
+    }
+    Some(rlc_repetition_count.trailing_zeros() as usize)
+}
+
+#[must_use]
+pub fn symbt3_tuple_leaf_rlc_layout_domain_digest(
+    mode: Symbt3NativeMultiOracleMode,
+    descriptor_digest: Digest32,
+    logical_oracle_count: usize,
+    num_vars: usize,
+    rlc_repetition_count: usize,
+    rlc_batching_bits_per_repetition: usize,
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(
+        &mut bytes,
+        b"SYMBT3_TUPLE_LEAF_REPEATED_RLC_LAYOUT_DOMAIN_V1",
+    );
+    push_bytes(&mut bytes, &mode.canonical_bytes());
+    push_digest(&mut bytes, &descriptor_digest);
+    push_u64(&mut bytes, logical_oracle_count as u64);
+    push_u64(&mut bytes, num_vars as u64);
+    push_u64(&mut bytes, rlc_repetition_count as u64);
+    push_u64(&mut bytes, rlc_batching_bits_per_repetition as u64);
+    digest_bytes(&bytes)
+}
+
+#[must_use]
+pub fn symbt3_tuple_leaf_layout_digest_for_repeated_rlc(
+    mode: Symbt3NativeMultiOracleMode,
+    descriptor_digest: Digest32,
+    logical_oracle_count: usize,
+    num_vars: usize,
+    rlc_repetition_count: usize,
+    rlc_batching_bits_per_repetition: usize,
+) -> Digest32 {
+    let layout = Symbt3TupleLeafLayoutV1 {
+        version: SYMBT3_TUPLE_LEAF_LAYOUT_VERSION,
+        mode,
+        logical_oracle_count,
+        num_vars,
+        packing_challenge_digest: symbt3_tuple_leaf_rlc_layout_domain_digest(
+            mode,
+            descriptor_digest,
+            logical_oracle_count,
+            num_vars,
+            rlc_repetition_count,
+            rlc_batching_bits_per_repetition,
+        ),
+        descriptor_digest,
+    };
+    symbt3_tuple_leaf_layout_digest(&layout)
+}
+
 #[must_use]
 pub fn symbt3_tuple_leaf_packing_challenges(
     mode: Symbt3NativeMultiOracleMode,
@@ -1984,15 +2339,54 @@ pub fn symbt3_tuple_leaf_packing_challenges(
     logical_oracle_count: usize,
     num_vars: usize,
 ) -> Option<Vec<BabyBear>> {
+    let tuple_leaf_layout_digest = symbt3_tuple_leaf_layout_digest_for_repeated_rlc(
+        mode,
+        descriptor_digest,
+        logical_oracle_count,
+        num_vars,
+        1,
+        SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS,
+    );
+    symbt3_tuple_leaf_packing_challenges_for_repetition(
+        mode,
+        0,
+        proof_relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        descriptor_digest,
+        tuple_leaf_layout_digest,
+        logical_oracle_count,
+        num_vars,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn symbt3_tuple_leaf_packing_challenges_for_repetition(
+    mode: Symbt3NativeMultiOracleMode,
+    repetition_index: usize,
+    proof_relation_id: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+    descriptor_digest: Digest32,
+    tuple_leaf_layout_digest: Digest32,
+    logical_oracle_count: usize,
+    num_vars: usize,
+) -> Option<Vec<BabyBear>> {
     if logical_oracle_count == 0 || num_vars == 0 {
         return None;
     }
     let mut transcript = Vec::new();
-    push_bytes(&mut transcript, b"SYMBT3_NATIVE_MULTI_ORACLE_PACKING_V1");
+    push_bytes(
+        &mut transcript,
+        SYMBT3_RLC_TUPLE_LEAF_PACKING_DOMAIN.as_bytes(),
+    );
+    push_u64(&mut transcript, repetition_index as u64);
     push_digest(&mut transcript, &proof_relation_id);
     push_digest(&mut transcript, &public_statement_digest);
     push_digest(&mut transcript, &whir_param_digest);
     push_digest(&mut transcript, &descriptor_digest);
+    push_digest(&mut transcript, &tuple_leaf_layout_digest);
     push_bytes(
         &mut transcript,
         symbt3_tuple_leaf_layout_name(mode).as_bytes(),
@@ -2006,6 +2400,35 @@ pub fn symbt3_tuple_leaf_packing_challenges(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn symbt3_tuple_leaf_packing_challenges_for_repetitions(
+    mode: Symbt3NativeMultiOracleMode,
+    proof_relation_id: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+    descriptor_digest: Digest32,
+    tuple_leaf_layout_digest: Digest32,
+    logical_oracle_count: usize,
+    num_vars: usize,
+    rlc_repetition_count: usize,
+) -> Option<Vec<Vec<BabyBear>>> {
+    (0..rlc_repetition_count)
+        .map(|repetition_index| {
+            symbt3_tuple_leaf_packing_challenges_for_repetition(
+                mode,
+                repetition_index,
+                proof_relation_id,
+                public_statement_digest,
+                whir_param_digest,
+                descriptor_digest,
+                tuple_leaf_layout_digest,
+                logical_oracle_count,
+                num_vars,
+            )
+        })
+        .collect()
+}
+
 #[must_use]
 pub fn symbt3_tuple_leaf_packing_challenge_digest(challenges: &[BabyBear]) -> Digest32 {
     let mut bytes = Vec::new();
@@ -2014,6 +2437,22 @@ pub fn symbt3_tuple_leaf_packing_challenge_digest(challenges: &[BabyBear]) -> Di
         b"SYMBT3_NATIVE_MULTI_ORACLE_PACKING_CHALLENGES_V1",
     );
     push_babybear_vec(&mut bytes, challenges);
+    digest_bytes(&bytes)
+}
+
+#[must_use]
+pub fn symbt3_tuple_leaf_repeated_packing_challenge_digest(
+    repeated_challenges: &[Vec<BabyBear>],
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(
+        &mut bytes,
+        b"SYMBT3_NATIVE_MULTI_ORACLE_REPEATED_PACKING_CHALLENGES_V1",
+    );
+    push_u64(&mut bytes, repeated_challenges.len() as u64);
+    for challenges in repeated_challenges {
+        push_babybear_vec(&mut bytes, challenges);
+    }
     digest_bytes(&bytes)
 }
 
@@ -2071,11 +2510,37 @@ pub fn derive_same_domain_tuple_leaf_opening_point(
     claim_kind: WhirNativeEvalClaimKind,
     num_vars: usize,
 ) -> Vec<BabyBear> {
+    derive_same_domain_tuple_leaf_opening_point_for_repetition(
+        0,
+        proof_relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        descriptor_digest,
+        tuple_leaf_layout_digest,
+        claim_kind,
+        num_vars,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn derive_same_domain_tuple_leaf_opening_point_for_repetition(
+    repetition_index: usize,
+    proof_relation_id: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+    descriptor_digest: Digest32,
+    tuple_leaf_layout_digest: Digest32,
+    claim_kind: WhirNativeEvalClaimKind,
+    num_vars: usize,
+) -> Vec<BabyBear> {
     let mut transcript = Vec::new();
     push_bytes(
         &mut transcript,
-        b"SYMBT3_NATIVE_MULTI_ORACLE_TUPLE_LEAF_OPENING_POINT_V1",
+        SYMBT3_RLC_TUPLE_LEAF_PACKING_DOMAIN.as_bytes(),
     );
+    push_bytes(&mut transcript, b"zeta");
+    push_u64(&mut transcript, repetition_index as u64);
     push_digest(&mut transcript, &proof_relation_id);
     push_digest(&mut transcript, &public_statement_digest);
     push_digest(&mut transcript, &whir_param_digest);
@@ -2889,6 +3354,8 @@ fn symbt3_n7b_native_tuple_leaf_profile_compatible(
         proof.logical_descriptors.len(),
         proof.logical_eval_claims.len(),
         first_descriptor.num_vars,
+        proof.counters.rlc_repetition_count,
+        proof.counters.rlc_batching_bits_per_repetition,
     ) == proof.counters
 }
 
@@ -2899,11 +3366,9 @@ fn symbt3_n7b_full_authority_counters(
 ) -> Option<Symbt3NativeAccumulatorAuthorityCounters> {
     let proof = &native_tuple_leaf.proof;
     let native_message_oracle_count = proof.logical_descriptors.len().checked_sub(2)?;
-    let rlc_repetition_count = SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_REPETITION_COUNT;
-    let rlc_batching_bits_per_repetition =
-        SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_BATCHING_BITS_PER_REPETITION;
-    let total_rlc_batching_bits =
-        rlc_repetition_count.saturating_mul(rlc_batching_bits_per_repetition);
+    let rlc_repetition_count = proof.counters.rlc_repetition_count;
+    let rlc_batching_bits_per_repetition = proof.counters.rlc_batching_bits_per_repetition;
+    let total_rlc_batching_bits = proof.counters.total_rlc_batching_bits;
     Some(Symbt3NativeAccumulatorAuthorityCounters {
         full_accumulator_workload: true,
         smoke_profile: false,
@@ -2930,7 +3395,7 @@ fn symbt3_n7b_full_authority_counters(
         rlc_repetition_count,
         rlc_batching_bits_per_repetition,
         total_rlc_batching_bits,
-        effective_soundness_bits: total_rlc_batching_bits,
+        effective_soundness_bits: proof.counters.effective_soundness_bits,
         native_oracle_eval_claim_count: proof.counters.logical_eval_claim_count,
         fallback_used,
     })
@@ -2941,6 +3406,8 @@ fn symbt3_n7b_full_authority_repeated_rlc_evidence_ok(
 ) -> bool {
     let counters = &proof.counters;
     counters.rlc_batching_bits > 0
+        && counters.rlc_batching_bits == counters.total_rlc_batching_bits
+        && counters.rlc_batching_bits_per_repetition > 0
         && counters.rlc_repetition_count
             >= SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_REPETITION_COUNT
         && counters.total_rlc_batching_bits
@@ -2952,6 +3419,196 @@ fn symbt3_n7b_full_authority_repeated_rlc_evidence_ok(
             >= counters
                 .logical_oracle_count
                 .saturating_mul(counters.rlc_repetition_count)
+}
+
+fn n7b_i64_to_babybear(value: i64) -> BabyBear {
+    BabyBear::from_u32((value as i128).rem_euclid(BabyBear::ORDER_U64 as i128) as u32)
+}
+
+fn n7b_rows_to_babybear_values(rows: &[Vec<i64>]) -> Vec<BabyBear> {
+    rows.iter()
+        .flat_map(|row| row.iter().copied().map(n7b_i64_to_babybear))
+        .collect()
+}
+
+fn n7b_typed_message_oracle_values(oracle: &Symbt3TypedMessageOracle) -> Vec<BabyBear> {
+    let mut out = Vec::new();
+    out.push(BabyBear::from_u32(oracle.round as u32));
+    for row in &oracle.rows {
+        out.push(BabyBear::from_u32(row.row_index as u32));
+        for section in &row.sections {
+            out.push(BabyBear::from_u32(section.offset as u32));
+            out.push(BabyBear::from_u32(section.values.len() as u32));
+            out.extend(section.values.iter().copied().map(BabyBear::from_u32));
+        }
+    }
+    out
+}
+
+fn n7b_digest_values(digests: &[Digest32]) -> Vec<BabyBear> {
+    digests
+        .iter()
+        .flat_map(|digest| {
+            digest
+                .iter()
+                .copied()
+                .map(|byte| BabyBear::from_u32(byte.into()))
+        })
+        .collect()
+}
+
+fn n7b_pad_to_common_num_vars(
+    evaluations: Vec<Vec<BabyBear>>,
+) -> Option<(usize, Vec<Vec<BabyBear>>)> {
+    let target_len = evaluations
+        .iter()
+        .map(|values| values.len().max(2).next_power_of_two())
+        .max()?;
+    let num_vars = target_len.trailing_zeros() as usize;
+    let padded = evaluations
+        .into_iter()
+        .map(|mut values| {
+            if values.len() > target_len {
+                return None;
+            }
+            values.resize(target_len, BabyBear::ZERO);
+            Some(values)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((num_vars, padded))
+}
+
+fn n7b_message_round_layout_digest(
+    message_semantic_layout_digest: Digest32,
+    round: usize,
+    root: Digest32,
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, b"SYMBT3_N7B_NATIVE_MESSAGE_ROUND_LAYOUT_V1");
+    push_digest(&mut bytes, &message_semantic_layout_digest);
+    push_u64(&mut bytes, round as u64);
+    push_digest(&mut bytes, &root);
+    digest_bytes(&bytes)
+}
+
+#[must_use]
+pub fn prove_symbt3_n7b_full_native_tuple_leaf_from_k6a(
+    pk: &WhirProvingKey,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    witness: &Symbt3AccumulatorWitness,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+) -> Option<Symbt3N7bNativeTupleLeafProofParts> {
+    if !adapter.full_accumulator_workload
+        || adapter.smoke_profile
+        || adapter.workload_kind != Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1
+        || adapter.proof_kind != ProductProofKind::Symbt3AccumulatorNonZkIntegrity
+        || adapter.profile_digest != accumulator_instance.profile_digest
+        || adapter.manifest_oracle_root != accumulator_instance.manifest_oracle_root
+        || adapter.native_message_roots_digest != accumulator_instance.message_oracle_roots_digest
+        || adapter.batch_size != accumulator_instance.batch_capacity as u64
+        || adapter.active_count != accumulator_instance.active_count as u64
+        || accumulator_instance.message_oracle_roots.len() != witness.message_oracles.len()
+    {
+        return None;
+    }
+
+    let mut raw_evaluations = Vec::with_capacity(2 + witness.message_oracles.len());
+    let mut manifest_values = n7b_rows_to_babybear_values(&witness.manifest_oracle);
+    if manifest_values.is_empty() {
+        manifest_values = n7b_digest_values(&[
+            accumulator_instance.manifest_oracle_root,
+            adapter.batch_manifest_root,
+            accumulator_instance.manifest_layout_digest,
+        ]);
+    }
+    raw_evaluations.push(manifest_values);
+    raw_evaluations.push(n7b_rows_to_babybear_values(&witness.source_columns));
+    raw_evaluations.extend(
+        witness
+            .message_oracles
+            .iter()
+            .map(n7b_typed_message_oracle_values),
+    );
+    if raw_evaluations.iter().any(Vec::is_empty) {
+        return None;
+    }
+    let (num_vars, evaluations) = n7b_pad_to_common_num_vars(raw_evaluations)?;
+    let opening_schedule = WhirNativeOpeningSchedule::TranscriptDerived {
+        domain_separator: SYMBT3_RLC_TUPLE_LEAF_PACKING_DOMAIN,
+    };
+    let mut specs = Vec::with_capacity(evaluations.len());
+    specs.push(WhirNativeOracleSpec {
+        version: WHIR_NATIVE_ORACLE_DESCRIPTOR_VERSION,
+        oracle_id: SYMBT3_N2_MANIFEST_ORACLE_ID,
+        role: WhirNativeOracleRole::Manifest,
+        layout_digest: accumulator_instance.manifest_layout_digest,
+        num_vars,
+        opening_schedule: opening_schedule.clone(),
+    });
+    specs.push(WhirNativeOracleSpec {
+        version: WHIR_NATIVE_ORACLE_DESCRIPTOR_VERSION,
+        oracle_id: SYMBT3_N2_SOURCE_ORACLE_ID,
+        role: WhirNativeOracleRole::Source,
+        layout_digest: accumulator_instance.source_column_layout_digest,
+        num_vars,
+        opening_schedule: opening_schedule.clone(),
+    });
+    for (round, root) in accumulator_instance
+        .message_oracle_roots
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let round_u32 = u32::try_from(round).ok()?;
+        specs.push(WhirNativeOracleSpec {
+            version: WHIR_NATIVE_ORACLE_DESCRIPTOR_VERSION,
+            oracle_id: SYMBT3_N4_MESSAGE_ORACLE_ID_BASE.checked_add(round_u32)?,
+            role: WhirNativeOracleRole::MessageRound { round: round_u32 },
+            layout_digest: n7b_message_round_layout_digest(
+                accumulator_instance.message_semantic_layout_digest,
+                round,
+                root,
+            ),
+            num_vars,
+            opening_schedule: opening_schedule.clone(),
+        });
+    }
+    let eval_requests = specs
+        .iter()
+        .map(|spec| WhirNativeEvalRequest {
+            oracle_id: spec.oracle_id,
+            claim_kind: WhirNativeEvalClaimKind::DirectOpening,
+        })
+        .collect::<Vec<_>>();
+    let Some(proof) = whir_commit_and_prove_same_domain_multi_oracle(
+        pk,
+        adapter.main_symbt3_relation_id,
+        adapter.public_statement_digest,
+        adapter.whir_param_digest,
+        &specs,
+        &evaluations,
+        &eval_requests,
+    ) else {
+        return None;
+    };
+    let source_oracle_root = accumulator_instance.source_assignment_roots_digest;
+    let descriptors = specs
+        .iter()
+        .zip(
+            std::iter::once(accumulator_instance.manifest_oracle_root)
+                .chain(std::iter::once(source_oracle_root))
+                .chain(accumulator_instance.message_oracle_roots.iter().copied()),
+        )
+        .map(|(spec, root)| spec.descriptor_with_root(root))
+        .collect::<Vec<_>>();
+    let native_oracle_descriptor_digest = native_oracle_descriptor_digest(&descriptors);
+    Some(Symbt3N7bNativeTupleLeafProofParts {
+        proof,
+        native_oracle_descriptor_digest,
+        native_message_roots_digest: adapter.native_message_roots_digest,
+        manifest_oracle_root: accumulator_instance.manifest_oracle_root,
+        source_oracle_root,
+    })
 }
 
 fn symbt3_k6a_relation_from_context(context: &[u8]) -> Option<BatchedCpSymbt3RelationDescription> {
@@ -3396,79 +4053,136 @@ pub fn whir_commit_and_prove_same_domain_multi_oracle(
     logical_evaluations: &[Vec<BabyBear>],
     eval_requests: &[WhirNativeEvalRequest],
 ) -> Option<Symbt3TupleLeafMultiOracleProof> {
+    whir_commit_and_prove_same_domain_multi_oracle_with_repetitions(
+        pk,
+        proof_relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        logical_specs,
+        logical_evaluations,
+        eval_requests,
+        SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT,
+        SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn whir_commit_and_prove_same_domain_multi_oracle_with_repetitions(
+    pk: &WhirProvingKey,
+    proof_relation_id: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+    logical_specs: &[WhirNativeOracleSpec],
+    logical_evaluations: &[Vec<BabyBear>],
+    eval_requests: &[WhirNativeEvalRequest],
+    rlc_repetition_count: usize,
+    rlc_batching_bits_per_repetition: usize,
+) -> Option<Symbt3TupleLeafMultiOracleProof> {
     validate_same_domain_tuple_leaf_inputs(logical_specs, logical_evaluations, eval_requests)
         .ok()?;
     let mode = Symbt3NativeMultiOracleMode::SameDomainRlcTupleLeafV1;
     let logical_oracle_count = logical_specs.len();
     let num_vars = logical_specs.first()?.num_vars;
     let descriptor_digest = native_oracle_spec_digest(logical_specs);
-    let packing_challenges = symbt3_tuple_leaf_packing_challenges(
+    let repetition_log_size = symbt3_tuple_leaf_repetition_log_size(rlc_repetition_count)?;
+    let tuple_leaf_layout_digest = symbt3_tuple_leaf_layout_digest_for_repeated_rlc(
         mode,
-        proof_relation_id,
-        public_statement_digest,
-        whir_param_digest,
         descriptor_digest,
         logical_oracle_count,
         num_vars,
-    )?;
-    let packing_challenge_digest = symbt3_tuple_leaf_packing_challenge_digest(&packing_challenges);
-    let layout = Symbt3TupleLeafLayoutV1 {
-        version: SYMBT3_TUPLE_LEAF_LAYOUT_VERSION,
+        rlc_repetition_count,
+        rlc_batching_bits_per_repetition,
+    );
+    let repeated_packing_challenges = symbt3_tuple_leaf_packing_challenges_for_repetitions(
         mode,
-        logical_oracle_count,
-        num_vars,
-        packing_challenge_digest,
-        descriptor_digest,
-    };
-    let tuple_leaf_layout_digest = symbt3_tuple_leaf_layout_digest(&layout);
-    let claim_kind = eval_requests.first()?.claim_kind;
-    let point = derive_same_domain_tuple_leaf_opening_point(
         proof_relation_id,
         public_statement_digest,
         whir_param_digest,
         descriptor_digest,
         tuple_leaf_layout_digest,
-        claim_kind,
+        logical_oracle_count,
         num_vars,
-    );
-    let point_digest = native_oracle_point_digest(&point);
+        rlc_repetition_count,
+    )?;
+    let packing_challenge_digest =
+        symbt3_tuple_leaf_repeated_packing_challenge_digest(&repeated_packing_challenges);
+    let claim_kind = eval_requests.first()?.claim_kind;
 
     let evals_by_id = logical_specs
         .iter()
         .zip(logical_evaluations.iter())
         .map(|(spec, evaluations)| (spec.oracle_id, evaluations.as_slice()))
         .collect::<BTreeMap<_, _>>();
-    let mut logical_claims = Vec::with_capacity(eval_requests.len());
-    for request in eval_requests {
-        let evaluations = *evals_by_id.get(&request.oracle_id)?;
-        logical_claims.push(WhirNativeOracleEvalClaim {
-            oracle_id: request.oracle_id,
-            point_digest,
-            value: mle_eval_bb(evaluations, &point),
-            claim_kind: request.claim_kind,
+    let oracle_len = 1usize.checked_shl(num_vars as u32)?;
+    let packed_num_vars = num_vars.checked_add(repetition_log_size)?;
+    let mut logical_claims = Vec::with_capacity(eval_requests.len() * rlc_repetition_count);
+    let mut packed_eval_claims = Vec::with_capacity(rlc_repetition_count);
+    let mut packed_opening_points = Vec::with_capacity(rlc_repetition_count);
+    let mut packed_values = Vec::with_capacity(rlc_repetition_count);
+    let mut packed_evaluations = Vec::with_capacity(oracle_len * rlc_repetition_count);
+    for (repetition_index, packing_challenges) in repeated_packing_challenges.iter().enumerate() {
+        let point = derive_same_domain_tuple_leaf_opening_point_for_repetition(
+            repetition_index,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            descriptor_digest,
+            tuple_leaf_layout_digest,
+            claim_kind,
+            num_vars,
+        );
+        let point_digest = native_oracle_point_digest(&point);
+        let mut repetition_claims = Vec::with_capacity(eval_requests.len());
+        for request in eval_requests {
+            let evaluations = *evals_by_id.get(&request.oracle_id)?;
+            repetition_claims.push(WhirNativeOracleEvalClaim {
+                oracle_id: request.oracle_id,
+                point_digest,
+                value: mle_eval_bb(evaluations, &point),
+                claim_kind: request.claim_kind,
+            });
+        }
+        let logical_values = repetition_claims
+            .iter()
+            .map(|claim| claim.value)
+            .collect::<Vec<_>>();
+        let packed_value = symbt3_tuple_leaf_pack_values(packing_challenges, &logical_values)?;
+        let repetition_packed_evaluations =
+            symbt3_tuple_leaf_pack_evaluations(packing_challenges, logical_evaluations)?;
+        let mut packed_point = point;
+        packed_point.extend(tuple_leaf_boolean_point_for_index(
+            repetition_index,
+            repetition_log_size,
+        ));
+        let packed_point_digest = native_oracle_point_digest(&packed_point);
+        packed_eval_claims.push(Symbt3TupleLeafPackedEvalClaim {
+            point_digest: packed_point_digest,
+            value: packed_value,
+            claim_kind: WhirNativeEvalClaimKind::DirectOpening,
         });
+        packed_opening_points.push(packed_point);
+        packed_values.push(packed_value);
+        packed_evaluations.extend(repetition_packed_evaluations);
+        logical_claims.extend(repetition_claims);
     }
-
-    let logical_values = logical_claims
-        .iter()
-        .map(|claim| claim.value)
-        .collect::<Vec<_>>();
-    let packed_value = symbt3_tuple_leaf_pack_values(&packing_challenges, &logical_values)?;
-    let packed_evaluations =
-        symbt3_tuple_leaf_pack_evaluations(&packing_challenges, logical_evaluations)?;
-    let (whir_pcs_proof, opened_values) =
-        whir_commit_and_prove_multi(&pk.seed, num_vars, &packed_evaluations, &[point.clone()]);
-    if opened_values != [packed_value] {
+    let (whir_pcs_proof, opened_values) = whir_commit_and_prove_multi(
+        &pk.seed,
+        packed_num_vars,
+        &packed_evaluations,
+        &packed_opening_points,
+    );
+    if opened_values != packed_values {
         return None;
     }
     let packed_root =
         whir_pcs_initial_root_digest(&whir_pcs_proof, NativeOracleRootPolicy::CanonicalWhirRootV1)?;
-    let packed_eval_claims = vec![Symbt3TupleLeafPackedEvalClaim {
-        point_digest,
-        value: packed_value,
-        claim_kind: WhirNativeEvalClaimKind::DirectOpening,
-    }];
-    let counters = tuple_leaf_counters_for(logical_oracle_count, logical_claims.len(), num_vars);
+    let counters = tuple_leaf_counters_for(
+        logical_oracle_count,
+        logical_claims.len(),
+        num_vars,
+        rlc_repetition_count,
+        rlc_batching_bits_per_repetition,
+    );
 
     Some(Symbt3TupleLeafMultiOracleProof {
         version: SYMBT3_TUPLE_LEAF_MULTI_ORACLE_PROOF_VERSION,
@@ -3515,75 +4229,109 @@ pub fn whir_verify_same_domain_multi_oracle(
 
     let logical_oracle_count = proof.logical_descriptors.len();
     let num_vars = proof.logical_descriptors[0].num_vars;
+    let rlc_repetition_count = proof.counters.rlc_repetition_count;
+    let rlc_batching_bits_per_repetition = proof.counters.rlc_batching_bits_per_repetition;
+    let Some(repetition_log_size) = symbt3_tuple_leaf_repetition_log_size(rlc_repetition_count)
+    else {
+        return false;
+    };
     let descriptor_digest = native_oracle_spec_digest(&proof.logical_descriptors);
     if descriptor_digest != proof.descriptor_digest {
         return false;
     }
-    let Some(packing_challenges) = symbt3_tuple_leaf_packing_challenges(
+    let tuple_leaf_layout_digest = symbt3_tuple_leaf_layout_digest_for_repeated_rlc(
+        proof.mode,
+        descriptor_digest,
+        logical_oracle_count,
+        num_vars,
+        rlc_repetition_count,
+        rlc_batching_bits_per_repetition,
+    );
+    if tuple_leaf_layout_digest != proof.tuple_leaf_layout_digest {
+        return false;
+    }
+    let Some(repeated_packing_challenges) = symbt3_tuple_leaf_packing_challenges_for_repetitions(
         proof.mode,
         proof_relation_id,
         public_statement_digest,
         whir_param_digest,
         descriptor_digest,
+        proof.tuple_leaf_layout_digest,
         logical_oracle_count,
         num_vars,
+        rlc_repetition_count,
     ) else {
         return false;
     };
-    let packing_challenge_digest = symbt3_tuple_leaf_packing_challenge_digest(&packing_challenges);
+    let packing_challenge_digest =
+        symbt3_tuple_leaf_repeated_packing_challenge_digest(&repeated_packing_challenges);
     if packing_challenge_digest != proof.packing_challenge_digest {
         return false;
     }
-    let expected_layout = Symbt3TupleLeafLayoutV1 {
-        version: SYMBT3_TUPLE_LEAF_LAYOUT_VERSION,
-        mode: proof.mode,
+    if tuple_leaf_counters_for(
         logical_oracle_count,
+        expected_logical_claims.len(),
         num_vars,
-        packing_challenge_digest,
-        descriptor_digest,
-    };
-    if symbt3_tuple_leaf_layout_digest(&expected_layout) != proof.tuple_leaf_layout_digest
-        || tuple_leaf_counters_for(
-            logical_oracle_count,
-            expected_logical_claims.len(),
-            num_vars,
-        ) != proof.counters
+        rlc_repetition_count,
+        rlc_batching_bits_per_repetition,
+    ) != proof.counters
     {
         return false;
     }
 
     let claim_kind = expected_logical_claims[0].claim_kind;
-    let point = derive_same_domain_tuple_leaf_opening_point(
-        proof_relation_id,
-        public_statement_digest,
-        whir_param_digest,
-        descriptor_digest,
-        proof.tuple_leaf_layout_digest,
-        claim_kind,
-        num_vars,
-    );
-    let point_digest = native_oracle_point_digest(&point);
-    if expected_logical_claims
-        .iter()
-        .any(|claim| claim.point_digest != point_digest)
+    if expected_logical_claims.len() != logical_oracle_count * rlc_repetition_count
+        || proof.packed_eval_claims.len() != rlc_repetition_count
     {
         return false;
     }
-
-    let logical_values = expected_logical_claims
-        .iter()
-        .map(|claim| claim.value)
-        .collect::<Vec<_>>();
-    let Some(packed_value) = symbt3_tuple_leaf_pack_values(&packing_challenges, &logical_values)
-    else {
-        return false;
-    };
-    let expected_packed_claim = Symbt3TupleLeafPackedEvalClaim {
-        point_digest,
-        value: packed_value,
-        claim_kind: WhirNativeEvalClaimKind::DirectOpening,
-    };
-    if proof.packed_eval_claims != [expected_packed_claim] {
+    let mut expected_packed_claims = Vec::with_capacity(rlc_repetition_count);
+    let mut opening_points = Vec::with_capacity(rlc_repetition_count);
+    let mut packed_values = Vec::with_capacity(rlc_repetition_count);
+    for (repetition_index, packing_challenges) in repeated_packing_challenges.iter().enumerate() {
+        let point = derive_same_domain_tuple_leaf_opening_point_for_repetition(
+            repetition_index,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            descriptor_digest,
+            proof.tuple_leaf_layout_digest,
+            claim_kind,
+            num_vars,
+        );
+        let point_digest = native_oracle_point_digest(&point);
+        let start = repetition_index * logical_oracle_count;
+        let end = start + logical_oracle_count;
+        let repetition_claims = &expected_logical_claims[start..end];
+        if repetition_claims
+            .iter()
+            .any(|claim| claim.point_digest != point_digest)
+        {
+            return false;
+        }
+        let logical_values = repetition_claims
+            .iter()
+            .map(|claim| claim.value)
+            .collect::<Vec<_>>();
+        let Some(packed_value) = symbt3_tuple_leaf_pack_values(packing_challenges, &logical_values)
+        else {
+            return false;
+        };
+        let mut packed_point = point;
+        packed_point.extend(tuple_leaf_boolean_point_for_index(
+            repetition_index,
+            repetition_log_size,
+        ));
+        let packed_point_digest = native_oracle_point_digest(&packed_point);
+        expected_packed_claims.push(Symbt3TupleLeafPackedEvalClaim {
+            point_digest: packed_point_digest,
+            value: packed_value,
+            claim_kind: WhirNativeEvalClaimKind::DirectOpening,
+        });
+        opening_points.push(packed_point);
+        packed_values.push(packed_value);
+    }
+    if proof.packed_eval_claims != expected_packed_claims {
         return false;
     }
     if whir_pcs_initial_root_digest(
@@ -3594,12 +4342,15 @@ pub fn whir_verify_same_domain_multi_oracle(
         return false;
     }
 
+    let Some(packed_num_vars) = num_vars.checked_add(repetition_log_size) else {
+        return false;
+    };
     whir_verify_opening_multi(
         &vk.seed,
-        num_vars,
+        packed_num_vars,
         &proof.whir_pcs_proof,
-        &[point],
-        &[packed_value],
+        &opening_points,
+        &packed_values,
     )
 }
 
@@ -4593,35 +5344,83 @@ pub fn verify_symbt3_native_accumulator_authority_non_zk(
     <WhirSnark as BackendSnark>::verify(vk, &instance.main_instance, &proof.main_symbt3_whir_proof)
 }
 
-/// Fail-closed placeholder for SYMBT3-N7b full-workload native authority.
-///
-/// The current N7 proof is a smoke profile over a tiny native-oracle fixture
-/// relation. It is intentionally not accepted by this full-workload helper
-/// until a real adapter wires the K6a accumulator relation and repeated RLC
-/// tuple-leaf openings into this proof object.
 pub fn prove_symbt3_native_accumulator_authority_full_non_zk(
-    _pk: &WhirProvingKey,
-    _instance: &Symbt3NativeFoldingIntegrityInstance,
-    _witness: &Symbt3NativeFoldingIntegrityWitness,
-) -> Option<Symbt3NativeAccumulatorAuthorityProof> {
-    None
+    pk: &WhirProvingKey,
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    witness: &Symbt3AccumulatorWitness,
+) -> Option<Symbt3N7bFullAuthorityProof> {
+    let (k6a_main_proof, adapter) = prove_symbt3_native_accumulator_k6a_workload_adapter(
+        pk,
+        profile,
+        accumulator_instance,
+        witness,
+    )?;
+    let native_tuple_leaf = prove_symbt3_n7b_full_native_tuple_leaf_from_k6a(
+        pk,
+        accumulator_instance,
+        witness,
+        &adapter,
+    )?;
+    let wrapper = compose_symbt3_n7b_full_authority_wrapper(Symbt3N7bFullAuthorityWrapperParts {
+        workload_kind: Some(Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1),
+        k6a_adapter: Some(adapter),
+        native_tuple_leaf: Some(native_tuple_leaf),
+        binding_digest: None,
+        fallback_used: false,
+    })
+    .ok()?;
+    Some(Symbt3N7bFullAuthorityProof {
+        version: SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_WRAPPER_VERSION,
+        proof_kind: ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+        workload_kind: Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1,
+        k6a_main_proof,
+        wrapper,
+    })
+}
+
+#[must_use]
+pub fn verify_symbt3_native_accumulator_authority_full_non_zk_report(
+    vk: &WhirVerifyingKey,
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    proof: &Symbt3N7bFullAuthorityProof,
+) -> Symbt3N7bFullAuthorityVerificationReport {
+    if proof.version != SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_WRAPPER_VERSION
+        || proof.proof_kind != ProductProofKind::Symbt3AccumulatorNonZkIntegrity
+        || proof.workload_kind != Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1
+    {
+        return Symbt3N7bFullAuthorityVerificationReport::blocked(
+            Symbt3N7bFullAuthorityBlocker::PublicCanonicalOrMonolithicAuthority,
+        );
+    }
+    verify_symbt3_n7b_full_authority_wrapper_non_zk(
+        &Symbt3N7bFullAuthorityVerificationContext {
+            k6a_vk: vk,
+            tuple_leaf_vk: vk,
+            profile,
+            accumulator_instance,
+            proof_kind: proof.proof_kind,
+            k6a_proof: &proof.k6a_main_proof,
+        },
+        &proof.wrapper,
+    )
 }
 
 #[must_use]
 pub fn verify_symbt3_native_accumulator_authority_full_non_zk(
     vk: &WhirVerifyingKey,
-    instance: &Symbt3NativeFoldingIntegrityInstance,
-    proof: &Symbt3NativeAccumulatorAuthorityProof,
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    proof: &Symbt3N7bFullAuthorityProof,
 ) -> bool {
-    if proof.workload_kind != Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1
-        || !proof.counters.full_accumulator_workload
-        || proof.counters.smoke_profile
-    {
-        return false;
-    }
-    let metadata = symbt3_native_accumulator_authority_profile_metadata(instance, &proof.counters);
-    profile_meets_native_accumulator_authority_full(&metadata)
-        && verify_symbt3_native_accumulator_authority_non_zk(vk, instance, proof)
+    verify_symbt3_native_accumulator_authority_full_non_zk_report(
+        vk,
+        profile,
+        accumulator_instance,
+        proof,
+    )
+    .ok
 }
 
 #[must_use]
@@ -4640,6 +5439,133 @@ pub fn symbt3_native_accumulator_authority_proof_size_hint(
             .len()
         + 256
         + main_sumcheck_bytes
+}
+
+#[must_use]
+pub fn symbt3_n7b_full_authority_proof_size_hint(proof: &Symbt3N7bFullAuthorityProof) -> usize {
+    symbt3_n7b_full_authority_proof_canonical_bytes(proof)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0)
+}
+
+#[must_use]
+pub fn symbt3_n7b_full_authority_proof_canonical_bytes(
+    proof: &Symbt3N7bFullAuthorityProof,
+) -> Option<Vec<u8>> {
+    let mut out = symbt3_n7b_full_authority_proof_header_bytes(proof);
+    push_bytes(&mut out, &canonical_whir_proof_bytes(&proof.k6a_main_proof));
+    push_bytes(&mut out, &proof.wrapper.k6a_adapter.canonical_bytes());
+    push_bytes(
+        &mut out,
+        &symbt3_tuple_leaf_multi_oracle_proof_canonical_bytes_compact(
+            &proof.wrapper.native_tuple_leaf.proof,
+        )?,
+    );
+    push_bytes(
+        &mut out,
+        &symbt3_n7b_native_tuple_leaf_part_metadata_bytes(&proof.wrapper.native_tuple_leaf),
+    );
+    push_bytes(
+        &mut out,
+        &symbt3_n7b_binding_digest_profile_metadata_bytes(&proof.wrapper),
+    );
+    push_bytes(&mut out, &proof.wrapper.counters.canonical_bytes());
+    Some(out)
+}
+
+#[must_use]
+pub fn symbt3_n7b_full_authority_proof_byte_sections(
+    proof: &Symbt3N7bFullAuthorityProof,
+) -> Symbt3N7bFullAuthorityProofByteSections {
+    let proof_header_bytes = symbt3_n7b_full_authority_proof_header_bytes(proof).len();
+    let main_k6a_whir_proof_bytes = canonical_whir_proof_bytes(&proof.k6a_main_proof).len();
+    let k6a_adapter_bytes = proof.wrapper.k6a_adapter.canonical_bytes().len();
+    let tuple_leaf_native_proof_bytes =
+        symbt3_tuple_leaf_multi_oracle_proof_canonical_bytes_compact(
+            &proof.wrapper.native_tuple_leaf.proof,
+        )
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+    debug_assert_eq!(
+        tuple_leaf_native_proof_bytes,
+        proof
+            .wrapper
+            .native_tuple_leaf
+            .proof
+            .accounting_serialized_bytes_len()
+    );
+    let native_tuple_leaf_part_metadata_bytes =
+        symbt3_n7b_native_tuple_leaf_part_metadata_bytes(&proof.wrapper.native_tuple_leaf).len();
+    let binding_digest_profile_metadata_bytes =
+        symbt3_n7b_binding_digest_profile_metadata_bytes(&proof.wrapper).len();
+    let wrapper_counters_bytes = proof.wrapper.counters.canonical_bytes().len();
+    let serialization_framing_bytes = 6 * std::mem::size_of::<u64>();
+    let total_bytes = proof_header_bytes
+        + main_k6a_whir_proof_bytes
+        + k6a_adapter_bytes
+        + tuple_leaf_native_proof_bytes
+        + native_tuple_leaf_part_metadata_bytes
+        + binding_digest_profile_metadata_bytes
+        + wrapper_counters_bytes
+        + serialization_framing_bytes;
+    debug_assert_eq!(
+        symbt3_n7b_full_authority_proof_canonical_bytes(proof).map(|bytes| bytes.len()),
+        Some(total_bytes)
+    );
+
+    Symbt3N7bFullAuthorityProofByteSections {
+        proof_header_bytes,
+        main_k6a_whir_proof_bytes,
+        k6a_adapter_bytes,
+        tuple_leaf_native_proof_bytes,
+        native_tuple_leaf_part_metadata_bytes,
+        binding_digest_profile_metadata_bytes,
+        wrapper_counters_bytes,
+        serialization_framing_bytes,
+        total_bytes,
+    }
+}
+
+fn symbt3_n7b_full_authority_proof_header_bytes(proof: &Symbt3N7bFullAuthorityProof) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_bytes(&mut out, b"SYMBT3_N7B_FULL_AUTHORITY_PROOF_CANONICAL_V1");
+    push_u64(&mut out, proof.version);
+    push_bytes(&mut out, n7b_product_proof_kind_label(proof.proof_kind));
+    push_bytes(&mut out, &proof.workload_kind.canonical_bytes());
+    push_u64(&mut out, proof.wrapper.version);
+    push_bytes(&mut out, &proof.wrapper.workload_kind.canonical_bytes());
+    out
+}
+
+fn symbt3_n7b_native_tuple_leaf_part_metadata_bytes(
+    native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_bytes(&mut out, b"SYMBT3_N7B_NATIVE_TUPLE_LEAF_PARTS_V1");
+    push_digest(&mut out, &native_tuple_leaf.native_oracle_descriptor_digest);
+    push_digest(&mut out, &native_tuple_leaf.native_message_roots_digest);
+    push_digest(&mut out, &native_tuple_leaf.manifest_oracle_root);
+    push_digest(&mut out, &native_tuple_leaf.source_oracle_root);
+    out
+}
+
+fn symbt3_n7b_binding_digest_profile_metadata_bytes(
+    wrapper: &Symbt3N7bFullAuthorityWrapperProof,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_bytes(&mut out, b"SYMBT3_N7B_FULL_AUTHORITY_BINDING_METADATA_V1");
+    push_digest(&mut out, &wrapper.binding_digest);
+    out
+}
+
+fn n7b_product_proof_kind_label(proof_kind: ProductProofKind) -> &'static [u8] {
+    match proof_kind {
+        ProductProofKind::MonolithicTypedCp => b"MonolithicTypedCp",
+        ProductProofKind::Symbt3AccumulatorNonZkIntegrity => b"Symbt3AccumulatorNonZkIntegrity",
+        ProductProofKind::Symbt2F => b"Symbt2F",
+        ProductProofKind::Symbt2C => b"Symbt2C",
+        ProductProofKind::Symbtc => b"Symbtc",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5578,20 +6504,41 @@ fn build_symbt3_native_accumulator_authority_tuple_leaf_inputs(
         })
         .collect::<Vec<_>>();
     let descriptor_digest = native_oracle_spec_digest(&specs);
-    let packing_challenges = symbt3_tuple_leaf_packing_challenges(
+    let rlc_repetition_count = SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT;
+    let rlc_batching_bits_per_repetition = SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS;
+    let repetition_log_size = symbt3_tuple_leaf_repetition_log_size(rlc_repetition_count)?;
+    let tuple_leaf_layout_digest = symbt3_tuple_leaf_layout_digest_for_repeated_rlc(
+        Symbt3NativeMultiOracleMode::SameDomainRlcTupleLeafV1,
+        descriptor_digest,
+        specs.len(),
+        common_num_vars,
+        rlc_repetition_count,
+        rlc_batching_bits_per_repetition,
+    );
+    let repeated_packing_challenges = symbt3_tuple_leaf_packing_challenges_for_repetitions(
         Symbt3NativeMultiOracleMode::SameDomainRlcTupleLeafV1,
         instance.symbt3_relation_id,
         instance.public_statement_digest(),
         instance.whir_param_digest,
         descriptor_digest,
+        tuple_leaf_layout_digest,
         specs.len(),
         common_num_vars,
+        rlc_repetition_count,
     )?;
-    let packed_evaluations = symbt3_tuple_leaf_pack_evaluations(&packing_challenges, &evaluations)?;
+    let mut packed_evaluations =
+        Vec::with_capacity((1usize << common_num_vars) * rlc_repetition_count);
+    for packing_challenges in &repeated_packing_challenges {
+        packed_evaluations.extend(symbt3_tuple_leaf_pack_evaluations(
+            packing_challenges,
+            &evaluations,
+        )?);
+    }
+    let packed_num_vars = common_num_vars.checked_add(repetition_log_size)?;
     let packed_root = whir_initial_root_digest(
         seed,
         NativeOracleRootPolicy::CanonicalWhirRootV1,
-        common_num_vars,
+        packed_num_vars,
         &packed_evaluations,
     )?;
 
@@ -5686,24 +6633,14 @@ fn native_accumulator_authority_counters(
             tuple_proof.logical_descriptors.len(),
             tuple_proof.logical_eval_claims.len(),
             tuple_proof.logical_descriptors.first()?.num_vars,
+            tuple_proof.counters.rlc_repetition_count,
+            tuple_proof.counters.rlc_batching_bits_per_repetition,
         )
     {
         return None;
     }
-    let rlc_repetition_count = match workload_kind {
-        Symbt3NativeAccumulatorAuthorityWorkload::N7SmokeProfileV1 => 1,
-        Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1 => {
-            SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_REPETITION_COUNT
-        }
-    };
-    let rlc_batching_bits_per_repetition = match workload_kind {
-        Symbt3NativeAccumulatorAuthorityWorkload::N7SmokeProfileV1 => {
-            SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
-        }
-        Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1 => {
-            SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_BATCHING_BITS_PER_REPETITION
-        }
-    };
+    let rlc_repetition_count = tuple_proof.counters.rlc_repetition_count;
+    let rlc_batching_bits_per_repetition = tuple_proof.counters.rlc_batching_bits_per_repetition;
     let total_rlc_batching_bits =
         rlc_repetition_count.saturating_mul(rlc_batching_bits_per_repetition);
     Some(Symbt3NativeAccumulatorAuthorityCounters {
@@ -5841,7 +6778,11 @@ fn symbt3_native_accumulator_authority_tuple_leaf_semantics_ok(
         || tuple_proof.public_statement_digest != proof.public_statement_digest
         || tuple_proof.whir_param_digest != instance.whir_param_digest
         || tuple_proof.logical_descriptors.len() != 2 + instance.round_layouts.len()
-        || tuple_proof.logical_eval_claims.len() != tuple_proof.logical_descriptors.len()
+        || tuple_proof.logical_eval_claims.len()
+            != tuple_proof
+                .logical_descriptors
+                .len()
+                .saturating_mul(tuple_proof.counters.rlc_repetition_count)
         || proof.native_oracle_descriptor_digest != native_oracle_descriptor_digest(&descriptors)
         || proof.rlc_tuple_leaf_layout_digest != tuple_proof.tuple_leaf_layout_digest
         || proof.rlc_tuple_leaf_root != tuple_proof.packed_root
@@ -5899,10 +6840,12 @@ fn symbt3_native_accumulator_authority_message_semantics_ok(
     {
         return false;
     }
+    let first_repetition_claims =
+        &proof.rlc_tuple_leaf_multi_oracle_proof.logical_eval_claims[..descriptors.len()];
     for ((descriptor, layout), claim) in message_descriptors
         .iter()
         .zip(instance.round_layouts.iter())
-        .zip(proof.rlc_tuple_leaf_multi_oracle_proof.logical_eval_claims[2..].iter())
+        .zip(first_repetition_claims[2..].iter())
     {
         if descriptor.oracle_id != layout.oracle_id
             || descriptor.role
@@ -6108,13 +7051,15 @@ fn validate_same_domain_tuple_leaf_claim_shape(
     claims: &[WhirNativeOracleEvalClaim],
 ) -> Result<(), ()> {
     validate_same_domain_tuple_leaf_specs(specs)?;
-    if specs.len() != claims.len() {
+    if claims.is_empty() || claims.len() % specs.len() != 0 {
         return Err(());
     }
     let claim_kind = claims.first().ok_or(())?.claim_kind;
-    for (spec, claim) in specs.iter().zip(claims.iter()) {
-        if claim.oracle_id != spec.oracle_id || claim.claim_kind != claim_kind {
-            return Err(());
+    for claim_chunk in claims.chunks(specs.len()) {
+        for (spec, claim) in specs.iter().zip(claim_chunk.iter()) {
+            if claim.oracle_id != spec.oracle_id || claim.claim_kind != claim_kind {
+                return Err(());
+            }
         }
     }
     Ok(())
@@ -6143,8 +7088,12 @@ fn tuple_leaf_counters_for(
     logical_oracle_count: usize,
     logical_eval_claim_count: usize,
     num_vars: usize,
+    rlc_repetition_count: usize,
+    rlc_batching_bits_per_repetition: usize,
 ) -> Symbt3TupleLeafMultiOracleCounters {
     let oracle_len = 1usize.checked_shl(num_vars as u32).unwrap_or(0);
+    let total_rlc_batching_bits =
+        rlc_repetition_count.saturating_mul(rlc_batching_bits_per_repetition);
     Symbt3TupleLeafMultiOracleCounters {
         logical_oracle_count,
         whir_instance_count: 1,
@@ -6153,6 +7102,10 @@ fn tuple_leaf_counters_for(
         root_count: 1,
         native_oracle_pcs_opening_count: 1,
         logical_eval_claim_count,
+        rlc_repetition_count,
+        rlc_batching_bits_per_repetition,
+        total_rlc_batching_bits,
+        effective_soundness_bits: total_rlc_batching_bits,
         tuple_leaf_layout: SYMBT3_SAME_DOMAIN_RLC_TUPLE_LEAF_LAYOUT.to_owned(),
         same_domain: true,
         same_field: true,
@@ -6164,6 +7117,18 @@ fn tuple_leaf_counters_for(
             .saturating_mul(oracle_len)
             .saturating_add(logical_oracle_count.saturating_mul(logical_eval_claim_count)),
     }
+}
+
+fn tuple_leaf_boolean_point_for_index(index: usize, len: usize) -> Vec<BabyBear> {
+    (0..len)
+        .map(|bit| {
+            if ((index >> bit) & 1) == 1 {
+                BabyBear::ONE
+            } else {
+                BabyBear::ZERO
+            }
+        })
+        .collect()
 }
 
 fn counters_for(
@@ -7191,9 +8156,11 @@ mod tests {
     }
 
     struct K6aAdapterFixture {
+        pk: WhirProvingKey,
         vk: WhirVerifyingKey,
         profile: Symbt3AuthorityProfile,
         accumulator_instance: Symbt3AccumulatorInstance,
+        accumulator_witness: Symbt3AccumulatorWitness,
         proof: WhirProof,
         adapter: Symbt3NativeAccumulatorK6aWorkloadAdapter,
     }
@@ -7202,7 +8169,7 @@ mod tests {
         SymphonyParams {
             q: 257,
             d: D,
-            kappa: 2,
+            kappa: 1,
             ell_np: 2,
             ell_h: D,
             lambda_pj: 4,
@@ -7276,11 +8243,17 @@ mod tests {
     }
 
     fn k6a_adapter_fixture() -> K6aAdapterFixture {
+        k6a_adapter_fixture_with_batch_size(1)
+    }
+
+    fn k6a_adapter_fixture_with_batch_size(batch_size: usize) -> K6aAdapterFixture {
         let params = k6a_params();
         let (prover, _) = Prover::<SumcheckSnark, SumcheckSnark>::setup(params);
         let (r1cs, z) = k6a_r1cs();
-        let item = k6a_batched_item(&prover, &r1cs, &z, 1);
-        let bucket = BatchedCpBucket::new(vec![item], digest(b"k6a-native-adapter-whir-params"))
+        let items = (0..batch_size)
+            .map(|idx| k6a_batched_item(&prover, &r1cs, &z, idx as u8 + 1))
+            .collect::<Vec<_>>();
+        let bucket = BatchedCpBucket::new(items, digest(b"k6a-native-adapter-whir-params"))
             .expect("K6a adapter bucket");
         let descriptor = BatchedCpSymbt3SetupDescriptor::new(
             bucket.shape.clone(),
@@ -7323,9 +8296,11 @@ mod tests {
         )
         .expect("K6a native workload adapter proof");
         K6aAdapterFixture {
+            pk,
             vk,
             profile,
             accumulator_instance,
+            accumulator_witness,
             proof,
             adapter,
         }
@@ -7333,6 +8308,18 @@ mod tests {
 
     fn k6a_compatible_n7b_tuple_leaf_parts(
         adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    ) -> (WhirVerifyingKey, Symbt3N7bNativeTupleLeafProofParts) {
+        k6a_compatible_n7b_tuple_leaf_parts_with_repetitions(
+            adapter,
+            SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT,
+            SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS,
+        )
+    }
+
+    fn k6a_compatible_n7b_tuple_leaf_parts_with_repetitions(
+        adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+        rlc_repetition_count: usize,
+        rlc_batching_bits_per_repetition: usize,
     ) -> (WhirVerifyingKey, Symbt3N7bNativeTupleLeafProofParts) {
         let (pk, vk) = WhirSnark::setup(&relation());
         let num_vars = 1;
@@ -7377,7 +8364,7 @@ mod tests {
                 claim_kind: WhirNativeEvalClaimKind::DirectOpening,
             })
             .collect::<Vec<_>>();
-        let proof = whir_commit_and_prove_same_domain_multi_oracle(
+        let proof = whir_commit_and_prove_same_domain_multi_oracle_with_repetitions(
             &pk,
             adapter.main_symbt3_relation_id,
             adapter.public_statement_digest,
@@ -7385,6 +8372,8 @@ mod tests {
             &specs,
             &evaluations,
             &eval_requests,
+            rlc_repetition_count,
+            rlc_batching_bits_per_repetition,
         )
         .expect("K6a-compatible tuple-leaf proof");
         let manifest_oracle_root = adapter.manifest_oracle_root;
@@ -9488,20 +10477,23 @@ mod tests {
             assert_eq!(fixture.proof.counters.accumulator_transition_claims, 1);
             assert_eq!(
                 fixture.proof.counters.rlc_batching_bits,
-                SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
+                SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT * SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
             );
-            assert_eq!(fixture.proof.counters.rlc_repetition_count, 1);
+            assert_eq!(
+                fixture.proof.counters.rlc_repetition_count,
+                SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT
+            );
             assert_eq!(
                 fixture.proof.counters.rlc_batching_bits_per_repetition,
                 SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
             );
             assert_eq!(
                 fixture.proof.counters.total_rlc_batching_bits,
-                SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
+                SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT * SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
             );
             assert_eq!(
                 fixture.proof.counters.effective_soundness_bits,
-                SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
+                SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT * SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
             );
             assert_eq!(
                 fixture
@@ -9535,26 +10527,23 @@ mod tests {
         assert_eq!(report.native_oracle_pcs_opening_count, 1);
         assert_eq!(
             report.rlc_batching_bits,
-            Some(SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS)
+            Some(SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT * SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS)
         );
     }
 
     #[test]
     fn symbt3_n7_full_authority_gate_rejects_smoke_profile() {
         let fixture = n7_fixture(1, 1);
-        let (pk, _) = WhirSnark::setup(&relation());
-        let (_, witness) = n7_instance_witness(1, 1);
-        assert!(prove_symbt3_native_accumulator_authority_full_non_zk(
-            &pk,
-            &fixture.instance,
-            &witness
-        )
-        .is_none());
-        assert!(!verify_symbt3_native_accumulator_authority_full_non_zk(
-            &fixture.vk,
-            &fixture.instance,
-            &fixture.proof
-        ));
+        assert!(
+            symbt3_native_accumulator_k6a_workload_adapter(
+                Symbt3NativeAccumulatorK6aWorkloadAdapterInput::NativeN7Smoke {
+                    instance: &fixture.instance,
+                    proof: &fixture.proof,
+                },
+            )
+            .is_none(),
+            "N7 smoke proofs must not enter the full K6a N7b helper boundary"
+        );
 
         let mut metadata = symbt3_native_accumulator_authority_profile_metadata(
             &fixture.instance,
@@ -9595,7 +10584,7 @@ mod tests {
     }
 
     #[test]
-    fn symbt3_n7b_k6a_adapter_extracts_full_workload_and_stays_fail_closed() {
+    fn symbt3_n7b_k6a_adapter_extracts_full_workload() {
         let fixture = k6a_adapter_fixture();
         let adapter = &fixture.adapter;
         assert_eq!(
@@ -9708,23 +10697,206 @@ mod tests {
         let mut missing = Symbt3NativeAccumulatorK6aWorkloadAdapterParts::from(adapter);
         missing.main_symbt3_proof_digest = None;
         assert!(symbt3_native_accumulator_k6a_workload_adapter_from_parts(missing).is_none());
+    }
 
-        let (pk, _) = WhirSnark::setup(&relation());
-        let (_, smoke_witness) = n7_instance_witness(1, 1);
-        assert!(
-            prove_symbt3_native_accumulator_authority_full_non_zk(
-                &pk,
-                &smoke.instance,
-                &smoke_witness,
-            )
-            .is_none(),
-            "N7b full route remains blocked until the K6a adapter is wired into the wrapper"
-        );
-        assert!(!verify_symbt3_native_accumulator_authority_full_non_zk(
-            &smoke.vk,
-            &smoke.instance,
-            &smoke.proof,
+    fn assert_honest_full_n7b_verifies(batch_size: usize) -> Symbt3N7bFullAuthorityProof {
+        let fixture = k6a_adapter_fixture_with_batch_size(batch_size);
+        let proof = prove_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.pk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+        )
+        .expect("full N7b proof");
+        assert!(verify_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &proof,
         ));
+        let counters = &proof.wrapper.counters;
+        assert!(counters.full_accumulator_workload);
+        assert!(!counters.smoke_profile);
+        assert!(counters.native_multi_oracle);
+        assert_eq!(counters.whir_instance_count, 1);
+        assert_eq!(counters.root_count, 1);
+        assert_eq!(counters.query_schedule_count, 1);
+        assert_eq!(counters.transcript_count, 1);
+        assert_eq!(counters.native_oracle_pcs_opening_count, 1);
+        assert_eq!(
+            counters.logical_oracle_count,
+            2 + fixture.accumulator_instance.message_oracle_roots.len()
+        );
+        assert_eq!(counters.family_columnar_subproof_count, 0);
+        assert_eq!(
+            counters.rlc_repetition_count,
+            SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_RLC_REPETITION_COUNT
+        );
+        assert!(
+            counters.effective_soundness_bits
+                >= SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_FULL_SOUNDNESS_BOUND_BITS
+        );
+        assert!(!counters.fallback_used);
+        proof
+    }
+
+    #[test]
+    fn symbt3_n7b_full_helper_honest_k1_round1_verifies() {
+        assert_honest_full_n7b_verifies(1);
+    }
+
+    #[test]
+    fn symbt3_n7b_full_helper_honest_k2_round1_verifies() {
+        assert_honest_full_n7b_verifies(2);
+    }
+
+    #[test]
+    fn symbt3_n7b_actual_serialized_bytes_use_compact_pcs_and_match_accounting() {
+        let fixture = k6a_adapter_fixture_with_batch_size(1);
+        let mut proof = prove_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.pk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+        )
+        .expect("full N7b proof");
+        assert!(verify_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &proof,
+        ));
+
+        let serialized = symbt3_n7b_full_authority_proof_canonical_bytes(&proof)
+            .expect("N7b proof canonical bytes");
+        let sections = symbt3_n7b_full_authority_proof_byte_sections(&proof);
+        assert_eq!(serialized.len(), sections.total_bytes);
+        assert_eq!(
+            serialized.len(),
+            symbt3_n7b_full_authority_proof_size_hint(&proof)
+        );
+
+        let compact_pcs =
+            whir_pcs_compact_canonical_bytes(&proof.wrapper.native_tuple_leaf.proof.whir_pcs_proof)
+                .expect("compact tuple PCS payload");
+        assert!(
+            serialized
+                .windows(compact_pcs.len())
+                .any(|window| window == compact_pcs.as_slice()),
+            "actual N7b serialized bytes must contain the compact PCS payload"
+        );
+
+        let decoded_pcs =
+            whir_pcs_from_compact_canonical_bytes(&compact_pcs).expect("decode compact PCS");
+        assert_eq!(
+            serde_json::to_value(&decoded_pcs).expect("decoded PCS JSON"),
+            serde_json::to_value(&proof.wrapper.native_tuple_leaf.proof.whir_pcs_proof)
+                .expect("original PCS JSON")
+        );
+        proof.wrapper.native_tuple_leaf.proof.whir_pcs_proof = decoded_pcs;
+        assert!(verify_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &proof,
+        ));
+    }
+
+    #[test]
+    fn symbt3_n7b_full_helper_rejects_stale_components_and_mutations() {
+        let fixture = k6a_adapter_fixture_with_batch_size(1);
+        let other = k6a_adapter_fixture_with_batch_size(2);
+        let proof = prove_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.pk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+        )
+        .expect("full N7b proof");
+        assert!(verify_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &proof,
+        ));
+
+        let mut stale_k6a = proof.clone();
+        stale_k6a.k6a_main_proof = other.proof;
+        let report = verify_symbt3_native_accumulator_authority_full_non_zk_report(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &stale_k6a,
+        );
+        assert!(!report.ok);
+        assert_eq!(
+            report.blocker,
+            Some(Symbt3N7bFullAuthorityBlocker::K6aProofMismatch)
+        );
+
+        let other_proof = prove_symbt3_native_accumulator_authority_full_non_zk(
+            &other.pk,
+            &other.profile,
+            &other.accumulator_instance,
+            &other.accumulator_witness,
+        )
+        .expect("other full N7b proof");
+        let mut stale_native = proof.clone();
+        stale_native.wrapper.native_tuple_leaf = other_proof.wrapper.native_tuple_leaf;
+        stale_native.wrapper.binding_digest = build_symbt3_n7b_full_authority_binding_digest(
+            &symbt3_n7b_full_authority_binding_inputs(
+                &stale_native.wrapper.k6a_adapter,
+                &stale_native.wrapper.native_tuple_leaf,
+            ),
+        );
+        let report = verify_symbt3_native_accumulator_authority_full_non_zk_report(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &stale_native,
+        );
+        assert!(!report.ok);
+
+        let mut bad_binding = proof.clone();
+        bad_binding.wrapper.binding_digest = digest(b"n7b-full-helper-bad-binding");
+        let report = verify_symbt3_native_accumulator_authority_full_non_zk_report(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &bad_binding,
+        );
+        assert!(!report.ok);
+        assert_eq!(
+            report.blocker,
+            Some(Symbt3N7bFullAuthorityBlocker::BindingDigestMismatch)
+        );
+
+        let mut weak_rlc = proof.clone();
+        weak_rlc.wrapper.counters.rlc_repetition_count = 1;
+        weak_rlc.wrapper.counters.total_rlc_batching_bits = SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS;
+        weak_rlc.wrapper.counters.effective_soundness_bits = SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS;
+        weak_rlc.wrapper.counters.rlc_batching_bits = SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS;
+        let report = verify_symbt3_native_accumulator_authority_full_non_zk_report(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &weak_rlc,
+        );
+        assert!(!report.ok);
+
+        let mut public_canonical = proof;
+        public_canonical.proof_kind = ProductProofKind::MonolithicTypedCp;
+        let report = verify_symbt3_native_accumulator_authority_full_non_zk_report(
+            &fixture.vk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &public_canonical,
+        );
+        assert!(!report.ok);
+        assert_eq!(
+            report.blocker,
+            Some(Symbt3N7bFullAuthorityBlocker::PublicCanonicalOrMonolithicAuthority)
+        );
     }
 
     #[test]
@@ -9768,7 +10940,7 @@ mod tests {
     }
 
     #[test]
-    fn symbt3_n7b_full_wrapper_composes_and_remains_blocked_on_repeated_rlc() {
+    fn symbt3_n7b_full_wrapper_advances_past_repeated_rlc_blocker_when_evidence_verifies() {
         let fixture = k6a_adapter_fixture();
         let (tuple_leaf_vk, native_tuple_leaf) =
             k6a_compatible_n7b_tuple_leaf_parts(&fixture.adapter);
@@ -9810,12 +10982,50 @@ mod tests {
             },
             &wrapper,
         );
-        assert!(!report.ok);
-        assert!(report.blocked);
-        assert_eq!(
-            report.blocker,
-            Some(Symbt3N7bFullAuthorityBlocker::RepeatedRlcSoundnessMissingOrWeak)
-        );
+        assert!(report.ok);
+        assert!(!report.blocked);
+        assert_eq!(report.blocker, None);
+    }
+
+    #[test]
+    fn symbt3_n7b_full_wrapper_rejects_weak_or_missing_repeated_rlc_evidence() {
+        let fixture = k6a_adapter_fixture();
+        for (repetition_count, bits_per_repetition) in [(1usize, 31usize), (4, 0), (4, 20)] {
+            let (tuple_leaf_vk, native_tuple_leaf) =
+                k6a_compatible_n7b_tuple_leaf_parts_with_repetitions(
+                    &fixture.adapter,
+                    repetition_count,
+                    bits_per_repetition,
+                );
+            let wrapper =
+                compose_symbt3_n7b_full_authority_wrapper(Symbt3N7bFullAuthorityWrapperParts {
+                    workload_kind: Some(
+                        Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1,
+                    ),
+                    k6a_adapter: Some(fixture.adapter.clone()),
+                    native_tuple_leaf: Some(native_tuple_leaf),
+                    binding_digest: None,
+                    fallback_used: false,
+                })
+                .expect("weak-RLC wrapper is structurally composed");
+            let report = verify_symbt3_n7b_full_authority_wrapper_non_zk(
+                &Symbt3N7bFullAuthorityVerificationContext {
+                    k6a_vk: &fixture.vk,
+                    tuple_leaf_vk: &tuple_leaf_vk,
+                    profile: &fixture.profile,
+                    accumulator_instance: &fixture.accumulator_instance,
+                    proof_kind: ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+                    k6a_proof: &fixture.proof,
+                },
+                &wrapper,
+            );
+            assert!(!report.ok);
+            assert!(report.blocked);
+            assert_eq!(
+                report.blocker,
+                Some(Symbt3N7bFullAuthorityBlocker::RepeatedRlcSoundnessMissingOrWeak)
+            );
+        }
     }
 
     #[test]
@@ -9866,11 +11076,18 @@ mod tests {
     fn symbt3_n7b_full_wrapper_keeps_default_verify_public_routing_unchanged() {
         assert!(WhirSnark::has_authoritative_typed_cp());
         let smoke = n7_fixture(1, 1);
-        assert!(!verify_symbt3_native_accumulator_authority_full_non_zk(
+        assert!(verify_symbt3_native_accumulator_authority_non_zk(
             &smoke.vk,
             &smoke.instance,
             &smoke.proof,
         ));
+        assert!(symbt3_native_accumulator_k6a_workload_adapter(
+            Symbt3NativeAccumulatorK6aWorkloadAdapterInput::NativeN7Smoke {
+                instance: &smoke.instance,
+                proof: &smoke.proof,
+            },
+        )
+        .is_none());
     }
 
     #[test]
@@ -10201,6 +11418,22 @@ mod tests {
         assert_eq!(proof.counters.transcript_count, 1);
         assert_eq!(proof.counters.native_oracle_pcs_opening_count, 1);
         assert_eq!(
+            proof.counters.rlc_repetition_count,
+            SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT
+        );
+        assert_eq!(
+            proof.counters.rlc_batching_bits_per_repetition,
+            SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
+        );
+        assert_eq!(
+            proof.counters.total_rlc_batching_bits,
+            SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT * SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS
+        );
+        assert_eq!(
+            proof.counters.effective_soundness_bits,
+            proof.counters.total_rlc_batching_bits
+        );
+        assert_eq!(
             proof.counters.tuple_leaf_layout,
             SYMBT3_SAME_DOMAIN_RLC_TUPLE_LEAF_LAYOUT
         );
@@ -10227,37 +11460,202 @@ mod tests {
             &proof,
             &proof.logical_eval_claims,
         ));
-        let point = derive_same_domain_tuple_leaf_opening_point(
-            proof_relation_id,
-            public_statement_digest,
-            whir_param_digest,
-            proof.descriptor_digest,
-            proof.tuple_leaf_layout_digest,
-            WhirNativeEvalClaimKind::DirectOpening,
-            specs[0].num_vars,
-        );
-        for (claim, evaluations) in proof.logical_eval_claims.iter().zip(evaluations.iter()) {
-            assert_eq!(claim.value, mle_eval_bb(evaluations, &point));
-        }
-        let challenges = symbt3_tuple_leaf_packing_challenges(
-            proof.mode,
-            proof_relation_id,
-            public_statement_digest,
-            whir_param_digest,
-            proof.descriptor_digest,
-            proof.logical_descriptors.len(),
-            specs[0].num_vars,
-        )
-        .expect("M1b packing challenges");
-        let logical_values = proof
-            .logical_eval_claims
-            .iter()
-            .map(|claim| claim.value)
-            .collect::<Vec<_>>();
         assert_eq!(
-            proof.packed_eval_claims[0].value,
-            symbt3_tuple_leaf_pack_values(&challenges, &logical_values).unwrap()
+            proof.packed_eval_claims.len(),
+            SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT
         );
+        assert_eq!(
+            proof.logical_eval_claims.len(),
+            specs.len() * SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT
+        );
+        for repetition_index in 0..SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT {
+            let point = derive_same_domain_tuple_leaf_opening_point_for_repetition(
+                repetition_index,
+                proof_relation_id,
+                public_statement_digest,
+                whir_param_digest,
+                proof.descriptor_digest,
+                proof.tuple_leaf_layout_digest,
+                WhirNativeEvalClaimKind::DirectOpening,
+                specs[0].num_vars,
+            );
+            let start = repetition_index * specs.len();
+            let claims = &proof.logical_eval_claims[start..start + specs.len()];
+            for (claim, evaluations) in claims.iter().zip(evaluations.iter()) {
+                assert_eq!(claim.value, mle_eval_bb(evaluations, &point));
+            }
+            let challenges = symbt3_tuple_leaf_packing_challenges_for_repetition(
+                proof.mode,
+                repetition_index,
+                proof_relation_id,
+                public_statement_digest,
+                whir_param_digest,
+                proof.descriptor_digest,
+                proof.tuple_leaf_layout_digest,
+                proof.logical_descriptors.len(),
+                specs[0].num_vars,
+            )
+            .expect("M1b repetition packing challenges");
+            let logical_values = claims.iter().map(|claim| claim.value).collect::<Vec<_>>();
+            assert_eq!(
+                proof.packed_eval_claims[repetition_index].value,
+                symbt3_tuple_leaf_pack_values(&challenges, &logical_values).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn same_domain_tuple_leaf_byte_accounting_sections_sum_to_total() {
+        let (_, _, _, _, _, _, _, _, proof) = tuple_leaf_fixture(4);
+        let sections = proof.accounting_byte_sections();
+        let pcs_json_bytes =
+            serde_json::to_vec(&proof.whir_pcs_proof).expect("tuple PCS proof serializes");
+        let pcs_compact_bytes = whir_pcs_compact_canonical_bytes(&proof.whir_pcs_proof)
+            .expect("tuple PCS proof compact-serializes");
+        let expected_total = proof.metadata_canonical_bytes().len() + 8 + pcs_compact_bytes.len();
+        assert_eq!(sections.total_bytes, expected_total);
+        assert_eq!(
+            sections.total_bytes,
+            sections.descriptor_layout_profile_metadata_bytes
+                + sections.duplicated_main_k6a_context_bytes
+                + sections.logical_eval_claim_bytes
+                + sections.repeated_rlc_claim_bytes
+                + sections.pcs_payload_length_prefix_bytes
+                + sections.pcs_compact_canonical_payload_bytes
+        );
+        assert_eq!(sections.pcs_legacy_json_payload_bytes, pcs_json_bytes.len());
+        assert_eq!(
+            sections.pcs_legacy_json_payload_bytes,
+            sections.pcs_merkle_root_path_payload_bytes
+                + sections.pcs_query_value_payload_bytes
+                + sections.pcs_transcript_payload_bytes
+                + sections.pcs_json_framing_bytes
+        );
+        assert!(sections.pcs_merkle_root_path_payload_bytes > 0);
+        assert!(sections.pcs_query_value_payload_bytes > 0);
+        assert!(sections.repeated_rlc_claim_bytes > 0);
+        assert_eq!(proof.counters.whir_instance_count, 1);
+        assert_eq!(proof.counters.root_count, 1);
+        assert_eq!(proof.counters.query_schedule_count, 1);
+        assert_eq!(proof.counters.native_oracle_pcs_opening_count, 1);
+    }
+
+    fn mutate_first_json_number(value: &mut serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Number(number) => {
+                let next = number.as_u64().unwrap_or(0).wrapping_add(1);
+                *value = serde_json::Value::from(next);
+                true
+            }
+            serde_json::Value::Array(values) => values.iter_mut().any(mutate_first_json_number),
+            serde_json::Value::Object(fields) => fields.values_mut().any(mutate_first_json_number),
+            _ => false,
+        }
+    }
+
+    fn mutate_first_query_field_number(
+        proof: &WhirPcsProof<F, EF, WhirMmcs>,
+        field: &str,
+    ) -> WhirPcsProof<F, EF, WhirMmcs> {
+        let mut value = serde_json::to_value(proof).expect("PCS proof JSON value");
+        let mut mutated = false;
+        if let Some(rounds) = value
+            .get_mut("rounds")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for round in rounds {
+                if let Some(queries) = round
+                    .get_mut("queries")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    for query in queries {
+                        if let Some(target) = query.get_mut(field) {
+                            mutated = mutate_first_json_number(target);
+                            if mutated {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if mutated {
+                    break;
+                }
+            }
+        }
+        if !mutated {
+            if let Some(queries) = value
+                .get_mut("final_queries")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for query in queries {
+                    if let Some(target) = query.get_mut(field) {
+                        mutated = mutate_first_json_number(target);
+                        if mutated {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(mutated, "expected to mutate query field {field}");
+        serde_json::from_value(value).expect("mutated PCS proof remains structurally valid")
+    }
+
+    #[test]
+    fn same_domain_tuple_leaf_compact_pcs_encoding_roundtrips_and_mutations_reject() {
+        let (
+            _pk,
+            vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            _specs,
+            _evaluations,
+            _requests,
+            proof,
+        ) = tuple_leaf_fixture(4);
+        let compact =
+            whir_pcs_compact_canonical_bytes(&proof.whir_pcs_proof).expect("compact PCS encoding");
+        let decoded =
+            whir_pcs_from_compact_canonical_bytes(&compact).expect("compact PCS decoding");
+        assert_eq!(
+            serde_json::to_value(&decoded).expect("decoded PCS JSON"),
+            serde_json::to_value(&proof.whir_pcs_proof).expect("original PCS JSON")
+        );
+        let mut compact_roundtrip = proof.clone();
+        compact_roundtrip.whir_pcs_proof = decoded;
+        assert!(whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &compact_roundtrip,
+            &compact_roundtrip.logical_eval_claims,
+        ));
+
+        let mut sibling_mutation = proof.clone();
+        sibling_mutation.whir_pcs_proof =
+            mutate_first_query_field_number(&sibling_mutation.whir_pcs_proof, "proof");
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &sibling_mutation,
+            &sibling_mutation.logical_eval_claims,
+        ));
+
+        let mut opened_value_mutation = proof;
+        opened_value_mutation.whir_pcs_proof =
+            mutate_first_query_field_number(&opened_value_mutation.whir_pcs_proof, "values");
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &opened_value_mutation,
+            &opened_value_mutation.logical_eval_claims,
+        ));
     }
 
     #[test]
@@ -10376,6 +11774,55 @@ mod tests {
             &packed_value_mutation.logical_eval_claims,
         ));
 
+        let mut domain_mutation = proof.clone();
+        domain_mutation.packing_challenge_digest = digest(b"m1b-wrong-rlc-domain");
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &domain_mutation,
+            &domain_mutation.logical_eval_claims,
+        ));
+
+        let mut layout_domain_mutation = proof.clone();
+        layout_domain_mutation.tuple_leaf_layout_digest = digest(b"m1b-wrong-layout-domain");
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &layout_domain_mutation,
+            &layout_domain_mutation.logical_eval_claims,
+        ));
+
+        let mut packed_repetition_swap = proof.clone();
+        packed_repetition_swap.packed_eval_claims.swap(0, 1);
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &packed_repetition_swap,
+            &packed_repetition_swap.logical_eval_claims,
+        ));
+
+        let mut logical_repetition_swap = proof.clone();
+        let width = logical_repetition_swap.logical_descriptors.len();
+        for offset in 0..width {
+            logical_repetition_swap
+                .logical_eval_claims
+                .swap(offset, width + offset);
+        }
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &logical_repetition_swap,
+            &logical_repetition_swap.logical_eval_claims,
+        ));
+
         let mut point_mutation = proof.clone();
         point_mutation.logical_eval_claims[0].point_digest = digest(b"m1b-wrong-point");
         assert!(!whir_verify_same_domain_multi_oracle(
@@ -10397,6 +11844,28 @@ mod tests {
             whir_param_digest,
             &claim_kind_mutation,
             &claim_kind_mutation.logical_eval_claims,
+        ));
+
+        let mut whir_instance_count_mutation = proof.clone();
+        whir_instance_count_mutation.counters.whir_instance_count = 2;
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &whir_instance_count_mutation,
+            &whir_instance_count_mutation.logical_eval_claims,
+        ));
+
+        let mut root_count_mutation = proof;
+        root_count_mutation.counters.root_count = 2;
+        assert!(!whir_verify_same_domain_multi_oracle(
+            &vk,
+            proof_relation_id,
+            public_statement_digest,
+            whir_param_digest,
+            &root_count_mutation,
+            &root_count_mutation.logical_eval_claims,
         ));
     }
 

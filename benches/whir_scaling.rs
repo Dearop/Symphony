@@ -53,7 +53,9 @@
 //!   whir_scaling/symbt3_accumulator_authority_vs_k – K6a opt-in NonZK integrity product route vs k
 //!   whir_scaling/product_route_comparison_vs_k – K6b side-by-side monolithic product vs K6a NonZK integrity product route
 //!   whir_scaling/symbt3_native_accumulator_authority_vs_k – N7 smoke profile, not full accumulator workload
+//!   whir_scaling/symbt3_native_accumulator_authority_full_vs_k – N7b full K6a workload native NonZK authority candidate
 
+use std::collections::BTreeMap;
 use std::fs::{create_dir_all, File};
 use std::hint::black_box;
 use std::io::Write;
@@ -104,7 +106,8 @@ use symphony::snark::whir::native_oracles::{
     prove_native_round_message_oracle_views, prove_public_symbt3_native_folding_integrity_non_zk,
     prove_symbt3_native_accumulator_authority_full_non_zk,
     prove_symbt3_native_accumulator_authority_non_zk, prove_symbt3_native_folding_integrity_non_zk,
-    symbt3_native_accumulator_authority_proof_size_hint,
+    symbt3_n7b_full_authority_proof_byte_sections, symbt3_n7b_full_authority_proof_canonical_bytes,
+    symbt3_n7b_full_authority_proof_size_hint, symbt3_native_accumulator_authority_proof_size_hint,
     symbt3_native_folding_integrity_monolithic_fallback_used,
     symbt3_native_folding_integrity_proof_size_hint,
     symbt3_native_folding_integrity_public_route_selected,
@@ -112,6 +115,7 @@ use symphony::snark::whir::native_oracles::{
     verify_native_manifest_source_membership, verify_native_round_message_oracle_views,
     verify_public_symbt3_native_folding_integrity_non_zk,
     verify_symbt3_native_accumulator_authority_full_non_zk,
+    verify_symbt3_native_accumulator_authority_full_non_zk_report,
     verify_symbt3_native_accumulator_authority_non_zk,
     verify_symbt3_native_folding_integrity_non_zk, whir_commit_and_prove_oracles,
     whir_commit_and_prove_same_domain_multi_oracle, whir_verify_oracle_openings_with_counters,
@@ -119,12 +123,12 @@ use symphony::snark::whir::native_oracles::{
     ManifestCommitmentPolicy, NativeOracleRootPolicy, NativeOracleVerificationProfile,
     SourceCommitmentPolicy, Symbt3FoldingIntegritySemanticFamilies, Symbt3ManifestComponentKind,
     Symbt3ManifestSourceComponentValues, Symbt3ManifestVisibility, Symbt3MessageOraclePolicy,
-    Symbt3NativeFoldingIntegrityInstance, Symbt3NativeFoldingIntegrityPublicProfile,
-    Symbt3NativeFoldingIntegrityWitness, Symbt3NativeOracleProfile,
-    Symbt3NativeRoundChallengeContext, Symbt3NativeRoundMessageOracleLayoutV1,
-    Symbt3NonZkFoldingIntegrityProfileMetadata, Symbt3ZkStatus, WhirNativeEvalClaimKind,
-    WhirNativeEvalRequest, WhirNativeMultiOracleProof, WhirNativeOracleSpec,
-    SYMBT3_N4_MESSAGE_ORACLE_ID_BASE,
+    Symbt3N7bFullAuthorityProof, Symbt3NativeFoldingIntegrityInstance,
+    Symbt3NativeFoldingIntegrityPublicProfile, Symbt3NativeFoldingIntegrityWitness,
+    Symbt3NativeOracleProfile, Symbt3NativeRoundChallengeContext,
+    Symbt3NativeRoundMessageOracleLayoutV1, Symbt3NonZkFoldingIntegrityProfileMetadata,
+    Symbt3ZkStatus, WhirNativeEvalClaimKind, WhirNativeEvalRequest, WhirNativeMultiOracleProof,
+    WhirNativeOracleSpec, SYMBT3_N4_MESSAGE_ORACLE_ID_BASE,
     SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_MIN_SEMANTIC_PROFILE_VERSION,
     SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS, SYMBT3_SAME_DOMAIN_RLC_TUPLE_LEAF_LAYOUT,
 };
@@ -427,6 +431,271 @@ fn whir_proof_bytes_by_section(proof: &WhirProof) -> Vec<(&'static str, usize)> 
         canonical_whir_proof_bytes(proof).len()
     );
     sections
+}
+
+fn n7b_tuple_leaf_pcs_bytes(proof: &Symbt3N7bFullAuthorityProof) -> usize {
+    let sections = proof
+        .wrapper
+        .native_tuple_leaf
+        .proof
+        .accounting_byte_sections();
+    sections.pcs_payload_length_prefix_bytes + sections.pcs_compact_canonical_payload_bytes
+}
+
+fn n7b_repeated_rlc_evidence_bytes(proof: &Symbt3N7bFullAuthorityProof) -> usize {
+    proof
+        .wrapper
+        .native_tuple_leaf
+        .proof
+        .accounting_byte_sections()
+        .repeated_rlc_claim_bytes
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct N7bTuplePcsDuplicateAnalysis {
+    query_opening_count: usize,
+    unique_merkle_proof_payload_count: usize,
+    duplicate_merkle_proof_payload_count: usize,
+    duplicate_merkle_proof_payload_bytes: usize,
+    unique_opened_value_payload_count: usize,
+    duplicate_opened_value_payload_count: usize,
+    duplicate_opened_value_payload_bytes: usize,
+}
+
+fn n7b_tuple_pcs_duplicate_analysis(
+    proof: &Symbt3N7bFullAuthorityProof,
+) -> N7bTuplePcsDuplicateAnalysis {
+    let pcs_json = serde_json::to_value(&proof.wrapper.native_tuple_leaf.proof.whir_pcs_proof)
+        .expect("N7b tuple-leaf PCS proof must convert to JSON");
+    let mut proof_payloads = Vec::new();
+    let mut value_payloads = Vec::new();
+    collect_query_payloads(&pcs_json, &mut proof_payloads, &mut value_payloads);
+    let (
+        unique_merkle_proof_payload_count,
+        duplicate_merkle_proof_payload_count,
+        duplicate_merkle_proof_payload_bytes,
+    ) = duplicate_payload_stats(&proof_payloads);
+    let (
+        unique_opened_value_payload_count,
+        duplicate_opened_value_payload_count,
+        duplicate_opened_value_payload_bytes,
+    ) = duplicate_payload_stats(&value_payloads);
+    N7bTuplePcsDuplicateAnalysis {
+        query_opening_count: proof_payloads.len().max(value_payloads.len()),
+        unique_merkle_proof_payload_count,
+        duplicate_merkle_proof_payload_count,
+        duplicate_merkle_proof_payload_bytes,
+        unique_opened_value_payload_count,
+        duplicate_opened_value_payload_count,
+        duplicate_opened_value_payload_bytes,
+    }
+}
+
+fn collect_query_payloads(
+    value: &serde_json::Value,
+    proof_payloads: &mut Vec<Vec<u8>>,
+    value_payloads: &mut Vec<Vec<u8>>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    if let Some(rounds) = object.get("rounds").and_then(serde_json::Value::as_array) {
+        for round in rounds {
+            if let Some(queries) = round.get("queries").and_then(serde_json::Value::as_array) {
+                collect_query_array_payloads(queries, proof_payloads, value_payloads);
+            }
+        }
+    }
+    if let Some(queries) = object
+        .get("final_queries")
+        .and_then(serde_json::Value::as_array)
+    {
+        collect_query_array_payloads(queries, proof_payloads, value_payloads);
+    }
+}
+
+fn collect_query_array_payloads(
+    queries: &[serde_json::Value],
+    proof_payloads: &mut Vec<Vec<u8>>,
+    value_payloads: &mut Vec<Vec<u8>>,
+) {
+    for query in queries {
+        let Some(object) = query.as_object() else {
+            continue;
+        };
+        if let Some(proof) = object.get("proof") {
+            proof_payloads
+                .push(serde_json::to_vec(proof).expect("query proof JSON payload must serialize"));
+        }
+        if let Some(values) = object.get("values") {
+            value_payloads.push(
+                serde_json::to_vec(values).expect("query values JSON payload must serialize"),
+            );
+        }
+    }
+}
+
+fn duplicate_payload_stats(payloads: &[Vec<u8>]) -> (usize, usize, usize) {
+    let mut counts = BTreeMap::<Vec<u8>, usize>::new();
+    for payload in payloads {
+        *counts.entry(payload.clone()).or_default() += 1;
+    }
+    let unique_count = counts.len();
+    let duplicate_count = payloads.len().saturating_sub(unique_count);
+    let duplicate_bytes = counts
+        .iter()
+        .map(|(payload, count)| payload.len() * count.saturating_sub(1))
+        .sum();
+    (unique_count, duplicate_count, duplicate_bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_n7b_full_overhead_rows(
+    k: usize,
+    proof: &Symbt3N7bFullAuthorityProof,
+    k6a: &Symbt3AuthorityRouteMeasurement,
+    n7b_prove_ms: f64,
+    n7b_verify_ms: f64,
+    tuple_verify_ms: f64,
+    serialization_ms: f64,
+) {
+    let proof_sections = symbt3_n7b_full_authority_proof_byte_sections(proof);
+    let tuple_sections = proof
+        .wrapper
+        .native_tuple_leaf
+        .proof
+        .accounting_byte_sections();
+    let main_k6a_bytes = proof_sections.main_k6a_whir_proof_bytes;
+    let adapter_bytes = proof_sections.k6a_adapter_bytes;
+    let tuple_pcs_bytes = n7b_tuple_leaf_pcs_bytes(proof);
+    let tuple_total_bytes = tuple_sections.total_bytes;
+    let repeated_rlc_bytes = n7b_repeated_rlc_evidence_bytes(proof);
+    let binding_metadata_bytes = proof_sections.binding_digest_profile_metadata_bytes
+        + proof_sections.wrapper_counters_bytes
+        + proof_sections.native_tuple_leaf_part_metadata_bytes;
+    let n7b_proof_bytes = proof_sections.total_bytes;
+    let duplicate_analysis = n7b_tuple_pcs_duplicate_analysis(proof);
+    let additive_prove_ms = (n7b_prove_ms - k6a.csv.prove_ms).max(0.0);
+    let additive_verify_ms = (n7b_verify_ms - k6a.csv.verify_ms).max(0.0);
+    let wrapper_verify_ms = (additive_verify_ms - tuple_verify_ms).max(0.0);
+
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,k,section,bytes,prove_ms,verify_ms,notes"
+    );
+    for (section, bytes) in whir_proof_bytes_by_section(&proof.k6a_main_proof) {
+        eprintln!(
+            "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},main_k6a_whir_section_{section},{bytes},0.000,0.000,canonical_whir_proof_bytes_by_section"
+        );
+    }
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},main_k6a_whir_proof,{main_k6a_bytes},{:.3},{:.3},baseline_k6a_work_reverified_by_n7b",
+        k6a.csv.prove_ms,
+        k6a.csv.verify_ms
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},k6a_adapter,{adapter_bytes},0.000,{wrapper_verify_ms:.3},typed_metadata_and_adapter_match_gate"
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_leaf_native_proof,{tuple_total_bytes},{additive_prove_ms:.3},{tuple_verify_ms:.3},includes_tuple_metadata_rlc_claims_and_one_pcs_multi_opening"
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_descriptor_layout_profile_metadata,{},{:.3},{:.3},exact_tuple_metadata_without_k6a_context_or_claims",
+        tuple_sections.descriptor_layout_profile_metadata_bytes,
+        0.0,
+        0.0
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_duplicated_main_k6a_context,{},{:.3},{:.3},relation_public_statement_and_whir_param_digests_rebound_in_tuple_proof",
+        tuple_sections.duplicated_main_k6a_context_bytes,
+        0.0,
+        0.0
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_logical_eval_claims,{},{:.3},{:.3},logical_oracle_eval_claims_for_all_rlc_repetitions",
+        tuple_sections.logical_eval_claim_bytes,
+        0.0,
+        0.0
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},repeated_rlc_evidence,{repeated_rlc_bytes},0.000,0.000,included_in_tuple_leaf_native_proof_4x31_bits"
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_merkle_root_path_payload,{},{:.3},{:.3},pcs_json_commitments_and_merkle_authentication_paths",
+        tuple_sections.pcs_merkle_root_path_payload_bytes,
+        0.0,
+        tuple_verify_ms
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_query_value_payload,{},{:.3},{:.3},pcs_json_opened_leaf_values_for_query_paths",
+        tuple_sections.pcs_query_value_payload_bytes,
+        0.0,
+        tuple_verify_ms
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_transcript_payload,{},{:.3},{:.3},pcs_json_ood_sumcheck_final_poly_and_pow_payload",
+        tuple_sections.pcs_transcript_payload_bytes,
+        0.0,
+        tuple_verify_ms
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_json_framing,{},{:.3},{:.3},json_field_names_brackets_commas_and_type_tags",
+        tuple_sections.pcs_json_framing_bytes + tuple_sections.pcs_payload_length_prefix_bytes,
+        0.0,
+        0.0
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_legacy_json_payload,{},{:.3},{:.3},legacy_json_payload_for_comparison_only",
+        tuple_sections.pcs_legacy_json_payload_bytes,
+        0.0,
+        0.0
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_compact_canonical_payload,{},{:.3},{:.3},actual_tuple_pcs_wire_payload_after_compact_encoding",
+        tuple_sections.pcs_compact_canonical_payload_bytes,
+        0.0,
+        tuple_verify_ms
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_query_opening_count,{},0.000,0.000,semantic_count_for_duplicate_path_analysis",
+        duplicate_analysis.query_opening_count
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_duplicate_merkle_proof_payloads,{},0.000,0.000,duplicate_whole_query_proof_payload_count",
+        duplicate_analysis.duplicate_merkle_proof_payload_count
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_duplicate_merkle_proof_payload_bytes,{},0.000,0.000,whole_query_proof_payload_bytes_repeated_verbatim",
+        duplicate_analysis.duplicate_merkle_proof_payload_bytes
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_unique_merkle_proof_payloads,{},0.000,0.000,unique_whole_query_proof_payload_count",
+        duplicate_analysis.unique_merkle_proof_payload_count
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_duplicate_opened_value_payloads,{},0.000,0.000,duplicate_whole_opened_value_payload_count",
+        duplicate_analysis.duplicate_opened_value_payload_count
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_duplicate_opened_value_payload_bytes,{},0.000,0.000,whole_opened_value_payload_bytes_repeated_verbatim",
+        duplicate_analysis.duplicate_opened_value_payload_bytes
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},tuple_pcs_unique_opened_value_payloads,{},0.000,0.000,unique_whole_opened_value_payload_count",
+        duplicate_analysis.unique_opened_value_payload_count
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},binding_digest_profile_metadata,{binding_metadata_bytes},0.000,{wrapper_verify_ms:.3},wrapper_recomposition_and_binding_digest_checks"
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},serialization_deserialization,{n7b_proof_bytes},{serialization_ms:.3},0.000,serialization_proxy_for_full_wrapper_sections"
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},transcript_work,0,0.000,{:.3},k6a_transcript_timer_tuple_transcript_in_tuple_verify",
+        k6a.csv.verify_transcript_ms
+    );
+    eprintln!(
+        "NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV,{k},pcs_multi_opening_verification,{tuple_pcs_bytes},0.000,{tuple_verify_ms:.3},inclusive_tuple_leaf_pcs_multi_opening_proxy"
+    );
 }
 
 fn accumulator_public_bytes_by_section(
@@ -865,6 +1134,12 @@ fn criterion_filter_allows(group: &str) -> bool {
     let filters: Vec<String> = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with("--"))
+        .flat_map(|arg| {
+            arg.split('|')
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect();
     if filters.is_empty() {
         return true;
@@ -4062,6 +4337,12 @@ fn bench_filter_allows(group_name: &str) -> bool {
     let filters = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with("--"))
+        .flat_map(|arg| {
+            arg.split('|')
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect::<Vec<_>>();
     filters.is_empty()
         || filters
@@ -6246,41 +6527,115 @@ fn bench_symbt3_native_accumulator_authority_full_vs_k(c: &mut Criterion) {
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(5));
 
-    let (pk, vk) = <WhirSnark as BackendSnark>::setup(&native_oracle_relation());
+    let base_fixture = public_whir_fixture(1);
     let round_count = 1usize;
     eprintln!(
         "NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV,k,round_count,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,main_whir_num_vars,main_oracle_len,native_multi_oracle,tuple_leaf_layout,logical_oracle_count,whir_instance_count,root_count,query_schedule_count,transcript_count,native_oracle_pcs_opening_count,native_oracle_eval_claim_count,rlc_repetition_count,rlc_batching_bits,effective_soundness_bits,family_columnar_subproof_count,top_level_whir_proof_count,backend_table_count,accumulator_transition_claims,fallback_used"
     );
-    eprintln!(
-        "[symbt3_native_accumulator_authority_full_vs_k] blocked: N7b full K6a accumulator adapter is not implemented; current N7 is smoke-only and fails closed"
-    );
 
     for batch_size in symbt3_bench_k_values(&[1usize, 2]) {
-        let (mut instance, witness) = symbt3_n6a_bench_instance_witness(batch_size, round_count);
-        instance.semantic_profile_version =
-            SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_MIN_SEMANTIC_PROFILE_VERSION;
-        assert!(
-            prove_symbt3_native_accumulator_authority_full_non_zk(&pk, &instance, &witness)
-                .is_none(),
-            "N7b full helper must fail closed until the K6a adapter is implemented"
+        let measurement = symbt3_authority_route_measurement(&base_fixture, batch_size);
+        let prove_start = Instant::now();
+        let Some(proof) = prove_symbt3_native_accumulator_authority_full_non_zk(
+            &measurement.pk,
+            &measurement.profile,
+            &measurement.accumulator_instance,
+            &measurement.accumulator_witness,
+        ) else {
+            eprintln!(
+                "NATIVE_ACCUMULATOR_AUTHORITY_FULL_BLOCKED,k={batch_size},round_count={round_count},reason=ProverReturnedNone"
+            );
+            continue;
+        };
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+        let verify_start = Instant::now();
+        let verify_report = verify_symbt3_native_accumulator_authority_full_non_zk_report(
+            &measurement.vk,
+            &measurement.profile,
+            &measurement.accumulator_instance,
+            &proof,
         );
-        let smoke = prove_symbt3_native_accumulator_authority_non_zk(&pk, &instance, &witness)
-            .expect("N7 smoke proof");
-        assert!(
-            !verify_symbt3_native_accumulator_authority_full_non_zk(&vk, &instance, &smoke),
-            "N7b full verifier must reject N7 smoke proofs"
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
+        if !verify_report.ok {
+            let reason = verify_report
+                .blocker
+                .map(|blocker| format!("{blocker:?}"))
+                .unwrap_or_else(|| "Unknown".to_owned());
+            eprintln!(
+                "NATIVE_ACCUMULATOR_AUTHORITY_FULL_BLOCKED,k={batch_size},round_count={round_count},reason={reason}"
+            );
+            continue;
+        }
+        let tuple_verify_start = Instant::now();
+        let tuple_verify_ok = whir_verify_same_domain_multi_oracle(
+            &measurement.vk,
+            proof.wrapper.k6a_adapter.main_symbt3_relation_id,
+            proof.wrapper.k6a_adapter.public_statement_digest,
+            proof.wrapper.k6a_adapter.whir_param_digest,
+            &proof.wrapper.native_tuple_leaf.proof,
+            &proof.wrapper.native_tuple_leaf.proof.logical_eval_claims,
         );
+        let tuple_verify_ms = tuple_verify_start.elapsed().as_secs_f64() * 1_000.0;
+        assert!(
+            tuple_verify_ok,
+            "N7b tuple-leaf proof must verify independently after full verification"
+        );
+        let serialization_start = Instant::now();
+        let _proof_bytes = symbt3_n7b_full_authority_proof_canonical_bytes(&proof)
+            .expect("N7b full proof must canonical-serialize");
+        let serialization_ms = serialization_start.elapsed().as_secs_f64() * 1_000.0;
+        let counters = &proof.wrapper.counters;
+        let proof_bytes = symbt3_n7b_full_authority_proof_size_hint(&proof);
         eprintln!(
-            "NATIVE_ACCUMULATOR_AUTHORITY_FULL_BLOCKED,k={batch_size},round_count={round_count},reason=N7 smoke profile, not full accumulator workload"
+            "NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV,{batch_size},{round_count},{prove_ms:.3},{verify_ms:.3},{proof_bytes},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            measurement.csv.public_statement_bytes,
+            counters.full_accumulator_workload,
+            counters.smoke_profile,
+            counters.main_whir_num_vars,
+            counters.main_oracle_len,
+            counters.native_multi_oracle,
+            counters.tuple_leaf_layout,
+            counters.logical_oracle_count,
+            counters.whir_instance_count,
+            counters.root_count,
+            counters.query_schedule_count,
+            counters.transcript_count,
+            counters.native_oracle_pcs_opening_count,
+            counters.native_oracle_eval_claim_count,
+            counters.rlc_repetition_count,
+            counters.rlc_batching_bits,
+            counters.effective_soundness_bits,
+            counters.family_columnar_subproof_count,
+            counters.top_level_whir_proof_count,
+            counters.backend_table_count,
+            counters.accumulator_transition_claims,
+            counters.fallback_used,
+        );
+        emit_n7b_full_overhead_rows(
+            batch_size,
+            &proof,
+            &measurement,
+            prove_ms,
+            verify_ms,
+            tuple_verify_ms,
+            serialization_ms,
         );
 
         group.throughput(Throughput::Elements(batch_size as u64));
-        group.bench_function(BenchmarkId::new("fail_closed", batch_size), |b| {
+        group.bench_function(BenchmarkId::new("prove_verify", batch_size), |b| {
             b.iter(|| {
-                black_box(prove_symbt3_native_accumulator_authority_full_non_zk(
-                    black_box(&pk),
-                    black_box(&instance),
-                    black_box(&witness),
+                let proof = prove_symbt3_native_accumulator_authority_full_non_zk(
+                    black_box(&measurement.pk),
+                    black_box(&measurement.profile),
+                    black_box(&measurement.accumulator_instance),
+                    black_box(&measurement.accumulator_witness),
+                )
+                .expect("N7b full helper proof");
+                black_box(verify_symbt3_native_accumulator_authority_full_non_zk(
+                    black_box(&measurement.vk),
+                    black_box(&measurement.profile),
+                    black_box(&measurement.accumulator_instance),
+                    black_box(&proof),
                 ));
             });
         });

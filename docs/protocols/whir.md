@@ -1329,9 +1329,12 @@ RLC tuple-leaf simulation:
 F_tuple(x) = sum_j gamma_j * f_j(x)
 ```
 
-The verifier-derived `gamma_j` challenges are bound to the relation id, public
-statement digest, WHIR parameter digest, ordered logical oracle descriptors,
-layout name, logical oracle count, and shared `num_vars`. M1b rows are labeled
+The verifier-derived `gamma_j` challenges and same-domain opening point `zeta`
+are derived independently for each repetition under the domain label
+`SYMBT3_RLC_TUPLE_LEAF_PACKING_V1`. The transcript binds the repetition index,
+relation id, public statement digest, WHIR parameter digest, ordered logical
+oracle descriptor digest, tuple-leaf layout digest, logical oracle count, and
+shared `num_vars`. M1b rows are labeled
 `tuple_leaf_layout = "same_domain_rlc_tuple_leaf_v1"`, not
 `same_domain_tuple_leaf_v1`.
 
@@ -1342,14 +1345,19 @@ For `logical_oracle_count > 1`, M1b rows must report:
 - `compat_internal_pcs_payloads = false`;
 - `whir_instance_count = query_schedule_count = transcript_count = 1`;
 - `root_count = native_oracle_pcs_opening_count = 1`;
+- `rlc_repetition_count = 4`;
+- `rlc_batching_bits_per_repetition = 31`;
+- `total_rlc_batching_bits = effective_soundness_bits = 124`;
 - `same_domain = same_field = same_rate = same_folding_parameter = true`;
 - `product_verify_public_allowed = false`.
 
 M1b only supports same-domain BabyBear logical oracles with identical
 `num_vars`, compatible shared schedules, and the same WHIR parameters. Mixed
 domains, duplicate/unsorted descriptors, and per-oracle schedules reject. RLC
-mode has random-linear-combination collision soundness and must carry
-`rlc_batching_bits` accounting before any authority or product use.
+mode has random-linear-combination collision soundness and carries repeated RLC
+soundness counters before any authority use. The repetitions reuse the same
+tuple-leaf root and one WHIR proof; `packed_eval_claims` grows with repetition
+count, not `root_count` or `whir_instance_count`.
 
 M1b is a dev benchmark/proof path only. It does not replace the M1a
 compatibility-envelope rows, change product `verify_public`, alter K6a/K6b/N6b
@@ -1682,22 +1690,48 @@ instance digest, public statement digest, WHIR parameter digest, relation id,
 main proof digest, old/new accumulator digests, batch manifest root,
 manifest/message roots, and batch counters from verified K6a objects. The full
 wrapper now composes those adapter fields with M1b tuple-leaf proof/profile
-parts and builds the full N7b binding digest. The route is still blocked because
-repeated RLC tuple-leaf proof evidence is not wired. The placeholder helpers
-`prove_symbt3_native_accumulator_authority_full_non_zk` and
-`verify_symbt3_native_accumulator_authority_full_non_zk` fail closed for the
-current smoke proof.
+parts and builds the full N7b binding digest. M1b now carries repeated RLC
+tuple-leaf proof evidence, and the wrapper gate advances past
+`RepeatedRlcSoundnessMissingOrWeak` only when that evidence verifies. The
+product-facing helpers `prove_symbt3_native_accumulator_authority_full_non_zk`
+and `verify_symbt3_native_accumulator_authority_full_non_zk` are wired through
+the K6a adapter, repeated-RLC tuple-leaf proof, and wrapper verifier. They still
+fail closed for smoke, missing components, stale components, fallback use, or
+weak RLC evidence.
 
 The full-profile gate `profile_meets_native_accumulator_authority_full` rejects
 `smoke_profile = true`, requires `full_accumulator_workload = true`, requires
 `workload_kind = FullK6aAccumulatorV1`, and requires at least four RLC
-repetitions before a full authority claim can be reported. The wrapper also
-rejects missing tuple-leaf parts, binding mismatches, fallback use, family
-subproofs, and stale K6a adapter/proof matches. The current M1b
+repetitions with sufficient total/effective soundness before a full authority
+claim can be reported. The wrapper also rejects missing tuple-leaf parts,
+binding mismatches, fallback use, family subproofs, and stale K6a adapter/proof
+matches. The current M1b
 tuple-leaf route is RLC batching, not true vector tuple leaves. It is not
 privacy-preserving, K5 remains deferred, default `verify_public` remains
 unchanged, and external cryptographic review is still required before any
 production claim.
+
+N7b canonical proof serialization stores the tuple-leaf WHIR PCS proof with the
+compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. The full helper's
+`proof_bytes` counter is therefore the actual canonical N7b proof byte length,
+not a compact-size estimate. A serialization regression test requires the
+reported section total to equal the actual canonical byte length exactly and
+rebuilds a proof from the decoded compact PCS payload before running the full
+verifier.
+
+Latest local `symbt3_native_accumulator_authority_full_vs_k` rows:
+
+| k | prove ms | verify ms | proof bytes | tuple-leaf native proof | legacy tuple PCS JSON | compact tuple PCS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.214 | 33.697 | 722,833 | 376,857 | 738,035 | 373,364 |
+| 2 | 42.467 | 35.658 | 742,230 | 406,327 | 799,038 | 402,834 |
+| 4 | 58.223 | 42.941 | 768,420 | 431,087 | 850,049 | 427,594 |
+
+The remaining proof-size bottleneck is verifier-needed MMCS opening material in
+the tuple-leaf PCS proof: Merkle authentication paths and opened query values.
+Whole Merkle proof payloads and opened-value payloads were not duplicated in the
+measured rows, so the next reduction requires a shared/batched MMCS opening
+representation rather than another metadata-only encoding.
 
 ---
 
@@ -1715,6 +1749,7 @@ All WHIR-specific dependencies are feature-gated behind `whir`:
 - `p3-dft` — `Radix2DFTSmallBatch` for polynomial DFT operations.
 - `p3-matrix` — Dense/row-major matrix types.
 - `p3-util`, `p3-maybe-rayon`, `p3-multilinear-util`, `p3-commit` — Supporting utilities.
+- `ciborium` — Compact canonical tuple-leaf PCS payload encoding for N7b proof bytes.
 - `rand` — `ChaCha20Rng` for deterministic Poseidon2 permutation seeding.
 
 All Plonky3 crates are pinned to revision `b0fa5139`.
