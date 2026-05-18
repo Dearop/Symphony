@@ -24,8 +24,8 @@ use crate::snark::BackendSnark;
 
 use super::{
     canonical_whir_proof_bytes, derive_challenge, mle_eval_bb, whir_commit_and_prove_multi,
-    whir_verify_opening_multi, WhirMmcs, WhirPcsProof, WhirProof, WhirProvingKey, WhirSnark,
-    WhirVerifyingKey, EF, F,
+    whir_commit_initial_root_only, whir_verify_opening_multi, WhirMmcs, WhirPcsProof, WhirProof,
+    WhirProvingKey, WhirSnark, WhirVerifyingKey, EF, F,
 };
 
 pub const WHIR_NATIVE_MULTI_ORACLE_PROOF_VERSION: u64 = 1;
@@ -64,6 +64,8 @@ pub const N8_INTEGRATED_K6A_SEMANTIC_CONSTRAINTS_VERSION: u64 = 1;
 pub const N8_INTEGRATED_TUPLE_RLC_SEMANTIC_CONSTRAINTS_VERSION: u64 = 1;
 pub const N8_INTEGRATED_TRANSITION_BINDING_SEMANTIC_CONSTRAINTS_VERSION: u64 = 1;
 pub const N8_INTEGRATED_SEMANTIC_COMPLETION_FLAGS_VERSION: u64 = 1;
+pub const N8_SEMANTIC_BATCHING_VERSION: u64 = 1;
+pub const N8_SEMANTIC_BATCHING_CHALLENGE_SOUNDNESS_BITS: usize = 31;
 pub const SYMBT3_N8_INTEGRATED_K6A_NATIVE_TRANSCRIPT_DOMAIN: &str =
     "SYMBT3_N8_INTEGRATED_K6A_NATIVE_WHIR_RELATION_V1";
 pub const SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_MIN_SEMANTIC_PROFILE_VERSION: u32 = 7;
@@ -1164,6 +1166,51 @@ pub struct N8IntegratedSemanticCompletionFlagsV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum N8SemanticBatchingFamilyV1 {
+    K6aSourceRowsV1,
+    K6aSemanticRowsV1,
+    TupleRlcSemanticRowsV1,
+    TransitionBindingSemanticRowsV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct N8SemanticBatchingFamilyDescriptorV1 {
+    pub family: N8SemanticBatchingFamilyV1,
+    pub source_row_count: usize,
+    pub batched_query_count: usize,
+    pub row_digest: Digest32,
+    pub challenge_point_digest: Digest32,
+    pub soundness_bits: usize,
+    pub descriptor_digest: Digest32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct N8K6aSourceRowBatchingV1 {
+    pub version: u64,
+    pub enabled: bool,
+    pub descriptor: N8SemanticBatchingFamilyDescriptorV1,
+    pub unbatched_source_opening_count: usize,
+    pub batched_source_opening_count: usize,
+    pub effective_soundness_bits: usize,
+    pub descriptor_digest: Digest32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct N8SemanticBatchingV1 {
+    pub version: u64,
+    pub enabled: bool,
+    pub descriptor_binding_digest: Digest32,
+    pub k6a_source: N8K6aSourceRowBatchingV1,
+    pub k6a: N8SemanticBatchingFamilyDescriptorV1,
+    pub tuple_rlc: N8SemanticBatchingFamilyDescriptorV1,
+    pub transition_binding: N8SemanticBatchingFamilyDescriptorV1,
+    pub unbatched_semantic_opening_count: usize,
+    pub batched_semantic_opening_count: usize,
+    pub effective_soundness_bits: usize,
+    pub descriptor_digest: Digest32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegratedK6aNativeCommittedTableRowOwnerV1 {
     K6aAccumulatorMainRows,
     K6aZeroPaddingRows,
@@ -1367,6 +1414,7 @@ pub struct N8IntegratedWhirProofPlan {
     pub integrated_whir_root_count: usize,
     pub integrated_whir_proof_count: usize,
     pub delegated_split_proof_material_present: bool,
+    pub semantic_batching: N8SemanticBatchingV1,
     pub bridge_claim_descriptors: Vec<N8IntegratedWhirClaimBridgeDescriptorV1>,
     pub combined_bridge_claim_descriptor_digest: Digest32,
     pub transcript_digest: Digest32,
@@ -1438,6 +1486,82 @@ pub struct N8IntegratedWhirProverOutput {
     pub integrated_whir_proof: WhirProof,
     pub query_schedule: N8IntegratedWhirQueryScheduleV1,
     pub counters: N8IntegratedWhirPrototypeCounters,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct N8IntegratedDescriptorBuildProfileV1 {
+    pub k6a_semantic_descriptor_ms: f64,
+    pub claim_plan_ms: f64,
+    pub descriptor_digest_construction_ms: f64,
+    pub integrated_table_construction_ms: f64,
+    pub k6a_semantic_rows_ms: f64,
+    pub tuple_rlc_semantic_rows_ms: f64,
+    pub transition_binding_semantic_rows_ms: f64,
+    pub semantic_row_construction_ms: f64,
+    pub real_evaluator_ms: f64,
+    pub total_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct N8DirectSemanticInputBuildProfileV1 {
+    pub relation_statement_ms: f64,
+    pub k6a_relation_construction_ms: f64,
+    pub k6a_public_statement_construction_ms: f64,
+    pub k6a_witness_conversion_ms: f64,
+    pub k6a_claim_extraction_ms: f64,
+    pub adapter_construction_ms: f64,
+    pub digest_canonical_serialization_ms: f64,
+    pub tuple_rlc_input_ms: f64,
+    pub tuple_rlc_raw_values_ms: f64,
+    pub tuple_rlc_descriptor_ms: f64,
+    pub tuple_rlc_claims_ms: f64,
+    pub tuple_rlc_packed_root_ms: f64,
+    pub total_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3N8K6aSemanticSourceV1 {
+    pub source_digest: Digest32,
+    pub relation_id: Digest32,
+    pub public_statement_digest: Digest32,
+    pub whir_param_digest: Digest32,
+    pub num_vars: usize,
+    pub oracle_len: usize,
+    pub verifier_points: Vec<Vec<BabyBear>>,
+    pub verifier_claims: Vec<BabyBear>,
+    pub final_residuals: [BabyBear; 3],
+    pub z_eval: BabyBear,
+    pub product_sumcheck_rounds: Vec<[BabyBear; 4]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct N8DirectSemanticInputsV1 {
+    pub relation: BatchedCpSymbt3RelationDescription,
+    pub statement: crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    pub k6a_semantic_source: Symbt3N8K6aSemanticSourceV1,
+    pub k6a_adapter: Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    pub native_tuple_leaf: Symbt3N7bNativeTupleLeafProofParts,
+    pub profile: N8DirectSemanticInputBuildProfileV1,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct N8IntegratedWhirProveProfileV1 {
+    pub proof_plan_validation_ms: f64,
+    pub committed_table_rebuild_ms: f64,
+    pub query_claim_construction_ms: f64,
+    pub integrated_table_values_ms: f64,
+    pub whir_prove_ms: f64,
+    pub query_schedule_ms: f64,
+    pub serialization_ms: f64,
+    pub total_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct N8IntegratedProofPlanBuildProfileV1 {
+    pub bridge_descriptor_ms: f64,
+    pub semantic_batching_ms: f64,
+    pub transcript_digest_ms: f64,
+    pub total_ms: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4051,6 +4175,91 @@ impl N8IntegratedSemanticCompletionFlagsV1 {
     }
 }
 
+impl N8SemanticBatchingFamilyV1 {
+    #[must_use]
+    pub fn canonical_bytes(self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"N8_SEMANTIC_BATCHING_FAMILY_V1");
+        out.push(match self {
+            Self::K6aSemanticRowsV1 => 1,
+            Self::TupleRlcSemanticRowsV1 => 2,
+            Self::TransitionBindingSemanticRowsV1 => 3,
+            Self::K6aSourceRowsV1 => 4,
+        });
+        out
+    }
+}
+
+impl N8SemanticBatchingFamilyDescriptorV1 {
+    #[must_use]
+    pub fn canonical_bytes_without_digest(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"N8_SEMANTIC_BATCHING_FAMILY_DESCRIPTOR_V1");
+        push_bytes(&mut out, &self.family.canonical_bytes());
+        push_u64(&mut out, self.source_row_count as u64);
+        push_u64(&mut out, self.batched_query_count as u64);
+        push_digest(&mut out, &self.row_digest);
+        push_digest(&mut out, &self.challenge_point_digest);
+        push_u64(&mut out, self.soundness_bits as u64);
+        out
+    }
+
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = self.canonical_bytes_without_digest();
+        push_digest(&mut out, &self.descriptor_digest);
+        out
+    }
+}
+
+impl N8K6aSourceRowBatchingV1 {
+    #[must_use]
+    pub fn canonical_bytes_without_digest(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"N8_K6A_SOURCE_ROW_BATCHING_V1");
+        push_u64(&mut out, self.version);
+        push_bool(&mut out, self.enabled);
+        push_bytes(&mut out, &self.descriptor.canonical_bytes());
+        push_u64(&mut out, self.unbatched_source_opening_count as u64);
+        push_u64(&mut out, self.batched_source_opening_count as u64);
+        push_u64(&mut out, self.effective_soundness_bits as u64);
+        out
+    }
+
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = self.canonical_bytes_without_digest();
+        push_digest(&mut out, &self.descriptor_digest);
+        out
+    }
+}
+
+impl N8SemanticBatchingV1 {
+    #[must_use]
+    pub fn canonical_bytes_without_digest(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"N8_SEMANTIC_BATCHING_V1");
+        push_u64(&mut out, self.version);
+        push_bool(&mut out, self.enabled);
+        push_digest(&mut out, &self.descriptor_binding_digest);
+        push_bytes(&mut out, &self.k6a_source.canonical_bytes());
+        push_bytes(&mut out, &self.k6a.canonical_bytes());
+        push_bytes(&mut out, &self.tuple_rlc.canonical_bytes());
+        push_bytes(&mut out, &self.transition_binding.canonical_bytes());
+        push_u64(&mut out, self.unbatched_semantic_opening_count as u64);
+        push_u64(&mut out, self.batched_semantic_opening_count as u64);
+        push_u64(&mut out, self.effective_soundness_bits as u64);
+        out
+    }
+
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = self.canonical_bytes_without_digest();
+        push_digest(&mut out, &self.descriptor_digest);
+        out
+    }
+}
+
 impl IntegratedK6aNativeCommittedTableRowOwnerV1 {
     #[must_use]
     pub fn canonical_bytes(self) -> Vec<u8> {
@@ -4436,6 +4645,7 @@ impl N8IntegratedWhirProofPlan {
         push_u64(&mut out, self.integrated_whir_root_count as u64);
         push_u64(&mut out, self.integrated_whir_proof_count as u64);
         push_bool(&mut out, self.delegated_split_proof_material_present);
+        push_bytes(&mut out, &self.semantic_batching.canonical_bytes());
         push_u64(&mut out, self.bridge_claim_descriptors.len() as u64);
         for descriptor in &self.bridge_claim_descriptors {
             push_bytes(&mut out, &descriptor.canonical_bytes());
@@ -4733,6 +4943,235 @@ fn n8_integrated_whir_claim_bridge_descriptors_digest(
     digest_bytes(&bytes)
 }
 
+#[cfg(test)]
+fn n8_integrated_evaluator_row_is_k6a_source(row: &RealIntegratedK6aNativeEvaluatorRowV1) -> bool {
+    matches!(
+        row.kind,
+        RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1
+            | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorResidualClaimV1
+            | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1
+            | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aProductSumcheckRoundClaimV1
+            | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aZeroPaddingClaimV1
+    )
+}
+
+fn n8_integrated_evaluator_row_semantic_batching_family(
+    row: &RealIntegratedK6aNativeEvaluatorRowV1,
+) -> Option<N8SemanticBatchingFamilyV1> {
+    match row.kind {
+        RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorResidualClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aProductSumcheckRoundClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aZeroPaddingClaimV1 => {
+            Some(N8SemanticBatchingFamilyV1::K6aSourceRowsV1)
+        }
+        RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticVerifierOpeningClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticFinalResidualZeroV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticZEvalBindingV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticProductSumcheckAcceptedV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticPaddingZeroV1 => {
+            Some(N8SemanticBatchingFamilyV1::K6aSemanticRowsV1)
+        }
+        RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafPackedRlcClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafLogicalRlcClaimV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafRlcBindingResidualV1
+        | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafIntegratedPaddingClaimV1 => {
+            Some(N8SemanticBatchingFamilyV1::TupleRlcSemanticRowsV1)
+        }
+        RealIntegratedK6aNativeEvaluatorRowKindV1::AccumulatorTransitionBindingClaimV1 => {
+            Some(N8SemanticBatchingFamilyV1::TransitionBindingSemanticRowsV1)
+        }
+    }
+}
+
+fn n8_semantic_batching_family_rows_digest_and_count(
+    evaluator: &RealIntegratedK6aNativeEvaluatorV1,
+    family: N8SemanticBatchingFamilyV1,
+) -> (Digest32, usize) {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, b"N8_SEMANTIC_BATCHING_FAMILY_ROWS_DIGEST_V1");
+    push_bytes(&mut bytes, &family.canonical_bytes());
+    let rows = evaluator
+        .rows
+        .iter()
+        .filter(|row| n8_integrated_evaluator_row_semantic_batching_family(row) == Some(family))
+        .collect::<Vec<_>>();
+    let row_count = rows.len();
+    push_u64(&mut bytes, row_count as u64);
+    for row in rows {
+        push_bytes(&mut bytes, &row.canonical_bytes());
+    }
+    (digest_bytes(&bytes), row_count)
+}
+
+fn n8_semantic_batching_binding_digest(
+    descriptor: &Symbt3IntegratedK6aNativeWhirRelationV1,
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, b"N8_SEMANTIC_BATCHING_BINDING_V1");
+    push_digest(&mut bytes, &descriptor.transcript_binding_digest);
+    push_digest(&mut bytes, &descriptor.claim_plan.claim_plan_digest);
+    push_digest(&mut bytes, &descriptor.committed_table.layout_digest);
+    push_digest(&mut bytes, &descriptor.committed_table.table_digest);
+    push_digest(
+        &mut bytes,
+        &descriptor.k6a_semantic_constraints.descriptor_digest,
+    );
+    push_digest(
+        &mut bytes,
+        &descriptor.tuple_rlc_semantic_constraints.descriptor_digest,
+    );
+    push_digest(
+        &mut bytes,
+        &descriptor
+            .transition_binding_semantic_constraints
+            .descriptor_digest,
+    );
+    push_digest(&mut bytes, &descriptor.real_evaluator.rows_digest);
+    push_digest(&mut bytes, &descriptor.real_evaluator.table_digest);
+    digest_bytes(&bytes)
+}
+
+fn n8_semantic_batching_point(
+    descriptor_binding_digest: Digest32,
+    family: N8SemanticBatchingFamilyV1,
+    integrated_num_vars: usize,
+) -> Vec<BabyBear> {
+    let mut transcript = Vec::new();
+    push_bytes(&mut transcript, b"N8_SEMANTIC_BATCHING_POINT_V1");
+    push_digest(&mut transcript, &descriptor_binding_digest);
+    push_bytes(&mut transcript, &family.canonical_bytes());
+    (0..integrated_num_vars)
+        .map(|axis| {
+            let challenge =
+                derive_challenge(&transcript, axis, b"N8_SEMANTIC_BATCHING_POINT_AXIS_V1");
+            if challenge == BabyBear::ZERO {
+                BabyBear::from_u32(2)
+            } else if challenge == BabyBear::ONE {
+                BabyBear::from_u32(3)
+            } else {
+                challenge
+            }
+        })
+        .collect()
+}
+
+fn n8_semantic_batching_family_descriptor_digest(
+    descriptor: &N8SemanticBatchingFamilyDescriptorV1,
+) -> Digest32 {
+    digest_bytes(&descriptor.canonical_bytes_without_digest())
+}
+
+fn n8_semantic_batching_family_descriptor(
+    evaluator: &RealIntegratedK6aNativeEvaluatorV1,
+    descriptor_binding_digest: Digest32,
+    family: N8SemanticBatchingFamilyV1,
+) -> N8SemanticBatchingFamilyDescriptorV1 {
+    let (row_digest, source_row_count) =
+        n8_semantic_batching_family_rows_digest_and_count(evaluator, family);
+    let point_digest = if source_row_count == 0 {
+        [0u8; 32]
+    } else {
+        native_oracle_point_digest(&n8_semantic_batching_point(
+            descriptor_binding_digest,
+            family,
+            evaluator.integrated_num_vars,
+        ))
+    };
+    let mut descriptor = N8SemanticBatchingFamilyDescriptorV1 {
+        family,
+        source_row_count,
+        batched_query_count: usize::from(source_row_count > 0),
+        row_digest,
+        challenge_point_digest: point_digest,
+        soundness_bits: if source_row_count == 0 {
+            0
+        } else {
+            N8_SEMANTIC_BATCHING_CHALLENGE_SOUNDNESS_BITS
+        },
+        descriptor_digest: [0u8; 32],
+    };
+    descriptor.descriptor_digest = n8_semantic_batching_family_descriptor_digest(&descriptor);
+    descriptor
+}
+
+fn n8_k6a_source_row_batching_descriptor_digest(
+    source_batching: &N8K6aSourceRowBatchingV1,
+) -> Digest32 {
+    digest_bytes(&source_batching.canonical_bytes_without_digest())
+}
+
+fn n8_semantic_batching_descriptor_digest(batching: &N8SemanticBatchingV1) -> Digest32 {
+    digest_bytes(&batching.canonical_bytes_without_digest())
+}
+
+fn n8_semantic_batching_descriptor(
+    descriptor: &Symbt3IntegratedK6aNativeWhirRelationV1,
+) -> N8SemanticBatchingV1 {
+    let descriptor_binding_digest = n8_semantic_batching_binding_digest(descriptor);
+    let source_descriptor = n8_semantic_batching_family_descriptor(
+        &descriptor.real_evaluator,
+        descriptor_binding_digest,
+        N8SemanticBatchingFamilyV1::K6aSourceRowsV1,
+    );
+    let mut k6a_source = N8K6aSourceRowBatchingV1 {
+        version: N8_SEMANTIC_BATCHING_VERSION,
+        enabled: source_descriptor.source_row_count > 0,
+        descriptor: source_descriptor,
+        unbatched_source_opening_count: source_descriptor.source_row_count,
+        batched_source_opening_count: source_descriptor.batched_query_count,
+        effective_soundness_bits: source_descriptor.soundness_bits,
+        descriptor_digest: [0u8; 32],
+    };
+    k6a_source.descriptor_digest = n8_k6a_source_row_batching_descriptor_digest(&k6a_source);
+    let k6a = n8_semantic_batching_family_descriptor(
+        &descriptor.real_evaluator,
+        descriptor_binding_digest,
+        N8SemanticBatchingFamilyV1::K6aSemanticRowsV1,
+    );
+    let tuple_rlc = n8_semantic_batching_family_descriptor(
+        &descriptor.real_evaluator,
+        descriptor_binding_digest,
+        N8SemanticBatchingFamilyV1::TupleRlcSemanticRowsV1,
+    );
+    let transition_binding = n8_semantic_batching_family_descriptor(
+        &descriptor.real_evaluator,
+        descriptor_binding_digest,
+        N8SemanticBatchingFamilyV1::TransitionBindingSemanticRowsV1,
+    );
+    let unbatched_semantic_opening_count = k6a
+        .source_row_count
+        .saturating_add(tuple_rlc.source_row_count)
+        .saturating_add(transition_binding.source_row_count);
+    let batched_semantic_opening_count = k6a
+        .batched_query_count
+        .saturating_add(tuple_rlc.batched_query_count)
+        .saturating_add(transition_binding.batched_query_count);
+    let effective_soundness_bits = [k6a, tuple_rlc, transition_binding]
+        .into_iter()
+        .chain(std::iter::once(k6a_source.descriptor))
+        .filter(|descriptor| descriptor.source_row_count > 0)
+        .map(|descriptor| descriptor.soundness_bits)
+        .min()
+        .unwrap_or(0);
+    let mut batching = N8SemanticBatchingV1 {
+        version: N8_SEMANTIC_BATCHING_VERSION,
+        enabled: true,
+        descriptor_binding_digest,
+        k6a_source,
+        k6a,
+        tuple_rlc,
+        transition_binding,
+        unbatched_semantic_opening_count,
+        batched_semantic_opening_count,
+        effective_soundness_bits,
+        descriptor_digest: [0u8; 32],
+    };
+    batching.descriptor_digest = n8_semantic_batching_descriptor_digest(&batching);
+    batching
+}
+
 #[must_use]
 fn n8_integrated_whir_query_claims_digest(claims: &[N8IntegratedWhirQueryClaimV1]) -> Digest32 {
     let mut bytes = Vec::new();
@@ -4895,6 +5334,208 @@ fn symbt3_tuple_leaf_packed_eval_claims_digest(
         push_bytes(&mut bytes, &claim.canonical_bytes());
     }
     digest_bytes(&bytes)
+}
+
+fn symbt3_n8_k6a_semantic_source_digest(
+    relation_id: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+    num_vars: usize,
+    oracle_len: usize,
+    verifier_points_digest: Digest32,
+    verifier_claims_digest: Digest32,
+    final_residual_digest: Digest32,
+    product_sumcheck_digest: Digest32,
+    z_eval: BabyBear,
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, b"N8_K6A_SEMANTIC_SOURCE_FROM_CLAIMS_V1");
+    push_digest(&mut bytes, &relation_id);
+    push_digest(&mut bytes, &public_statement_digest);
+    push_digest(&mut bytes, &whir_param_digest);
+    push_u64(&mut bytes, num_vars as u64);
+    push_u64(&mut bytes, oracle_len as u64);
+    push_digest(&mut bytes, &verifier_points_digest);
+    push_digest(&mut bytes, &verifier_claims_digest);
+    push_digest(&mut bytes, &final_residual_digest);
+    push_digest(&mut bytes, &product_sumcheck_digest);
+    push_babybear(&mut bytes, z_eval);
+    digest_bytes(&bytes)
+}
+
+fn symbt3_n8_k6a_semantic_source_from_claims(
+    relation_id: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+    claims: super::Symbt3CClaims,
+) -> Option<Symbt3N8K6aSemanticSourceV1> {
+    let oracle_len = symbt3_n8_oracle_len(claims.num_vars)?;
+    let verifier_points_digest = n8_integrated_k6a_verifier_points_digest(&claims.points);
+    let verifier_claims_digest = digest_babybear_slice(
+        b"N8_INTEGRATED_K6A_VERIFIER_CLAIMS_DIGEST_V1",
+        &claims.claimed,
+    );
+    let final_residual_digest = digest_babybear_slice(
+        b"N8_INTEGRATED_K6A_FINAL_RESIDUAL_DIGEST_V1",
+        &claims.evaluations,
+    );
+    let product_sumcheck_digest =
+        n8_integrated_k6a_product_sumcheck_digest(&claims.product_sumcheck_rounds);
+    let source_digest = symbt3_n8_k6a_semantic_source_digest(
+        relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        claims.num_vars,
+        oracle_len,
+        verifier_points_digest,
+        verifier_claims_digest,
+        final_residual_digest,
+        product_sumcheck_digest,
+        claims.z_eval,
+    );
+    Some(Symbt3N8K6aSemanticSourceV1 {
+        source_digest,
+        relation_id,
+        public_statement_digest,
+        whir_param_digest,
+        num_vars: claims.num_vars,
+        oracle_len,
+        verifier_points: claims.points,
+        verifier_claims: claims.claimed,
+        final_residuals: claims.evaluations,
+        z_eval: claims.z_eval,
+        product_sumcheck_rounds: claims.product_sumcheck_rounds,
+    })
+}
+
+#[cfg(test)]
+fn symbt3_n8_k6a_semantic_source_from_witness(
+    seed: &[u8; 32],
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+) -> Option<Symbt3N8K6aSemanticSourceV1> {
+    symbt3_n8_k6a_semantic_source_from_witness_with_public_digest(
+        seed, relation, statement, witness, None, None, None,
+    )
+}
+
+fn symbt3_n8_k6a_semantic_source_from_witness_with_public_digest(
+    seed: &[u8; 32],
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    witness: &crate::batched_cp::BatchedCpSymbt3Witness,
+    public_statement_digest: Option<Digest32>,
+    relation_id: Option<Digest32>,
+    digest_canonical_serialization_ms: Option<&mut f64>,
+) -> Option<Symbt3N8K6aSemanticSourceV1> {
+    let claims = super::symbt3_c_table_and_claims_with_public_digest(
+        seed,
+        relation,
+        statement,
+        Some(witness),
+        None,
+        None,
+        public_statement_digest,
+    )?;
+    if claims.table.is_none()
+        || claims.claimed.is_empty()
+        || claims.points.len() != claims.claimed.len()
+        || claims
+            .evaluations
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+    {
+        return None;
+    }
+    let digest_start = Instant::now();
+    let source = symbt3_n8_k6a_semantic_source_from_claims(
+        relation_id.unwrap_or_else(|| relation.relation_id()),
+        claims.public_statement_digest,
+        statement.whir_parameter_digest,
+        claims,
+    )?;
+    if let Some(total) = digest_canonical_serialization_ms {
+        *total += digest_start.elapsed().as_secs_f64() * 1_000.0;
+    }
+    Some(source)
+}
+
+#[cfg(test)]
+fn symbt3_n8_k6a_semantic_source_from_proof(
+    seed: &[u8; 32],
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    proof: &WhirProof,
+) -> Option<Symbt3N8K6aSemanticSourceV1> {
+    let claims = super::symbt3_c_table_and_claims(
+        seed,
+        relation,
+        statement,
+        None,
+        Some(&proof.private_opening_evals),
+        Some(&proof.sumcheck_rounds_4),
+    )?;
+    if proof.is_output
+        || !proof.sumcheck_rounds_3.is_empty()
+        || !proof.linear_checks.is_empty()
+        || !proof.family_columnar_subproofs.is_empty()
+        || proof.num_vars != claims.num_vars
+        || proof.evaluations != claims.evaluations
+        || proof.z_eval != claims.z_eval
+        || proof.private_opening_evals != claims.claimed
+        || claims.points.len() != claims.claimed.len()
+        || claims
+            .evaluations
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+    {
+        return None;
+    }
+    symbt3_n8_k6a_semantic_source_from_claims(
+        relation.relation_id(),
+        claims.public_statement_digest,
+        statement.whir_parameter_digest,
+        claims,
+    )
+}
+
+fn symbt3_n8_k6a_claim_descriptor_digest_from_source(
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    source: &Symbt3N8K6aSemanticSourceV1,
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(&mut bytes, b"INTEGRATED_K6A_NATIVE_K6A_CLAIM_DESCRIPTOR_V1");
+    push_digest(&mut bytes, &adapter.main_symbt3_relation_id);
+    push_digest(&mut bytes, &adapter.public_statement_digest);
+    push_digest(&mut bytes, &adapter.whir_param_digest);
+    push_digest(&mut bytes, &adapter.main_symbt3_proof_digest);
+    push_u64(&mut bytes, adapter.main_whir_num_vars as u64);
+    push_u64(&mut bytes, adapter.main_oracle_len as u64);
+    push_u64(&mut bytes, adapter.accumulator_transition_claims as u64);
+    push_u64(
+        &mut bytes,
+        adapter.source_r1cs_residual_verifier_evaluations as u64,
+    );
+    push_babybear_vec(&mut bytes, &source.verifier_claims);
+    push_babybear_vec(&mut bytes, &source.final_residuals);
+    push_babybear(&mut bytes, source.z_eval);
+    push_u64(&mut bytes, source.product_sumcheck_rounds.len() as u64);
+    for round in &source.product_sumcheck_rounds {
+        for &value in round {
+            push_babybear(&mut bytes, value);
+        }
+    }
+    digest_bytes(&bytes)
+}
+
+fn symbt3_n8_k6a_claim_row_count_from_source(source: &Symbt3N8K6aSemanticSourceV1) -> usize {
+    source
+        .verifier_claims
+        .len()
+        .saturating_add(source.final_residuals.len())
+        .saturating_add(1)
+        .saturating_add(source.product_sumcheck_rounds.len().saturating_mul(4))
 }
 
 #[must_use]
@@ -5279,6 +5920,37 @@ fn n8_integrated_complete_k6a_semantic_descriptor_digest_from_claims(
     push_digest(&mut bytes, &final_residual_digest);
     push_digest(&mut bytes, &product_sumcheck_digest);
     push_babybear(&mut bytes, k6a_proof.z_eval);
+    digest_bytes(&bytes)
+}
+
+fn n8_integrated_complete_k6a_semantic_descriptor_digest_from_source(
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    source: &Symbt3N8K6aSemanticSourceV1,
+    points_digest: Digest32,
+    claims_digest: Digest32,
+    final_residual_digest: Digest32,
+    product_sumcheck_digest: Digest32,
+    verifier_point_count: usize,
+    verifier_claim_count: usize,
+) -> Digest32 {
+    let mut bytes = Vec::new();
+    push_bytes(
+        &mut bytes,
+        b"N8_INTEGRATED_K6A_SEMANTIC_DESCRIPTOR_COMPLETE_V1",
+    );
+    push_digest(&mut bytes, &adapter.main_symbt3_relation_id);
+    push_digest(&mut bytes, &adapter.public_statement_digest);
+    push_digest(&mut bytes, &adapter.whir_param_digest);
+    push_digest(&mut bytes, &adapter.main_symbt3_proof_digest);
+    push_u64(&mut bytes, source.num_vars as u64);
+    push_u64(&mut bytes, adapter.main_oracle_len as u64);
+    push_u64(&mut bytes, verifier_point_count as u64);
+    push_u64(&mut bytes, verifier_claim_count as u64);
+    push_digest(&mut bytes, &points_digest);
+    push_digest(&mut bytes, &claims_digest);
+    push_digest(&mut bytes, &final_residual_digest);
+    push_digest(&mut bytes, &product_sumcheck_digest);
+    push_babybear(&mut bytes, source.z_eval);
     digest_bytes(&bytes)
 }
 
@@ -5683,6 +6355,261 @@ fn build_integrated_k6a_native_claim_plan_v1_with_k6a_semantic_descriptor_digest
     Ok(plan)
 }
 
+fn build_integrated_k6a_native_claim_plan_v1_with_k6a_semantic_source(
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
+    source: &Symbt3N8K6aSemanticSourceV1,
+    k6a_semantic_descriptor_digest: Digest32,
+) -> Result<IntegratedK6aNativeClaimPlanV1, Symbt3N8IntegratedPrototypeBlocker> {
+    if adapter.workload_kind != Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1 {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::WorkloadKindMismatch);
+    }
+    if adapter.smoke_profile {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::SmokeProfile);
+    }
+    if !adapter.full_accumulator_workload {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::K6aNotFullWorkload);
+    }
+    if !symbt3_n7b_native_tuple_leaf_profile_compatible(adapter, native_tuple_leaf) {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::TupleLeafProfileIncompatible);
+    }
+    if !symbt3_n8_tuple_leaf_repeated_rlc_ok(native_tuple_leaf) {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::RepeatedRlcSoundnessMissingOrWeak);
+    }
+    if source.source_digest != adapter.main_symbt3_proof_digest
+        || source.relation_id != adapter.main_symbt3_relation_id
+        || source.public_statement_digest != adapter.public_statement_digest
+        || source.whir_param_digest != adapter.whir_param_digest
+        || source.num_vars != adapter.main_whir_num_vars
+        || source.oracle_len != adapter.main_oracle_len
+        || source.verifier_claims.is_empty()
+        || source.verifier_points.len() != source.verifier_claims.len()
+        || symbt3_n8_k6a_claim_row_count_from_source(source) == 0
+    {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch);
+    }
+
+    let proof = &native_tuple_leaf.proof;
+    let tuple_logical_num_vars = proof
+        .logical_descriptors
+        .first()
+        .map(|descriptor| descriptor.num_vars)
+        .ok_or(Symbt3N8IntegratedPrototypeBlocker::MissingNativeTupleLeafProof)?;
+    if proof
+        .logical_descriptors
+        .iter()
+        .any(|descriptor| descriptor.num_vars != tuple_logical_num_vars)
+    {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::TupleLeafProfileIncompatible);
+    }
+    let repetition_log_size =
+        symbt3_tuple_leaf_repetition_log_size(proof.counters.rlc_repetition_count)
+            .ok_or(Symbt3N8IntegratedPrototypeBlocker::RepeatedRlcSoundnessMissingOrWeak)?;
+    let tuple_packed_num_vars = tuple_logical_num_vars
+        .checked_add(repetition_log_size)
+        .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?;
+    let tuple_packed_oracle_len = symbt3_n8_oracle_len(tuple_packed_num_vars)
+        .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?;
+    let k6a_oracle_len = symbt3_n8_oracle_len(adapter.main_whir_num_vars)
+        .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?;
+    if k6a_oracle_len != adapter.main_oracle_len {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch);
+    }
+    let integrated_num_vars = adapter.main_whir_num_vars.max(tuple_packed_num_vars);
+    let integrated_oracle_len = symbt3_n8_oracle_len(integrated_num_vars)
+        .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?;
+    let k6a_padding_policy =
+        symbt3_n8_k6a_padding_policy(adapter.main_whir_num_vars, integrated_num_vars)
+            .ok_or(Symbt3N8IntegratedPrototypeBlocker::PaddingPolicyMismatch)?;
+    let tuple_repetition_axis = symbt3_n8_tuple_repetition_axis_mapping(
+        tuple_logical_num_vars,
+        proof.counters.rlc_repetition_count,
+        integrated_num_vars,
+    )
+    .ok_or(Symbt3N8IntegratedPrototypeBlocker::RepetitionAxisMismatch)?;
+    let k6a_main_descriptor_digest = n8_integrated_k6a_main_constraint_descriptor_digest_from_parts(
+        adapter.profile_digest,
+        adapter.accumulator_instance_digest,
+        adapter.public_statement_digest,
+        k6a_semantic_descriptor_digest,
+        adapter.whir_param_digest,
+        adapter.main_symbt3_relation_id,
+        adapter.old_accumulator_digest,
+        adapter.new_accumulator_digest,
+        adapter.batch_manifest_root,
+        adapter.manifest_oracle_root,
+        adapter.native_message_roots_digest,
+        adapter.batch_size,
+        adapter.active_count,
+        adapter.main_whir_num_vars,
+        adapter.main_oracle_len,
+    );
+    let tuple_leaf_descriptor_digest =
+        n8_integrated_tuple_leaf_constraint_descriptor_digest_from_parts(
+            proof.descriptor_digest,
+            proof.tuple_leaf_layout_digest,
+            proof.packing_challenge_digest,
+            proof.packed_root,
+            native_tuple_leaf.native_oracle_descriptor_digest,
+            native_tuple_leaf.native_message_roots_digest,
+            native_tuple_leaf.manifest_oracle_root,
+            native_tuple_leaf.source_oracle_root,
+            proof.counters.logical_oracle_count,
+            tuple_logical_num_vars,
+            tuple_packed_num_vars,
+            proof.counters.rlc_repetition_count,
+            proof.counters.rlc_batching_bits_per_repetition,
+            proof.counters.total_rlc_batching_bits,
+            proof.counters.effective_soundness_bits,
+        );
+    let transition_descriptor_digest =
+        n8_integrated_transition_constraint_descriptor_digest_from_parts(
+            k6a_main_descriptor_digest,
+            tuple_leaf_descriptor_digest,
+            adapter.profile_digest,
+            adapter.accumulator_instance_digest,
+            adapter.old_accumulator_digest,
+            adapter.new_accumulator_digest,
+            adapter.public_statement_digest,
+            adapter.whir_param_digest,
+            adapter.main_symbt3_relation_id,
+            adapter.main_symbt3_proof_digest,
+            proof.packed_root,
+            proof.tuple_leaf_layout_digest,
+            native_tuple_leaf.native_oracle_descriptor_digest,
+            native_tuple_leaf.native_message_roots_digest,
+            native_tuple_leaf.manifest_oracle_root,
+            native_tuple_leaf.source_oracle_root,
+            adapter.batch_manifest_root,
+            adapter.batch_size,
+            adapter.active_count,
+            integrated_num_vars,
+            integrated_oracle_len,
+        );
+
+    let mut logical_oracle_descriptors = Vec::with_capacity(proof.logical_descriptors.len() + 2);
+    logical_oracle_descriptors.push(IntegratedK6aNativeLogicalOracleDescriptorV1 {
+        kind: IntegratedK6aNativeLogicalOracleKindV1::K6aAccumulatorMainV1,
+        oracle_id: None,
+        role: None,
+        layout_digest: adapter.main_symbt3_relation_id,
+        root_digest: None,
+        source_num_vars: adapter.main_whir_num_vars,
+        integrated_num_vars,
+        descriptor_digest: k6a_main_descriptor_digest,
+    });
+    logical_oracle_descriptors.push(IntegratedK6aNativeLogicalOracleDescriptorV1 {
+        kind: IntegratedK6aNativeLogicalOracleKindV1::NativeTupleLeafPackedV1,
+        oracle_id: None,
+        role: None,
+        layout_digest: proof.tuple_leaf_layout_digest,
+        root_digest: Some(proof.packed_root),
+        source_num_vars: tuple_packed_num_vars,
+        integrated_num_vars,
+        descriptor_digest: tuple_leaf_descriptor_digest,
+    });
+    for spec in &proof.logical_descriptors {
+        logical_oracle_descriptors.push(IntegratedK6aNativeLogicalOracleDescriptorV1 {
+            kind: IntegratedK6aNativeLogicalOracleKindV1::NativeTupleLeafLogicalV1,
+            oracle_id: Some(spec.oracle_id),
+            role: Some(spec.role.clone()),
+            layout_digest: spec.layout_digest,
+            root_digest: None,
+            source_num_vars: spec.num_vars,
+            integrated_num_vars,
+            descriptor_digest: digest_bytes(&spec.canonical_bytes()),
+        });
+    }
+
+    let constraint_descriptors = vec![
+        Symbt3N8IntegratedConstraintDescriptor {
+            kind: Symbt3N8IntegratedConstraintKind::K6aAccumulatorMainV1,
+            num_vars: adapter.main_whir_num_vars,
+            oracle_len: adapter.main_oracle_len,
+            integrated_num_vars,
+            integrated_oracle_len,
+            descriptor_digest: k6a_main_descriptor_digest,
+        },
+        Symbt3N8IntegratedConstraintDescriptor {
+            kind: Symbt3N8IntegratedConstraintKind::NativeTupleLeafRepeatedRlcV1,
+            num_vars: tuple_packed_num_vars,
+            oracle_len: tuple_packed_oracle_len,
+            integrated_num_vars,
+            integrated_oracle_len,
+            descriptor_digest: tuple_leaf_descriptor_digest,
+        },
+        Symbt3N8IntegratedConstraintDescriptor {
+            kind: Symbt3N8IntegratedConstraintKind::AccumulatorTransitionBindingV1,
+            num_vars: integrated_num_vars,
+            oracle_len: integrated_oracle_len,
+            integrated_num_vars,
+            integrated_oracle_len,
+            descriptor_digest: transition_descriptor_digest,
+        },
+    ];
+
+    let claim_descriptors = vec![
+        IntegratedK6aNativeClaimDescriptorV1 {
+            kind: IntegratedK6aNativeClaimDescriptorKindV1::K6aAccumulatorMainClaimsV1,
+            claim_count: symbt3_n8_k6a_claim_row_count_from_source(source),
+            num_vars: adapter.main_whir_num_vars,
+            claims_digest: symbt3_n8_k6a_claim_descriptor_digest_from_source(adapter, source),
+        },
+        IntegratedK6aNativeClaimDescriptorV1 {
+            kind: IntegratedK6aNativeClaimDescriptorKindV1::NativeTupleLeafPackedClaimsV1,
+            claim_count: proof.packed_eval_claims.len(),
+            num_vars: tuple_packed_num_vars,
+            claims_digest: symbt3_tuple_leaf_packed_eval_claims_digest(&proof.packed_eval_claims),
+        },
+        IntegratedK6aNativeClaimDescriptorV1 {
+            kind: IntegratedK6aNativeClaimDescriptorKindV1::NativeTupleLeafLogicalClaimsV1,
+            claim_count: proof.logical_eval_claims.len(),
+            num_vars: tuple_logical_num_vars,
+            claims_digest: native_oracle_eval_claims_digest(&proof.logical_eval_claims),
+        },
+    ];
+
+    let combined_logical_oracle_descriptor_digest =
+        symbt3_n8_integrated_logical_oracle_descriptors_digest(&logical_oracle_descriptors);
+    let combined_constraint_descriptor_digest =
+        symbt3_n8_integrated_constraint_descriptors_digest(&constraint_descriptors);
+    let combined_claim_descriptor_digest =
+        symbt3_n8_integrated_claim_descriptors_digest(&claim_descriptors);
+
+    let mut plan = IntegratedK6aNativeClaimPlanV1 {
+        version: INTEGRATED_K6A_NATIVE_CLAIM_PLAN_VERSION,
+        workload_kind: Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1,
+        k6a_relation_id: adapter.main_symbt3_relation_id,
+        k6a_public_statement_digest: adapter.public_statement_digest,
+        k6a_semantic_descriptor_digest,
+        tuple_leaf_descriptor_digest: proof.descriptor_digest,
+        tuple_leaf_layout_digest: proof.tuple_leaf_layout_digest,
+        k6a_num_vars: adapter.main_whir_num_vars,
+        k6a_oracle_len: adapter.main_oracle_len,
+        tuple_logical_oracle_count: proof.counters.logical_oracle_count,
+        tuple_logical_num_vars,
+        tuple_packed_num_vars,
+        tuple_packed_oracle_len,
+        integrated_num_vars,
+        integrated_oracle_len,
+        rlc_repetition_count: proof.counters.rlc_repetition_count,
+        rlc_batching_bits_per_repetition: proof.counters.rlc_batching_bits_per_repetition,
+        total_rlc_batching_bits: proof.counters.total_rlc_batching_bits,
+        effective_soundness_bits: proof.counters.effective_soundness_bits,
+        k6a_padding_policy,
+        tuple_repetition_axis,
+        logical_oracle_descriptors,
+        constraint_descriptors,
+        claim_descriptors,
+        combined_logical_oracle_descriptor_digest,
+        combined_constraint_descriptor_digest,
+        combined_claim_descriptor_digest,
+        claim_plan_digest: [0u8; 32],
+    };
+    plan.claim_plan_digest = symbt3_n8_integrated_claim_plan_digest(&plan);
+    Ok(plan)
+}
+
 pub fn build_integrated_k6a_native_committed_table_v1(
     plan: &IntegratedK6aNativeClaimPlanV1,
 ) -> Result<IntegratedK6aNativeCommittedTableV1, Symbt3N8IntegratedPrototypeBlocker> {
@@ -5897,11 +6824,34 @@ fn n8_integrated_evaluator_table_values(
     evaluator: &RealIntegratedK6aNativeEvaluatorV1,
 ) -> Result<Vec<BabyBear>, Symbt3N8IntegratedPrototypeBlocker> {
     let mut table = vec![BabyBear::ZERO; evaluator.integrated_oracle_len];
+    let k6a_weight = n8_integrated_logical_column_weight(
+        evaluator,
+        RealIntegratedK6aNativeLogicalColumnV1::K6aAccumulatorMain,
+    );
+    let tuple_packed_weight = n8_integrated_logical_column_weight(
+        evaluator,
+        RealIntegratedK6aNativeLogicalColumnV1::NativeTupleLeafPacked,
+    );
+    let tuple_logical_weight = n8_integrated_logical_column_weight(
+        evaluator,
+        RealIntegratedK6aNativeLogicalColumnV1::NativeTupleLeafLogical,
+    );
+    let transition_weight = n8_integrated_logical_column_weight(
+        evaluator,
+        RealIntegratedK6aNativeLogicalColumnV1::AccumulatorTransitionBinding,
+    );
     for row in &evaluator.rows {
         if row.integrated_row >= evaluator.integrated_oracle_len {
             return Err(Symbt3N8IntegratedPrototypeBlocker::IntegratedNumVarsMismatch);
         }
-        let weight = n8_integrated_logical_column_weight(evaluator, row.logical_column);
+        let weight = match row.logical_column {
+            RealIntegratedK6aNativeLogicalColumnV1::K6aAccumulatorMain => k6a_weight,
+            RealIntegratedK6aNativeLogicalColumnV1::NativeTupleLeafPacked => tuple_packed_weight,
+            RealIntegratedK6aNativeLogicalColumnV1::NativeTupleLeafLogical => tuple_logical_weight,
+            RealIntegratedK6aNativeLogicalColumnV1::AccumulatorTransitionBinding => {
+                transition_weight
+            }
+        };
         table[row.integrated_row] += weight * row.value;
     }
     Ok(table)
@@ -6146,6 +7096,191 @@ fn build_n8_integrated_k6a_semantic_constraints_v1(
         verifier_claim_count: claims.claimed.len(),
         final_residual_count: claims.evaluations.len(),
         product_sumcheck_round_count: claims.product_sumcheck_rounds.len(),
+        padding_row_count,
+        verifier_points_digest: points_digest,
+        verifier_claims_digest: claims_digest,
+        final_residual_digest,
+        product_sumcheck_digest,
+        rows,
+        rows_digest,
+        descriptor_digest,
+    })
+}
+
+fn build_n8_integrated_k6a_semantic_constraints_v1_from_source(
+    plan: &IntegratedK6aNativeClaimPlanV1,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    source: &Symbt3N8K6aSemanticSourceV1,
+) -> Result<N8IntegratedK6aSemanticConstraintsV1, Symbt3N8IntegratedPrototypeBlocker> {
+    if source.source_digest != adapter.main_symbt3_proof_digest
+        || source.relation_id != adapter.main_symbt3_relation_id
+        || source.public_statement_digest != adapter.public_statement_digest
+        || source.whir_param_digest != adapter.whir_param_digest
+        || source.num_vars != plan.k6a_num_vars
+        || source.oracle_len != plan.k6a_oracle_len
+        || source.verifier_points.len() != source.verifier_claims.len()
+        || source
+            .final_residuals
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+    {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::K6aSemanticConstraintViolation);
+    }
+
+    let points_digest = n8_integrated_k6a_verifier_points_digest(&source.verifier_points);
+    let claims_digest = digest_babybear_slice(
+        b"N8_INTEGRATED_K6A_VERIFIER_CLAIMS_DIGEST_V1",
+        &source.verifier_claims,
+    );
+    let final_residual_digest = digest_babybear_slice(
+        b"N8_INTEGRATED_K6A_FINAL_RESIDUAL_DIGEST_V1",
+        &source.final_residuals,
+    );
+    let product_sumcheck_digest =
+        n8_integrated_k6a_product_sumcheck_digest(&source.product_sumcheck_rounds);
+    let descriptor_digest = n8_integrated_complete_k6a_semantic_descriptor_digest_from_source(
+        adapter,
+        source,
+        points_digest,
+        claims_digest,
+        final_residual_digest,
+        product_sumcheck_digest,
+        source.verifier_points.len(),
+        source.verifier_claims.len(),
+    );
+    if descriptor_digest != plan.k6a_semantic_descriptor_digest {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::K6aSemanticConstraintViolation);
+    }
+
+    let mut rows = Vec::new();
+    let semantic_base = symbt3_n8_k6a_claim_row_count_from_source(source);
+    let push_semantic_row = |rows: &mut Vec<N8IntegratedK6aSemanticConstraintRowV1>,
+                             kind: N8IntegratedK6aSemanticConstraintRowKindV1,
+                             source_index: usize,
+                             value: BabyBear,
+                             aux_digest: Digest32| {
+        let semantic_index = rows.len();
+        let integrated_row = (semantic_base + semantic_index) % plan.integrated_oracle_len;
+        let point = n8_integrated_boolean_point_for_row(integrated_row, plan.integrated_num_vars);
+        rows.push(N8IntegratedK6aSemanticConstraintRowV1 {
+            kind,
+            source_index,
+            integrated_row,
+            point_digest: native_oracle_point_digest(&point),
+            value,
+            aux_digest,
+        });
+    };
+
+    for (index, (point, &value)) in source
+        .verifier_points
+        .iter()
+        .zip(source.verifier_claims.iter())
+        .enumerate()
+    {
+        push_semantic_row(
+            &mut rows,
+            N8IntegratedK6aSemanticConstraintRowKindV1::VerifierOpeningClaimV1,
+            index,
+            value,
+            n8_integrated_k6a_semantic_row_aux_digest(
+                N8IntegratedK6aSemanticConstraintRowKindV1::VerifierOpeningClaimV1,
+                |bytes| {
+                    push_u64(bytes, index as u64);
+                    push_digest(bytes, &native_oracle_point_digest(point));
+                    push_babybear(bytes, value);
+                },
+            ),
+        );
+    }
+    for (index, &value) in source.final_residuals.iter().enumerate() {
+        push_semantic_row(
+            &mut rows,
+            N8IntegratedK6aSemanticConstraintRowKindV1::FinalResidualZeroV1,
+            index,
+            value,
+            n8_integrated_k6a_semantic_row_aux_digest(
+                N8IntegratedK6aSemanticConstraintRowKindV1::FinalResidualZeroV1,
+                |bytes| {
+                    push_u64(bytes, index as u64);
+                    push_babybear(bytes, value);
+                },
+            ),
+        );
+    }
+    let first_claim = source
+        .verifier_claims
+        .first()
+        .copied()
+        .ok_or(Symbt3N8IntegratedPrototypeBlocker::K6aSemanticConstraintViolation)?;
+    for (index, value) in [BabyBear::ZERO, source.z_eval - first_claim]
+        .into_iter()
+        .enumerate()
+    {
+        push_semantic_row(
+            &mut rows,
+            N8IntegratedK6aSemanticConstraintRowKindV1::ZEvalBindingV1,
+            index,
+            value,
+            n8_integrated_k6a_semantic_row_aux_digest(
+                N8IntegratedK6aSemanticConstraintRowKindV1::ZEvalBindingV1,
+                |bytes| {
+                    push_u64(bytes, index as u64);
+                    push_babybear(bytes, source.z_eval);
+                    push_babybear(bytes, source.z_eval);
+                    push_babybear(bytes, first_claim);
+                },
+            ),
+        );
+    }
+    push_semantic_row(
+        &mut rows,
+        N8IntegratedK6aSemanticConstraintRowKindV1::ProductSumcheckAcceptedV1,
+        0,
+        BabyBear::ZERO,
+        n8_integrated_k6a_semantic_row_aux_digest(
+            N8IntegratedK6aSemanticConstraintRowKindV1::ProductSumcheckAcceptedV1,
+            |bytes| {
+                push_digest(bytes, &product_sumcheck_digest);
+                push_u64(bytes, source.product_sumcheck_rounds.len() as u64);
+            },
+        ),
+    );
+    let padding_row_count = usize::from(plan.k6a_padding_policy.padded_row_count > 0);
+    if padding_row_count > 0 {
+        let integrated_row = plan.k6a_oracle_len;
+        let point = n8_integrated_boolean_point_for_row(integrated_row, plan.integrated_num_vars);
+        rows.push(N8IntegratedK6aSemanticConstraintRowV1 {
+            kind: N8IntegratedK6aSemanticConstraintRowKindV1::K6aPaddingZeroV1,
+            source_index: 0,
+            integrated_row,
+            point_digest: native_oracle_point_digest(&point),
+            value: BabyBear::ZERO,
+            aux_digest: n8_integrated_k6a_semantic_row_aux_digest(
+                N8IntegratedK6aSemanticConstraintRowKindV1::K6aPaddingZeroV1,
+                |bytes| {
+                    push_bytes(bytes, &plan.k6a_padding_policy.canonical_bytes());
+                    push_u64(bytes, plan.k6a_padding_policy.padded_row_count as u64);
+                },
+            ),
+        });
+    }
+
+    let rows_digest = n8_integrated_k6a_semantic_rows_digest(&rows);
+    Ok(N8IntegratedK6aSemanticConstraintsV1 {
+        version: N8_INTEGRATED_K6A_SEMANTIC_CONSTRAINTS_VERSION,
+        complete: true,
+        k6a_relation_id: adapter.main_symbt3_relation_id,
+        public_statement_digest: adapter.public_statement_digest,
+        whir_param_digest: adapter.whir_param_digest,
+        k6a_num_vars: plan.k6a_num_vars,
+        k6a_oracle_len: plan.k6a_oracle_len,
+        integrated_num_vars: plan.integrated_num_vars,
+        integrated_oracle_len: plan.integrated_oracle_len,
+        verifier_point_count: source.verifier_points.len(),
+        verifier_claim_count: source.verifier_claims.len(),
+        final_residual_count: source.final_residuals.len(),
+        product_sumcheck_round_count: source.product_sumcheck_rounds.len(),
         padding_row_count,
         verifier_points_digest: points_digest,
         verifier_claims_digest: claims_digest,
@@ -6759,19 +7894,100 @@ fn build_n8_integrated_transition_binding_semantic_constraints_v1(
     Ok(constraints)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_real_integrated_k6a_native_evaluator_v1(
+fn build_n8_integrated_transition_binding_semantic_constraints_v1_from_source(
     plan: &IntegratedK6aNativeClaimPlanV1,
     committed_table: &IntegratedK6aNativeCommittedTableV1,
     adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
     native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
-    k6a_proof: &WhirProof,
+    k6a_source: &Symbt3N8K6aSemanticSourceV1,
+    tuple_rlc_semantic_constraints: &N8IntegratedTupleRlcSemanticConstraintsV1,
+) -> Result<N8IntegratedTransitionBindingSemanticConstraintsV1, Symbt3N8IntegratedPrototypeBlocker>
+{
+    if plan.constraint_descriptors.len() != 3
+        || adapter.main_symbt3_proof_digest != k6a_source.source_digest
+        || adapter.main_symbt3_proof_digest == [0u8; 32]
+        || adapter.accumulator_instance_digest == [0u8; 32]
+        || adapter.old_accumulator_digest == [0u8; 32]
+        || adapter.new_accumulator_digest == [0u8; 32]
+        || adapter.public_statement_digest == [0u8; 32]
+        || adapter.batch_manifest_root == [0u8; 32]
+        || adapter.batch_size == 0
+        || adapter.active_count == 0
+        || adapter.active_count > adapter.batch_size
+        || adapter.accumulator_transition_claims != 1
+        || native_tuple_leaf.proof.packed_root == [0u8; 32]
+        || native_tuple_leaf.proof.tuple_leaf_layout_digest == [0u8; 32]
+        || native_tuple_leaf.native_oracle_descriptor_digest == [0u8; 32]
+        || native_tuple_leaf.native_message_roots_digest == [0u8; 32]
+        || native_tuple_leaf.manifest_oracle_root != adapter.manifest_oracle_root
+        || native_tuple_leaf.native_message_roots_digest != adapter.native_message_roots_digest
+    {
+        return Err(
+            Symbt3N8IntegratedPrototypeBlocker::TransitionBindingSemanticConstraintViolation,
+        );
+    }
+    let mut constraints = build_incomplete_n8_integrated_transition_binding_semantic_constraints_v1(
+        plan,
+        committed_table,
+        adapter,
+        native_tuple_leaf,
+        tuple_rlc_semantic_constraints,
+    );
+    constraints.complete = true;
+    constraints.rows = n8_integrated_transition_semantic_rows(&constraints);
+    constraints.rows_digest =
+        n8_integrated_transition_binding_semantic_rows_digest(&constraints.rows);
+    constraints.transition_binding_digest =
+        n8_integrated_transition_binding_semantic_digest(&constraints);
+    constraints.rows = n8_integrated_transition_semantic_rows(&constraints);
+    constraints.rows_digest =
+        n8_integrated_transition_binding_semantic_rows_digest(&constraints.rows);
+    constraints.descriptor_digest =
+        n8_integrated_transition_binding_semantic_descriptor_digest(&constraints);
+    Ok(constraints)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct N8K6aEvaluatorRowMaterial<'a> {
+    verifier_claims: &'a [BabyBear],
+    final_residuals: &'a [BabyBear; 3],
+    z_eval: BabyBear,
+    product_sumcheck_rounds: &'a [[BabyBear; 4]],
+}
+
+impl<'a> N8K6aEvaluatorRowMaterial<'a> {
+    fn from_proof(proof: &'a WhirProof) -> Self {
+        Self {
+            verifier_claims: &proof.private_opening_evals,
+            final_residuals: &proof.evaluations,
+            z_eval: proof.z_eval,
+            product_sumcheck_rounds: &proof.sumcheck_rounds_4,
+        }
+    }
+
+    fn from_source(source: &'a Symbt3N8K6aSemanticSourceV1) -> Self {
+        Self {
+            verifier_claims: &source.verifier_claims,
+            final_residuals: &source.final_residuals,
+            z_eval: source.z_eval,
+            product_sumcheck_rounds: &source.product_sumcheck_rounds,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_real_integrated_k6a_native_evaluator_v1_from_material(
+    plan: &IntegratedK6aNativeClaimPlanV1,
+    committed_table: &IntegratedK6aNativeCommittedTableV1,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
+    k6a_material: N8K6aEvaluatorRowMaterial<'_>,
     k6a_semantic_constraints: &N8IntegratedK6aSemanticConstraintsV1,
     transition_binding_semantic_constraints: &N8IntegratedTransitionBindingSemanticConstraintsV1,
 ) -> Result<RealIntegratedK6aNativeEvaluatorV1, Symbt3N8IntegratedPrototypeBlocker> {
-    if symbt3_main_whir_proof_digest(k6a_proof) != adapter.main_symbt3_proof_digest {
-        return Err(Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch);
-    }
+    // The claim-plan and transition builders enforce the source digest binding.
+    // The evaluator only materializes the accepted K6a row values into the
+    // integrated table.
     let tuple_proof = &native_tuple_leaf.proof;
     let logical_oracle_count = tuple_proof.logical_descriptors.len();
     if logical_oracle_count == 0
@@ -6788,7 +8004,7 @@ fn build_real_integrated_k6a_native_evaluator_v1(
     let mut tuple_claim_rows = 0usize;
     let mut padding_rows = 0usize;
 
-    for (index, &value) in k6a_proof.private_opening_evals.iter().enumerate() {
+    for (index, &value) in k6a_material.verifier_claims.iter().enumerate() {
         let integrated_row = index % plan.integrated_oracle_len;
         let point = n8_integrated_boolean_point_for_row(integrated_row, plan.integrated_num_vars);
         rows.push(RealIntegratedK6aNativeEvaluatorRowV1 {
@@ -6812,7 +8028,7 @@ fn build_real_integrated_k6a_native_evaluator_v1(
         k6a_claim_rows += 1;
     }
 
-    for (index, &value) in k6a_proof.evaluations.iter().enumerate() {
+    for (index, &value) in k6a_material.final_residuals.iter().enumerate() {
         let source_index = k6a_claim_rows;
         let integrated_row = source_index % plan.integrated_oracle_len;
         let point = n8_integrated_boolean_point_for_row(integrated_row, plan.integrated_num_vars);
@@ -6848,18 +8064,18 @@ fn build_real_integrated_k6a_native_evaluator_v1(
         repetition_index: None,
         oracle_id: None,
         point_digest: native_oracle_point_digest(&z_point),
-        value: k6a_proof.z_eval,
+        value: k6a_material.z_eval,
         aux_digest: n8_integrated_row_aux_digest(
             RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1,
             |bytes| {
                 push_digest(bytes, &adapter.main_symbt3_proof_digest);
-                push_babybear(bytes, k6a_proof.z_eval);
+                push_babybear(bytes, k6a_material.z_eval);
             },
         ),
     });
     k6a_claim_rows += 1;
 
-    for (round_index, round) in k6a_proof.sumcheck_rounds_4.iter().enumerate() {
+    for (round_index, round) in k6a_material.product_sumcheck_rounds.iter().enumerate() {
         for (coeff_index, &value) in round.iter().enumerate() {
             let source_index = k6a_claim_rows;
             let integrated_row = source_index % plan.integrated_oracle_len;
@@ -7148,6 +8364,27 @@ fn build_real_integrated_k6a_native_evaluator_v1(
     Ok(evaluator)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_real_integrated_k6a_native_evaluator_v1(
+    plan: &IntegratedK6aNativeClaimPlanV1,
+    committed_table: &IntegratedK6aNativeCommittedTableV1,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
+    k6a_proof: &WhirProof,
+    k6a_semantic_constraints: &N8IntegratedK6aSemanticConstraintsV1,
+    transition_binding_semantic_constraints: &N8IntegratedTransitionBindingSemanticConstraintsV1,
+) -> Result<RealIntegratedK6aNativeEvaluatorV1, Symbt3N8IntegratedPrototypeBlocker> {
+    build_real_integrated_k6a_native_evaluator_v1_from_material(
+        plan,
+        committed_table,
+        adapter,
+        native_tuple_leaf,
+        N8K6aEvaluatorRowMaterial::from_proof(k6a_proof),
+        k6a_semantic_constraints,
+        transition_binding_semantic_constraints,
+    )
+}
+
 pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor(
     adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
     native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
@@ -7212,21 +8449,66 @@ pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_s
     native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
     k6a_proof: &WhirProof,
 ) -> Result<Symbt3IntegratedK6aNativeWhirRelationV1, Symbt3N8IntegratedPrototypeBlocker> {
+    build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_semantics_profiled(
+        seed,
+        relation,
+        statement,
+        adapter,
+        native_tuple_leaf,
+        k6a_proof,
+    )
+    .map(|(descriptor, _profile)| descriptor)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_semantics_profiled(
+    seed: &[u8; 32],
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    native_tuple_leaf: &Symbt3N7bNativeTupleLeafProofParts,
+    k6a_proof: &WhirProof,
+) -> Result<
+    (
+        Symbt3IntegratedK6aNativeWhirRelationV1,
+        N8IntegratedDescriptorBuildProfileV1,
+    ),
+    Symbt3N8IntegratedPrototypeBlocker,
+> {
+    let total_start = Instant::now();
+    let mut profile = N8IntegratedDescriptorBuildProfileV1::default();
+
+    let section_start = Instant::now();
     let k6a_semantic_descriptor_digest = n8_integrated_complete_k6a_semantic_descriptor_digest(
         seed, relation, statement, adapter, k6a_proof,
     )?;
+    profile.k6a_semantic_descriptor_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
     let plan = build_integrated_k6a_native_claim_plan_v1_with_k6a_semantic_descriptor_digest(
         adapter,
         native_tuple_leaf,
         k6a_proof,
         k6a_semantic_descriptor_digest,
     )?;
+    profile.claim_plan_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
     let committed_table = build_integrated_k6a_native_committed_table_v1(&plan)?;
+    profile.integrated_table_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
     let k6a_semantic_constraints = build_n8_integrated_k6a_semantic_constraints_v1(
         seed, relation, statement, &plan, adapter, k6a_proof,
     )?;
+    profile.k6a_semantic_rows_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
     let tuple_rlc_semantic_constraints =
         build_n8_integrated_tuple_rlc_semantic_constraints_v1(&plan, native_tuple_leaf)?;
+    profile.tuple_rlc_semantic_rows_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
     let transition_binding_semantic_constraints =
         build_n8_integrated_transition_binding_semantic_constraints_v1(
             &plan,
@@ -7236,12 +8518,18 @@ pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_s
             k6a_proof,
             &tuple_rlc_semantic_constraints,
         )?;
+    profile.transition_binding_semantic_rows_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    profile.semantic_row_construction_ms = profile.k6a_semantic_rows_ms.max(0.0)
+        + profile.tuple_rlc_semantic_rows_ms.max(0.0)
+        + profile.transition_binding_semantic_rows_ms.max(0.0);
     let semantic_completion = N8IntegratedSemanticCompletionFlagsV1 {
         version: N8_INTEGRATED_SEMANTIC_COMPLETION_FLAGS_VERSION,
         k6a_semantics_complete: true,
         tuple_rlc_semantics_complete: true,
         transition_semantics_complete: true,
     };
+
+    let section_start = Instant::now();
     let real_evaluator = build_real_integrated_k6a_native_evaluator_v1(
         &plan,
         &committed_table,
@@ -7251,6 +8539,7 @@ pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_s
         &k6a_semantic_constraints,
         &transition_binding_semantic_constraints,
     )?;
+    profile.real_evaluator_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
     let proof = &native_tuple_leaf.proof;
     let mut descriptor = Symbt3IntegratedK6aNativeWhirRelationV1 {
         version: SYMBT3_N8_INTEGRATED_K6A_NATIVE_WHIR_RELATION_VERSION,
@@ -7272,9 +8561,145 @@ pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_s
         real_evaluator,
         transcript_binding_digest: [0u8; 32],
     };
+    let section_start = Instant::now();
     descriptor.transcript_binding_digest =
         symbt3_n8_integrated_transcript_binding_digest(&descriptor);
-    Ok(descriptor)
+    profile.descriptor_digest_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    profile.total_ms = total_start.elapsed().as_secs_f64() * 1_000.0;
+    Ok((descriptor, profile))
+}
+
+pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs(
+    inputs: &N8DirectSemanticInputsV1,
+) -> Result<Symbt3IntegratedK6aNativeWhirRelationV1, Symbt3N8IntegratedPrototypeBlocker> {
+    build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs_profiled(
+        inputs,
+    )
+    .map(|(descriptor, _profile)| descriptor)
+}
+
+pub fn build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs_profiled(
+    inputs: &N8DirectSemanticInputsV1,
+) -> Result<
+    (
+        Symbt3IntegratedK6aNativeWhirRelationV1,
+        N8IntegratedDescriptorBuildProfileV1,
+    ),
+    Symbt3N8IntegratedPrototypeBlocker,
+> {
+    let total_start = Instant::now();
+    let mut profile = N8IntegratedDescriptorBuildProfileV1::default();
+    let adapter = &inputs.k6a_adapter;
+    let native_tuple_leaf = &inputs.native_tuple_leaf;
+    let source = &inputs.k6a_semantic_source;
+
+    let section_start = Instant::now();
+    let points_digest = n8_integrated_k6a_verifier_points_digest(&source.verifier_points);
+    let claims_digest = digest_babybear_slice(
+        b"N8_INTEGRATED_K6A_VERIFIER_CLAIMS_DIGEST_V1",
+        &source.verifier_claims,
+    );
+    let final_residual_digest = digest_babybear_slice(
+        b"N8_INTEGRATED_K6A_FINAL_RESIDUAL_DIGEST_V1",
+        &source.final_residuals,
+    );
+    let product_sumcheck_digest =
+        n8_integrated_k6a_product_sumcheck_digest(&source.product_sumcheck_rounds);
+    let k6a_semantic_descriptor_digest =
+        n8_integrated_complete_k6a_semantic_descriptor_digest_from_source(
+            adapter,
+            source,
+            points_digest,
+            claims_digest,
+            final_residual_digest,
+            product_sumcheck_digest,
+            source.verifier_points.len(),
+            source.verifier_claims.len(),
+        );
+    profile.k6a_semantic_descriptor_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let plan = build_integrated_k6a_native_claim_plan_v1_with_k6a_semantic_source(
+        adapter,
+        native_tuple_leaf,
+        source,
+        k6a_semantic_descriptor_digest,
+    )?;
+    profile.claim_plan_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let committed_table = build_integrated_k6a_native_committed_table_v1(&plan)?;
+    profile.integrated_table_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let k6a_semantic_constraints =
+        build_n8_integrated_k6a_semantic_constraints_v1_from_source(&plan, adapter, source)?;
+    profile.k6a_semantic_rows_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let tuple_rlc_semantic_constraints =
+        build_n8_integrated_tuple_rlc_semantic_constraints_v1(&plan, native_tuple_leaf)?;
+    profile.tuple_rlc_semantic_rows_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let transition_binding_semantic_constraints =
+        build_n8_integrated_transition_binding_semantic_constraints_v1_from_source(
+            &plan,
+            &committed_table,
+            adapter,
+            native_tuple_leaf,
+            source,
+            &tuple_rlc_semantic_constraints,
+        )?;
+    profile.transition_binding_semantic_rows_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    profile.semantic_row_construction_ms = profile.k6a_semantic_rows_ms.max(0.0)
+        + profile.tuple_rlc_semantic_rows_ms.max(0.0)
+        + profile.transition_binding_semantic_rows_ms.max(0.0);
+    let semantic_completion = N8IntegratedSemanticCompletionFlagsV1 {
+        version: N8_INTEGRATED_SEMANTIC_COMPLETION_FLAGS_VERSION,
+        k6a_semantics_complete: true,
+        tuple_rlc_semantics_complete: true,
+        transition_semantics_complete: true,
+    };
+
+    let section_start = Instant::now();
+    let real_evaluator = build_real_integrated_k6a_native_evaluator_v1_from_material(
+        &plan,
+        &committed_table,
+        adapter,
+        native_tuple_leaf,
+        N8K6aEvaluatorRowMaterial::from_source(source),
+        &k6a_semantic_constraints,
+        &transition_binding_semantic_constraints,
+    )?;
+    profile.real_evaluator_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    let proof = &native_tuple_leaf.proof;
+    let mut descriptor = Symbt3IntegratedK6aNativeWhirRelationV1 {
+        version: SYMBT3_N8_INTEGRATED_K6A_NATIVE_WHIR_RELATION_VERSION,
+        workload_kind: Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1,
+        main_symbt3_relation_id: adapter.main_symbt3_relation_id,
+        public_statement_digest: adapter.public_statement_digest,
+        whir_param_digest: adapter.whir_param_digest,
+        tuple_leaf_descriptor_digest: proof.descriptor_digest,
+        tuple_leaf_layout_digest: proof.tuple_leaf_layout_digest,
+        same_field: proof.counters.same_field,
+        same_rate: proof.counters.same_rate,
+        same_folding_parameter: proof.counters.same_folding_parameter,
+        claim_plan: plan,
+        committed_table,
+        k6a_semantic_constraints,
+        tuple_rlc_semantic_constraints,
+        transition_binding_semantic_constraints,
+        semantic_completion,
+        real_evaluator,
+        transcript_binding_digest: [0u8; 32],
+    };
+    let section_start = Instant::now();
+    descriptor.transcript_binding_digest =
+        symbt3_n8_integrated_transcript_binding_digest(&descriptor);
+    profile.descriptor_digest_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    profile.total_ms = total_start.elapsed().as_secs_f64() * 1_000.0;
+    Ok((descriptor, profile))
 }
 
 fn symbt3_n8_integrated_claim_plan_consistency_blocker(
@@ -8430,8 +9855,9 @@ fn n8_integrated_layout_representation_blocker(
     }
 }
 
-fn n8_integrated_whir_claim_bridge_descriptors(
+fn n8_integrated_whir_claim_bridge_descriptors_with_batching(
     descriptor: &Symbt3IntegratedK6aNativeWhirRelationV1,
+    semantic_batching: &N8SemanticBatchingV1,
 ) -> Result<Vec<N8IntegratedWhirClaimBridgeDescriptorV1>, Symbt3N8IntegratedPrototypeBlocker> {
     let plan = &descriptor.claim_plan;
     if plan.constraint_descriptors.len() != 3 || plan.claim_descriptors.len() != 3 {
@@ -8464,54 +9890,15 @@ fn n8_integrated_whir_claim_bridge_descriptors(
     );
     let transition_binding_digest =
         n8_integrated_whir_accumulator_transition_binding_claim_bridge_digest(descriptor);
-    let k6a_bridge_count = descriptor
-        .real_evaluator
-        .rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.kind,
-                RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorResidualClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aProductSumcheckRoundClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aZeroPaddingClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticVerifierOpeningClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticFinalResidualZeroV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticZEvalBindingV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticProductSumcheckAcceptedV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticPaddingZeroV1
-            )
-        })
-        .count();
-    let tuple_bridge_count = descriptor
-        .real_evaluator
-        .rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.kind,
-                RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafPackedRlcClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafLogicalRlcClaimV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafRlcBindingResidualV1
-                    | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafIntegratedPaddingClaimV1
-            )
-        })
-        .count();
-    let transition_bridge_count = descriptor
-        .real_evaluator
-        .rows
-        .iter()
-        .filter(|row| {
-            row.kind
-                == RealIntegratedK6aNativeEvaluatorRowKindV1::AccumulatorTransitionBindingClaimV1
-        })
-        .count();
+    let k6a_source_bridge_count = semantic_batching.k6a_source.batched_source_opening_count;
+    let k6a_semantic_bridge_count = semantic_batching.k6a.batched_query_count;
+    let tuple_bridge_count = semantic_batching.tuple_rlc.batched_query_count;
+    let transition_bridge_count = semantic_batching.transition_binding.batched_query_count;
 
     Ok(vec![
         n8_integrated_whir_claim_bridge_descriptor(
             N8IntegratedWhirClaimBridgeKindV1::K6aAccumulatorConstraintsV1,
-            k6a_bridge_count,
+            k6a_source_bridge_count.saturating_add(k6a_semantic_bridge_count),
             k6a_claim.num_vars,
             plan.integrated_num_vars,
             k6a_constraint.descriptor_digest,
@@ -8542,6 +9929,20 @@ fn n8_integrated_whir_claim_bridge_descriptors(
 pub fn build_n8_integrated_whir_proof_plan(
     inputs: &N8IntegratedWhirProofInputs<'_>,
 ) -> Result<N8IntegratedWhirProofPlan, Symbt3N8IntegratedPrototypeBlocker> {
+    build_n8_integrated_whir_proof_plan_profiled(inputs).map(|(plan, _profile)| plan)
+}
+
+pub fn build_n8_integrated_whir_proof_plan_profiled(
+    inputs: &N8IntegratedWhirProofInputs<'_>,
+) -> Result<
+    (
+        N8IntegratedWhirProofPlan,
+        N8IntegratedProofPlanBuildProfileV1,
+    ),
+    Symbt3N8IntegratedPrototypeBlocker,
+> {
+    let total_start = Instant::now();
+    let mut profile = N8IntegratedProofPlanBuildProfileV1::default();
     if inputs.version != N8_INTEGRATED_WHIR_PROOF_INPUTS_VERSION {
         return Err(Symbt3N8IntegratedPrototypeBlocker::WorkloadKindMismatch);
     }
@@ -8567,13 +9968,16 @@ pub fn build_n8_integrated_whir_proof_plan(
         return Err(Symbt3N8IntegratedPrototypeBlocker::ExtraWhirProofOrRoot);
     }
 
-    build_n8_integrated_whir_proof_plan_from_counts(
+    let plan = build_n8_integrated_whir_proof_plan_from_counts_profiled(
         inputs.descriptor,
         inputs.table_representation,
         integrated_whir_root_count,
         integrated_whir_proof_count,
         inputs.legacy_k6a_proof.is_some() || inputs.legacy_tuple_leaf_proof.is_some(),
-    )
+        Some(&mut profile),
+    )?;
+    profile.total_ms = total_start.elapsed().as_secs_f64() * 1_000.0;
+    Ok((plan, profile))
 }
 
 fn build_n8_integrated_whir_proof_plan_from_counts(
@@ -8582,6 +9986,24 @@ fn build_n8_integrated_whir_proof_plan_from_counts(
     integrated_whir_root_count: usize,
     integrated_whir_proof_count: usize,
     delegated_split_proof_material_present: bool,
+) -> Result<N8IntegratedWhirProofPlan, Symbt3N8IntegratedPrototypeBlocker> {
+    build_n8_integrated_whir_proof_plan_from_counts_profiled(
+        descriptor,
+        table_representation,
+        integrated_whir_root_count,
+        integrated_whir_proof_count,
+        delegated_split_proof_material_present,
+        None,
+    )
+}
+
+fn build_n8_integrated_whir_proof_plan_from_counts_profiled(
+    descriptor: &Symbt3IntegratedK6aNativeWhirRelationV1,
+    table_representation: N8IntegratedWhirTableRepresentationV1,
+    integrated_whir_root_count: usize,
+    integrated_whir_proof_count: usize,
+    delegated_split_proof_material_present: bool,
+    mut profile: Option<&mut N8IntegratedProofPlanBuildProfileV1>,
 ) -> Result<N8IntegratedWhirProofPlan, Symbt3N8IntegratedPrototypeBlocker> {
     if integrated_whir_root_count > 1 || integrated_whir_proof_count > 1 {
         return Err(Symbt3N8IntegratedPrototypeBlocker::ExtraWhirProofOrRoot);
@@ -8594,9 +10016,20 @@ fn build_n8_integrated_whir_proof_plan_from_counts(
         return Err(blocker);
     }
 
-    let bridge_claim_descriptors = n8_integrated_whir_claim_bridge_descriptors(descriptor)?;
+    let section_start = Instant::now();
+    let semantic_batching = n8_semantic_batching_descriptor(descriptor);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.semantic_batching_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
+
+    let section_start = Instant::now();
+    let bridge_claim_descriptors =
+        n8_integrated_whir_claim_bridge_descriptors_with_batching(descriptor, &semantic_batching)?;
     let combined_bridge_claim_descriptor_digest =
         n8_integrated_whir_claim_bridge_descriptors_digest(&bridge_claim_descriptors);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.bridge_descriptor_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
 
     let mut plan = N8IntegratedWhirProofPlan {
         version: N8_INTEGRATED_WHIR_PROOF_PLAN_VERSION,
@@ -8611,11 +10044,16 @@ fn build_n8_integrated_whir_proof_plan_from_counts(
         integrated_whir_root_count,
         integrated_whir_proof_count,
         delegated_split_proof_material_present,
+        semantic_batching,
         bridge_claim_descriptors,
         combined_bridge_claim_descriptor_digest,
         transcript_digest: [0u8; 32],
     };
+    let section_start = Instant::now();
     plan.transcript_digest = n8_integrated_whir_proof_plan_transcript_digest(&plan);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.transcript_digest_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
     Ok(plan)
 }
 
@@ -8744,8 +10182,10 @@ fn verify_symbt3_integrated_whir_backend_inner(
         input.prover_mode,
         N8IntegratedWhirProverModeV1::RealIntegratedK6aNativeEvaluatorV1
     ) {
-        let expected_query_claims =
-            n8_integrated_whir_real_query_claims(&input.descriptor.real_evaluator)?;
+        let expected_query_claims = n8_integrated_whir_real_query_claims(
+            &input.descriptor.real_evaluator,
+            &input.proof_plan.semantic_batching,
+        )?;
         if query_schedule.query_claims != expected_query_claims {
             return Err(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch);
         }
@@ -8840,54 +10280,87 @@ fn n8_integrated_whir_synthetic_query_points(
     points
 }
 
-fn n8_integrated_whir_bridge_kind_for_row(
-    row: &RealIntegratedK6aNativeEvaluatorRowV1,
-) -> N8IntegratedWhirClaimBridgeKindV1 {
-    match row.kind {
-        RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorResidualClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aProductSumcheckRoundClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aZeroPaddingClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticVerifierOpeningClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticFinalResidualZeroV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticZEvalBindingV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticProductSumcheckAcceptedV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticPaddingZeroV1 => {
-            N8IntegratedWhirClaimBridgeKindV1::K6aAccumulatorConstraintsV1
+fn n8_integrated_semantic_batch_query_claim(
+    evaluator: &RealIntegratedK6aNativeEvaluatorV1,
+    table: &[BabyBear],
+    semantic_batching: &N8SemanticBatchingV1,
+    family: N8SemanticBatchingFamilyV1,
+) -> Option<N8IntegratedWhirQueryClaimV1> {
+    let family_descriptor = match family {
+        N8SemanticBatchingFamilyV1::K6aSourceRowsV1 => semantic_batching.k6a_source.descriptor,
+        N8SemanticBatchingFamilyV1::K6aSemanticRowsV1 => semantic_batching.k6a,
+        N8SemanticBatchingFamilyV1::TupleRlcSemanticRowsV1 => semantic_batching.tuple_rlc,
+        N8SemanticBatchingFamilyV1::TransitionBindingSemanticRowsV1 => {
+            semantic_batching.transition_binding
         }
-        RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafPackedRlcClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafLogicalRlcClaimV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafRlcBindingResidualV1
-        | RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafIntegratedPaddingClaimV1 => {
-            N8IntegratedWhirClaimBridgeKindV1::NativeTupleLeafRepeatedRlcConstraintsV1
-        }
-        RealIntegratedK6aNativeEvaluatorRowKindV1::AccumulatorTransitionBindingClaimV1 => {
-            N8IntegratedWhirClaimBridgeKindV1::AccumulatorTransitionBindingConstraintsV1
-        }
+    };
+    if family_descriptor.source_row_count == 0 {
+        return None;
     }
+    let point = n8_semantic_batching_point(
+        semantic_batching.descriptor_binding_digest,
+        family,
+        evaluator.integrated_num_vars,
+    );
+    let point_digest = native_oracle_point_digest(&point);
+    if point_digest != family_descriptor.challenge_point_digest {
+        return None;
+    }
+    Some(N8IntegratedWhirQueryClaimV1 {
+        bridge_kind: match family {
+            N8SemanticBatchingFamilyV1::K6aSourceRowsV1 => {
+                N8IntegratedWhirClaimBridgeKindV1::K6aAccumulatorConstraintsV1
+            }
+            N8SemanticBatchingFamilyV1::K6aSemanticRowsV1 => {
+                N8IntegratedWhirClaimBridgeKindV1::K6aAccumulatorConstraintsV1
+            }
+            N8SemanticBatchingFamilyV1::TupleRlcSemanticRowsV1 => {
+                N8IntegratedWhirClaimBridgeKindV1::NativeTupleLeafRepeatedRlcConstraintsV1
+            }
+            N8SemanticBatchingFamilyV1::TransitionBindingSemanticRowsV1 => {
+                N8IntegratedWhirClaimBridgeKindV1::AccumulatorTransitionBindingConstraintsV1
+            }
+        },
+        point_digest,
+        value: mle_eval_bb(table, &point),
+        point,
+    })
 }
 
 fn n8_integrated_whir_real_query_claims(
     evaluator: &RealIntegratedK6aNativeEvaluatorV1,
+    semantic_batching: &N8SemanticBatchingV1,
 ) -> Result<Vec<N8IntegratedWhirQueryClaimV1>, Symbt3N8IntegratedPrototypeBlocker> {
     let table = n8_integrated_evaluator_table_values(evaluator)?;
-    Ok(evaluator
-        .rows
-        .iter()
-        .map(|row| {
-            let point = n8_integrated_boolean_point_for_row(
-                row.integrated_row,
-                evaluator.integrated_num_vars,
-            );
-            N8IntegratedWhirQueryClaimV1 {
-                bridge_kind: n8_integrated_whir_bridge_kind_for_row(row),
-                point_digest: native_oracle_point_digest(&point),
-                value: mle_eval_bb(&table, &point),
-                point,
-            }
-        })
-        .collect())
+    n8_integrated_whir_real_query_claims_for_table(evaluator, semantic_batching, &table)
+}
+
+fn n8_integrated_whir_real_query_claims_for_table(
+    evaluator: &RealIntegratedK6aNativeEvaluatorV1,
+    semantic_batching: &N8SemanticBatchingV1,
+    table: &[BabyBear],
+) -> Result<Vec<N8IntegratedWhirQueryClaimV1>, Symbt3N8IntegratedPrototypeBlocker> {
+    if semantic_batching.version != N8_SEMANTIC_BATCHING_VERSION
+        || !semantic_batching.enabled
+        || semantic_batching.descriptor_digest
+            != n8_semantic_batching_descriptor_digest(semantic_batching)
+    {
+        return Err(Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch);
+    }
+    let mut claims = Vec::new();
+    for family in [
+        N8SemanticBatchingFamilyV1::K6aSourceRowsV1,
+        N8SemanticBatchingFamilyV1::K6aSemanticRowsV1,
+        N8SemanticBatchingFamilyV1::TupleRlcSemanticRowsV1,
+        N8SemanticBatchingFamilyV1::TransitionBindingSemanticRowsV1,
+    ] {
+        if let Some(claim) =
+            n8_integrated_semantic_batch_query_claim(evaluator, &table, semantic_batching, family)
+        {
+            claims.push(claim);
+        }
+    }
+    Ok(claims)
 }
 
 #[must_use]
@@ -8898,6 +10371,51 @@ pub fn verify_symbt3_integrated_whir_backend_from_verifier_input(
     match verify_symbt3_integrated_whir_backend_inner(vk, input) {
         Ok(()) => Symbt3N8IntegratedPrototypeGateReport::ok(),
         Err(blocker) => Symbt3N8IntegratedPrototypeGateReport::blocked(blocker),
+    }
+}
+
+#[must_use]
+pub fn verify_symbt3_integrated_whir_query_openings_for_benchmark(
+    vk: &WhirVerifyingKey,
+    input: &N8IntegratedWhirVerifierInput<'_>,
+) -> Symbt3N8IntegratedPrototypeGateReport {
+    let Some(integrated_proof) = input.integrated_whir_proof else {
+        return Symbt3N8IntegratedPrototypeGateReport::blocked(
+            Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirProofApiMissing,
+        );
+    };
+    let Some(query_schedule) = input.query_schedule else {
+        return Symbt3N8IntegratedPrototypeGateReport::blocked(
+            Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirProofApiMissing,
+        );
+    };
+    if let Err(blocker) =
+        n8_integrated_whir_verify_query_schedule_shape(input.proof_plan, query_schedule)
+    {
+        return Symbt3N8IntegratedPrototypeGateReport::blocked(blocker);
+    }
+    let opening_points = query_schedule
+        .query_claims
+        .iter()
+        .map(|claim| claim.point.clone())
+        .collect::<Vec<_>>();
+    let opening_values = query_schedule
+        .query_claims
+        .iter()
+        .map(|claim| claim.value)
+        .collect::<Vec<_>>();
+    if whir_verify_opening_multi(
+        &vk.seed,
+        input.proof_plan.integrated_num_vars,
+        &integrated_proof.whir_pcs_proof,
+        &opening_points,
+        &opening_values,
+    ) {
+        Symbt3N8IntegratedPrototypeGateReport::ok()
+    } else {
+        Symbt3N8IntegratedPrototypeGateReport::blocked(
+            Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirProofRejected,
+        )
     }
 }
 
@@ -8921,6 +10439,22 @@ pub fn prove_symbt3_integrated_whir_from_claim_plan(
     descriptor: &Symbt3IntegratedK6aNativeWhirRelationV1,
     proof_plan: &N8IntegratedWhirProofPlan,
 ) -> Result<N8IntegratedWhirProverOutput, Symbt3N8IntegratedPrototypeBlocker> {
+    prove_symbt3_integrated_whir_from_claim_plan_profiled(pk, descriptor, proof_plan)
+        .map(|(output, _profile)| output)
+}
+
+pub fn prove_symbt3_integrated_whir_from_claim_plan_profiled(
+    pk: &WhirProvingKey,
+    descriptor: &Symbt3IntegratedK6aNativeWhirRelationV1,
+    proof_plan: &N8IntegratedWhirProofPlan,
+) -> Result<
+    (N8IntegratedWhirProverOutput, N8IntegratedWhirProveProfileV1),
+    Symbt3N8IntegratedPrototypeBlocker,
+> {
+    let total_start = Instant::now();
+    let mut profile = N8IntegratedWhirProveProfileV1::default();
+
+    let section_start = Instant::now();
     let mut inputs = N8IntegratedWhirProofInputs::from_descriptor(descriptor);
     inputs.table_representation = proof_plan.table_representation;
     let empty_plan = build_n8_integrated_whir_proof_plan(&inputs)?;
@@ -8934,8 +10468,11 @@ pub fn prove_symbt3_integrated_whir_from_claim_plan(
     if proof_plan != &empty_plan && proof_plan != &materialized_plan {
         return Err(Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch);
     }
+    profile.proof_plan_validation_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
 
+    let section_start = Instant::now();
     let committed_table = build_integrated_k6a_native_committed_table_v1(&descriptor.claim_plan)?;
+    profile.committed_table_rebuild_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
     if committed_table != descriptor.committed_table
         || committed_table.layout_digest != materialized_plan.committed_table_layout_digest
         || committed_table.table_digest != materialized_plan.committed_table_digest
@@ -8943,18 +10480,30 @@ pub fn prove_symbt3_integrated_whir_from_claim_plan(
         return Err(Symbt3N8IntegratedPrototypeBlocker::CommittedTableDigestMismatch);
     }
 
-    let query_claims = n8_integrated_whir_real_query_claims(&descriptor.real_evaluator)?;
+    let section_start = Instant::now();
+    let table = n8_integrated_evaluator_table_values(&descriptor.real_evaluator)?;
+    profile.integrated_table_values_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let query_claims = n8_integrated_whir_real_query_claims_for_table(
+        &descriptor.real_evaluator,
+        &materialized_plan.semantic_batching,
+        &table,
+    )?;
+    profile.query_claim_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
     let opening_points: Vec<Vec<BabyBear>> = query_claims
         .iter()
         .map(|claim| claim.point.clone())
         .collect();
-    let table = n8_integrated_evaluator_table_values(&descriptor.real_evaluator)?;
+
+    let section_start = Instant::now();
     let (whir_pcs_proof, opening_evals) = whir_commit_and_prove_multi(
         &pk.seed,
         materialized_plan.integrated_num_vars,
         &table,
         &opening_points,
     );
+    profile.whir_prove_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
     if opening_evals
         != query_claims
             .iter()
@@ -8963,8 +10512,11 @@ pub fn prove_symbt3_integrated_whir_from_claim_plan(
     {
         return Err(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirProofRejected);
     }
+
+    let section_start = Instant::now();
     let query_schedule =
         build_n8_integrated_whir_query_schedule_for_claims(&materialized_plan, query_claims);
+    profile.query_schedule_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
     let integrated_whir_proof = WhirProof {
         sumcheck_rounds_3: Vec::new(),
         sumcheck_rounds_4: Vec::new(),
@@ -8983,22 +10535,26 @@ pub fn prove_symbt3_integrated_whir_from_claim_plan(
     )
     .ok_or(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirRootMismatch)?;
 
-    Ok(N8IntegratedWhirProverOutput {
-        version: N8_INTEGRATED_WHIR_PROVER_OUTPUT_VERSION,
-        mode: N8IntegratedWhirProverModeV1::RealIntegratedK6aNativeEvaluatorV1,
-        proof_plan: materialized_plan,
-        integrated_whir_root,
-        integrated_whir_proof,
-        query_schedule,
-        counters: N8IntegratedWhirPrototypeCounters {
-            whir_instance_count: 1,
-            root_count: 1,
-            query_schedule_count: 1,
-            tuple_pcs_proof_count: 0,
-            delegated_split_proof_material_present: false,
-            synthetic_non_authoritative: false,
+    profile.total_ms = total_start.elapsed().as_secs_f64() * 1_000.0;
+    Ok((
+        N8IntegratedWhirProverOutput {
+            version: N8_INTEGRATED_WHIR_PROVER_OUTPUT_VERSION,
+            mode: N8IntegratedWhirProverModeV1::RealIntegratedK6aNativeEvaluatorV1,
+            proof_plan: materialized_plan,
+            integrated_whir_root,
+            integrated_whir_proof,
+            query_schedule,
+            counters: N8IntegratedWhirPrototypeCounters {
+                whir_instance_count: 1,
+                root_count: 1,
+                query_schedule_count: 1,
+                tuple_pcs_proof_count: 0,
+                delegated_split_proof_material_present: false,
+                synthetic_non_authoritative: false,
+            },
         },
-    })
+        profile,
+    ))
 }
 
 pub fn prove_symbt3_synthetic_integrated_whir_from_claim_plan(
@@ -9181,11 +10737,13 @@ pub fn verify_symbt3_n8_integrated_prover_output_authority_gate(
     {
         return Symbt3N8IntegratedPrototypeGateReport::blocked(blocker);
     }
-    let expected_query_claims =
-        match n8_integrated_whir_real_query_claims(&descriptor.real_evaluator) {
-            Ok(claims) => claims,
-            Err(blocker) => return Symbt3N8IntegratedPrototypeGateReport::blocked(blocker),
-        };
+    let expected_query_claims = match n8_integrated_whir_real_query_claims(
+        &descriptor.real_evaluator,
+        &output.proof_plan.semantic_batching,
+    ) {
+        Ok(claims) => claims,
+        Err(blocker) => return Symbt3N8IntegratedPrototypeGateReport::blocked(blocker),
+    };
     if output.query_schedule.query_claims != expected_query_claims {
         return Symbt3N8IntegratedPrototypeGateReport::blocked(
             Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch,
@@ -10032,6 +11590,417 @@ pub fn prove_symbt3_n7b_full_native_tuple_leaf_from_k6a(
     })
 }
 
+#[must_use]
+pub fn build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness(
+    pk: &WhirProvingKey,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    witness: &Symbt3AccumulatorWitness,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+) -> Option<Symbt3N7bNativeTupleLeafProofParts> {
+    build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness_profiled(
+        pk,
+        accumulator_instance,
+        witness,
+        adapter,
+        None,
+    )
+}
+
+fn build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness_profiled(
+    pk: &WhirProvingKey,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    witness: &Symbt3AccumulatorWitness,
+    adapter: &Symbt3NativeAccumulatorK6aWorkloadAdapter,
+    mut profile: Option<&mut N8DirectSemanticInputBuildProfileV1>,
+) -> Option<Symbt3N7bNativeTupleLeafProofParts> {
+    if !adapter.full_accumulator_workload
+        || adapter.smoke_profile
+        || adapter.workload_kind != Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1
+        || adapter.proof_kind != ProductProofKind::Symbt3AccumulatorNonZkIntegrity
+        || adapter.profile_digest != accumulator_instance.profile_digest
+        || adapter.manifest_oracle_root != accumulator_instance.manifest_oracle_root
+        || adapter.native_message_roots_digest != accumulator_instance.message_oracle_roots_digest
+        || adapter.batch_size != accumulator_instance.batch_capacity as u64
+        || adapter.active_count != accumulator_instance.active_count as u64
+        || accumulator_instance.message_oracle_roots.len() != witness.message_oracles.len()
+    {
+        return None;
+    }
+
+    let section_start = Instant::now();
+    let mut raw_evaluations = Vec::with_capacity(2 + witness.message_oracles.len());
+    let mut manifest_values = n7b_rows_to_babybear_values(&witness.manifest_oracle);
+    if manifest_values.is_empty() {
+        manifest_values = n7b_digest_values(&[
+            accumulator_instance.manifest_oracle_root,
+            adapter.batch_manifest_root,
+            accumulator_instance.manifest_layout_digest,
+        ]);
+    }
+    raw_evaluations.push(manifest_values);
+    raw_evaluations.push(n7b_rows_to_babybear_values(&witness.source_columns));
+    raw_evaluations.extend(
+        witness
+            .message_oracles
+            .iter()
+            .map(n7b_typed_message_oracle_values),
+    );
+    if raw_evaluations.iter().any(Vec::is_empty) {
+        return None;
+    }
+    let (num_vars, evaluations) = n7b_pad_to_common_num_vars(raw_evaluations)?;
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.tuple_rlc_raw_values_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
+
+    let section_start = Instant::now();
+    let opening_schedule = WhirNativeOpeningSchedule::TranscriptDerived {
+        domain_separator: SYMBT3_RLC_TUPLE_LEAF_PACKING_DOMAIN,
+    };
+    let mut specs = Vec::with_capacity(evaluations.len());
+    specs.push(WhirNativeOracleSpec {
+        version: WHIR_NATIVE_ORACLE_DESCRIPTOR_VERSION,
+        oracle_id: SYMBT3_N2_MANIFEST_ORACLE_ID,
+        role: WhirNativeOracleRole::Manifest,
+        layout_digest: accumulator_instance.manifest_layout_digest,
+        num_vars,
+        opening_schedule: opening_schedule.clone(),
+    });
+    specs.push(WhirNativeOracleSpec {
+        version: WHIR_NATIVE_ORACLE_DESCRIPTOR_VERSION,
+        oracle_id: SYMBT3_N2_SOURCE_ORACLE_ID,
+        role: WhirNativeOracleRole::Source,
+        layout_digest: accumulator_instance.source_column_layout_digest,
+        num_vars,
+        opening_schedule: opening_schedule.clone(),
+    });
+    for (round, root) in accumulator_instance
+        .message_oracle_roots
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let round_u32 = u32::try_from(round).ok()?;
+        specs.push(WhirNativeOracleSpec {
+            version: WHIR_NATIVE_ORACLE_DESCRIPTOR_VERSION,
+            oracle_id: SYMBT3_N4_MESSAGE_ORACLE_ID_BASE.checked_add(round_u32)?,
+            role: WhirNativeOracleRole::MessageRound { round: round_u32 },
+            layout_digest: n7b_message_round_layout_digest(
+                accumulator_instance.message_semantic_layout_digest,
+                round,
+                root,
+            ),
+            num_vars,
+            opening_schedule: opening_schedule.clone(),
+        });
+    }
+    let eval_requests = specs
+        .iter()
+        .map(|spec| WhirNativeEvalRequest {
+            oracle_id: spec.oracle_id,
+            claim_kind: WhirNativeEvalClaimKind::DirectOpening,
+        })
+        .collect::<Vec<_>>();
+    validate_same_domain_tuple_leaf_inputs(&specs, &evaluations, &eval_requests).ok()?;
+
+    let mode = Symbt3NativeMultiOracleMode::SameDomainRlcTupleLeafV1;
+    let logical_oracle_count = specs.len();
+    let descriptor_digest = native_oracle_spec_digest(&specs);
+    let repetition_log_size =
+        symbt3_tuple_leaf_repetition_log_size(SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT)?;
+    let tuple_leaf_layout_digest = symbt3_tuple_leaf_layout_digest_for_repeated_rlc(
+        mode,
+        descriptor_digest,
+        logical_oracle_count,
+        num_vars,
+        SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT,
+        SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS,
+    );
+    let repeated_packing_challenges = symbt3_tuple_leaf_packing_challenges_for_repetitions(
+        mode,
+        adapter.main_symbt3_relation_id,
+        adapter.public_statement_digest,
+        adapter.whir_param_digest,
+        descriptor_digest,
+        tuple_leaf_layout_digest,
+        logical_oracle_count,
+        num_vars,
+        SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT,
+    )?;
+    let packing_challenge_digest =
+        symbt3_tuple_leaf_repeated_packing_challenge_digest(&repeated_packing_challenges);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.tuple_rlc_descriptor_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
+
+    let section_start = Instant::now();
+    let claim_kind = WhirNativeEvalClaimKind::DirectOpening;
+    let evals_by_id = specs
+        .iter()
+        .zip(evaluations.iter())
+        .map(|(spec, evaluations)| (spec.oracle_id, evaluations.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    let packed_num_vars = num_vars.checked_add(repetition_log_size)?;
+    let mut logical_claims =
+        Vec::with_capacity(eval_requests.len() * SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT);
+    let mut packed_eval_claims = Vec::with_capacity(SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT);
+    let mut packed_evaluations = Vec::new();
+    for (repetition_index, packing_challenges) in repeated_packing_challenges.iter().enumerate() {
+        let point = derive_same_domain_tuple_leaf_opening_point_for_repetition(
+            repetition_index,
+            adapter.main_symbt3_relation_id,
+            adapter.public_statement_digest,
+            adapter.whir_param_digest,
+            descriptor_digest,
+            tuple_leaf_layout_digest,
+            claim_kind,
+            num_vars,
+        );
+        let point_digest = native_oracle_point_digest(&point);
+        let mut repetition_claims = Vec::with_capacity(eval_requests.len());
+        for request in &eval_requests {
+            let evaluations = *evals_by_id.get(&request.oracle_id)?;
+            repetition_claims.push(WhirNativeOracleEvalClaim {
+                oracle_id: request.oracle_id,
+                point_digest,
+                value: mle_eval_bb(evaluations, &point),
+                claim_kind: request.claim_kind,
+            });
+        }
+        let logical_values = repetition_claims
+            .iter()
+            .map(|claim| claim.value)
+            .collect::<Vec<_>>();
+        let packed_value = symbt3_tuple_leaf_pack_values(packing_challenges, &logical_values)?;
+        let repetition_packed_evaluations =
+            symbt3_tuple_leaf_pack_evaluations(packing_challenges, &evaluations)?;
+        let mut packed_point = point;
+        packed_point.extend(tuple_leaf_boolean_point_for_index(
+            repetition_index,
+            repetition_log_size,
+        ));
+        let packed_point_digest = native_oracle_point_digest(&packed_point);
+        packed_eval_claims.push(Symbt3TupleLeafPackedEvalClaim {
+            point_digest: packed_point_digest,
+            value: packed_value,
+            claim_kind,
+        });
+        packed_evaluations.extend(repetition_packed_evaluations);
+        logical_claims.extend(repetition_claims);
+    }
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.tuple_rlc_claims_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
+
+    let section_start = Instant::now();
+    let packed_root = whir_initial_root_digest(
+        &pk.seed,
+        NativeOracleRootPolicy::CanonicalWhirRootV1,
+        packed_num_vars,
+        &packed_evaluations,
+    )?;
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.tuple_rlc_packed_root_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    }
+    let counters = tuple_leaf_counters_for(
+        logical_oracle_count,
+        logical_claims.len(),
+        num_vars,
+        SYMBT3_RLC_TUPLE_LEAF_REPETITION_COUNT,
+        SYMBT3_RLC_TUPLE_LEAF_BATCHING_BITS,
+    );
+    let proof = Symbt3TupleLeafMultiOracleProof {
+        version: SYMBT3_TUPLE_LEAF_MULTI_ORACLE_PROOF_VERSION,
+        mode,
+        proof_relation_id: adapter.main_symbt3_relation_id,
+        public_statement_digest: adapter.public_statement_digest,
+        whir_param_digest: adapter.whir_param_digest,
+        logical_descriptors: specs,
+        descriptor_digest,
+        tuple_leaf_layout_digest,
+        packing_challenge_digest,
+        packed_root,
+        packed_eval_claims,
+        logical_eval_claims: logical_claims,
+        whir_pcs_proof: WhirPcsProof::<F, EF, WhirMmcs>::default(),
+        counters,
+    };
+    let source_oracle_root = accumulator_instance.source_assignment_roots_digest;
+    let descriptors = proof
+        .logical_descriptors
+        .iter()
+        .zip(
+            std::iter::once(accumulator_instance.manifest_oracle_root)
+                .chain(std::iter::once(source_oracle_root))
+                .chain(accumulator_instance.message_oracle_roots.iter().copied()),
+        )
+        .map(|(spec, root)| spec.descriptor_with_root(root))
+        .collect::<Vec<_>>();
+    let native_oracle_descriptor_digest = native_oracle_descriptor_digest(&descriptors);
+    Some(Symbt3N7bNativeTupleLeafProofParts {
+        proof,
+        native_oracle_descriptor_digest,
+        native_message_roots_digest: adapter.native_message_roots_digest,
+        manifest_oracle_root: accumulator_instance.manifest_oracle_root,
+        source_oracle_root,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct N8DirectValidatedK6aSetupMaterialV1 {
+    relation_id: Digest32,
+    profile_digest: Digest32,
+    accumulator_instance_digest: Digest32,
+    public_statement_digest: Digest32,
+    whir_param_digest: Digest32,
+}
+
+fn n8_direct_timed_digest<T>(
+    digest_canonical_serialization_ms: &mut f64,
+    build: impl FnOnce() -> T,
+) -> T {
+    let start = Instant::now();
+    let value = build();
+    *digest_canonical_serialization_ms += start.elapsed().as_secs_f64() * 1_000.0;
+    value
+}
+
+fn n8_direct_product_non_zk_profile_ok(
+    profile: &Symbt3AuthorityProfile,
+    relation: &BatchedCpSymbt3RelationDescription,
+) -> bool {
+    profile.routing_status == crate::batched_cp::Symbt3RoutingStatus::ProductAuthority
+        && profile.product_eligible
+        && !profile.research_only
+        && profile.zk_status == crate::batched_cp::Symbt3ZkStatus::NonZkIntegrityOnly
+        && crate::batched_cp::product_policy_accepts_non_zk(profile)
+        && crate::batched_cp::profile_meets_accumulator_soundness_non_zk_integrity_product(profile)
+        && profile.accepts_relation_for_non_zk_integrity_product_authority(relation)
+}
+
+fn n8_direct_accumulator_instance_matches_prebuilt_statement(
+    profile_digest: Digest32,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    relation: &BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    digest_canonical_serialization_ms: &mut f64,
+) -> bool {
+    let scheme = relation.shape.accumulator_shape.digest_scheme;
+    let expected_source_assignment_roots_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+            crate::batched_cp::symbt3_digest_digest_vec(
+                scheme,
+                b"symbt3-k4-6-source-assignment-roots",
+                &accumulator_instance.source_assignment_roots,
+            )
+        });
+    let expected_source_ajtai_opening_roots_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+            crate::batched_cp::symbt3_digest_digest_vec(
+                scheme,
+                b"symbt3-k4-6-source-ajtai-opening-roots",
+                &accumulator_instance.source_ajtai_opening_roots,
+            )
+        });
+    let expected_message_oracle_roots_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+            crate::batched_cp::symbt3_digest_digest_vec(
+                scheme,
+                b"symbt3-k4-6-message-oracle-roots",
+                &accumulator_instance.message_oracle_roots,
+            )
+        });
+    let expected_batch_items_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+            crate::batched_cp::symbt3_batch_items_digest(
+                scheme,
+                &accumulator_instance.input_public_values,
+                &accumulator_instance.input_commitment_values,
+                &accumulator_instance.input_evaluation_values,
+                &accumulator_instance.input_accumulator_values,
+                &accumulator_instance.source_assignment_roots,
+                &accumulator_instance.message_oracle_roots,
+            )
+        });
+    let expected_public_source_boundary_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+            crate::batched_cp::symbt3_public_source_boundary_digest(
+                scheme,
+                &expected_source_assignment_roots_digest,
+                &accumulator_instance.source_assignment_boundary_digest,
+                &expected_source_ajtai_opening_roots_digest,
+                &accumulator_instance.source_ajtai_commitment_boundary_digest,
+            )
+        });
+    let statement_bytes_len = n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+        statement.canonical_bytes().len()
+    });
+
+    accumulator_instance.profile_digest == profile_digest
+        && accumulator_instance.shape_id == relation.shape.shape_id
+        && accumulator_instance.batch_capacity == relation.shape.batch_capacity
+        && accumulator_instance.active_count == relation.shape.active_count
+        && accumulator_instance.batch_items_digest == expected_batch_items_digest
+        && accumulator_instance.public_source_boundary_digest
+            == expected_public_source_boundary_digest
+        && accumulator_instance.source_assignment_roots_digest
+            == expected_source_assignment_roots_digest
+        && accumulator_instance.source_ajtai_opening_roots_digest
+            == expected_source_ajtai_opening_roots_digest
+        && accumulator_instance.message_oracle_roots_digest == expected_message_oracle_roots_digest
+        && statement.matches_relation(relation)
+        && statement_bytes_len == relation.public_statement_bytes()
+}
+
+fn n8_direct_validated_k6a_setup_material(
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    relation: &BatchedCpSymbt3RelationDescription,
+    digest_canonical_serialization_ms: &mut f64,
+) -> Option<(
+    crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    N8DirectValidatedK6aSetupMaterialV1,
+)> {
+    let scheme = relation.shape.accumulator_shape.digest_scheme;
+    let relation_id =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || relation.relation_id());
+    let profile_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || profile.digest(scheme));
+    if !n8_direct_product_non_zk_profile_ok(profile, relation)
+        || profile.semantic_profile_version < 1
+    {
+        return None;
+    }
+    let statement = accumulator_instance.to_public_statement();
+    if !n8_direct_accumulator_instance_matches_prebuilt_statement(
+        profile_digest,
+        accumulator_instance,
+        relation,
+        &statement,
+        digest_canonical_serialization_ms,
+    ) {
+        return None;
+    }
+    let public_statement_digest = n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+        derive_symbt3_public_statement_digest(relation, &statement)
+    });
+    let accumulator_instance_digest =
+        n8_direct_timed_digest(digest_canonical_serialization_ms, || {
+            accumulator_instance.digest(scheme)
+        });
+    let whir_param_digest = statement.whir_parameter_digest;
+    Some((
+        statement,
+        N8DirectValidatedK6aSetupMaterialV1 {
+            relation_id,
+            profile_digest,
+            accumulator_instance_digest,
+            public_statement_digest,
+            whir_param_digest,
+        },
+    ))
+}
+
 fn symbt3_k6a_relation_from_context(context: &[u8]) -> Option<BatchedCpSymbt3RelationDescription> {
     BatchedCpSymbt3RelationDescription::from_context_bytes(context).ok()
 }
@@ -10087,6 +12056,221 @@ fn symbt3_native_accumulator_k6a_workload_adapter_from_relation_and_proof(
         source_r1cs_residual_verifier_evaluations: 1,
     };
     symbt3_native_accumulator_k6a_workload_adapter_from_parts((&adapter).into())
+}
+
+#[cfg(test)]
+fn symbt3_native_accumulator_k6a_workload_adapter_from_relation_and_semantic_source(
+    relation: &BatchedCpSymbt3RelationDescription,
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    proof_kind: ProductProofKind,
+    source: &Symbt3N8K6aSemanticSourceV1,
+) -> Option<Symbt3NativeAccumulatorK6aWorkloadAdapter> {
+    let statement = super::symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+        profile,
+        accumulator_instance,
+        relation,
+    )?;
+    symbt3_native_accumulator_k6a_workload_adapter_from_relation_statement_and_semantic_source(
+        relation,
+        profile,
+        accumulator_instance,
+        &statement,
+        proof_kind,
+        source,
+    )
+}
+
+#[cfg(test)]
+fn symbt3_native_accumulator_k6a_workload_adapter_from_relation_statement_and_semantic_source(
+    relation: &BatchedCpSymbt3RelationDescription,
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    proof_kind: ProductProofKind,
+    source: &Symbt3N8K6aSemanticSourceV1,
+) -> Option<Symbt3NativeAccumulatorK6aWorkloadAdapter> {
+    if proof_kind != ProductProofKind::Symbt3AccumulatorNonZkIntegrity
+        || source.source_digest == [0u8; 32]
+        || source.relation_id != relation.relation_id()
+        || source.num_vars == 0
+        || source.oracle_len != symbt3_n8_oracle_len(source.num_vars)?
+        || source.verifier_claims.is_empty()
+        || source.verifier_points.len() != source.verifier_claims.len()
+        || source
+            .final_residuals
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+        || !crate::batched_cp::profile_meets_accumulator_soundness_non_zk_integrity_product(profile)
+        || !crate::batched_cp::product_policy_accepts_non_zk(profile)
+        || !profile.accepts_relation_for_non_zk_integrity_product_authority(relation)
+        || !accumulator_instance.matches_profile_and_relation(profile, relation)
+    {
+        return None;
+    }
+    let public_statement_digest = derive_symbt3_public_statement_digest(relation, statement);
+    if source.public_statement_digest != public_statement_digest
+        || source.whir_param_digest != statement.whir_parameter_digest
+        || !profile.accepts_statement_for_non_zk_integrity_product_authority(relation, statement)
+    {
+        return None;
+    }
+    let scheme = relation.shape.accumulator_shape.digest_scheme;
+    let adapter = Symbt3NativeAccumulatorK6aWorkloadAdapter {
+        workload_kind: Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1,
+        full_accumulator_workload: true,
+        smoke_profile: false,
+        proof_kind,
+        profile_digest: profile.digest(scheme),
+        accumulator_instance_digest: accumulator_instance.digest(scheme),
+        public_statement_digest,
+        whir_param_digest: statement.whir_parameter_digest,
+        main_symbt3_relation_id: relation.relation_id(),
+        main_symbt3_proof_digest: source.source_digest,
+        old_accumulator_digest: statement.old_accumulator_digest,
+        new_accumulator_digest: statement.new_accumulator_digest,
+        batch_manifest_root: statement.batch_manifest_root,
+        manifest_oracle_root: statement.manifest_oracle_root,
+        native_message_roots_digest: accumulator_instance.message_oracle_roots_digest,
+        batch_size: statement.batch_capacity as u64,
+        active_count: statement.active_count as u64,
+        main_whir_num_vars: source.num_vars,
+        main_oracle_len: source.oracle_len,
+        top_level_whir_proof_count: 1,
+        family_columnar_subproof_count: 0,
+        backend_table_count: 1,
+        accumulator_transition_claims: 1,
+        source_r1cs_residual_verifier_evaluations: 1,
+    };
+    symbt3_native_accumulator_k6a_workload_adapter_from_parts((&adapter).into())
+}
+
+fn symbt3_native_accumulator_k6a_workload_adapter_from_validated_direct_material(
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    proof_kind: ProductProofKind,
+    source: &Symbt3N8K6aSemanticSourceV1,
+    material: N8DirectValidatedK6aSetupMaterialV1,
+) -> Option<Symbt3NativeAccumulatorK6aWorkloadAdapter> {
+    if proof_kind != ProductProofKind::Symbt3AccumulatorNonZkIntegrity
+        || source.source_digest == [0u8; 32]
+        || source.relation_id != material.relation_id
+        || source.public_statement_digest != material.public_statement_digest
+        || source.whir_param_digest != material.whir_param_digest
+        || source.num_vars == 0
+        || source.oracle_len != symbt3_n8_oracle_len(source.num_vars)?
+        || source.verifier_claims.is_empty()
+        || source.verifier_points.len() != source.verifier_claims.len()
+        || source
+            .final_residuals
+            .iter()
+            .any(|&value| value != BabyBear::ZERO)
+        || statement.whir_parameter_digest != material.whir_param_digest
+    {
+        return None;
+    }
+    let adapter = Symbt3NativeAccumulatorK6aWorkloadAdapter {
+        workload_kind: Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1,
+        full_accumulator_workload: true,
+        smoke_profile: false,
+        proof_kind,
+        profile_digest: material.profile_digest,
+        accumulator_instance_digest: material.accumulator_instance_digest,
+        public_statement_digest: material.public_statement_digest,
+        whir_param_digest: material.whir_param_digest,
+        main_symbt3_relation_id: material.relation_id,
+        main_symbt3_proof_digest: source.source_digest,
+        old_accumulator_digest: statement.old_accumulator_digest,
+        new_accumulator_digest: statement.new_accumulator_digest,
+        batch_manifest_root: statement.batch_manifest_root,
+        manifest_oracle_root: statement.manifest_oracle_root,
+        native_message_roots_digest: accumulator_instance.message_oracle_roots_digest,
+        batch_size: statement.batch_capacity as u64,
+        active_count: statement.active_count as u64,
+        main_whir_num_vars: source.num_vars,
+        main_oracle_len: source.oracle_len,
+        top_level_whir_proof_count: 1,
+        family_columnar_subproof_count: 0,
+        backend_table_count: 1,
+        accumulator_transition_claims: 1,
+        source_r1cs_residual_verifier_evaluations: 1,
+    };
+    symbt3_native_accumulator_k6a_workload_adapter_from_parts((&adapter).into())
+}
+
+#[must_use]
+pub fn build_n8_semantic_inputs_from_k6a_witness(
+    pk: &WhirProvingKey,
+    profile: &Symbt3AuthorityProfile,
+    accumulator_instance: &Symbt3AccumulatorInstance,
+    witness: &Symbt3AccumulatorWitness,
+) -> Option<N8DirectSemanticInputsV1> {
+    let total_start = Instant::now();
+    let mut build_profile = N8DirectSemanticInputBuildProfileV1::default();
+
+    let relation_statement_start = Instant::now();
+    let section_start = Instant::now();
+    let relation = symbt3_k6a_relation_from_context(pk.relation.context.as_ref()?)?;
+    build_profile.k6a_relation_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let (statement, setup_material) = n8_direct_validated_k6a_setup_material(
+        profile,
+        accumulator_instance,
+        &relation,
+        &mut build_profile.digest_canonical_serialization_ms,
+    )?;
+    build_profile.k6a_public_statement_construction_ms =
+        section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let symbt3_witness = witness.to_symbt3_witness(&relation)?;
+    build_profile.k6a_witness_conversion_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    build_profile.relation_statement_ms =
+        relation_statement_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let k6a_semantic_source = symbt3_n8_k6a_semantic_source_from_witness_with_public_digest(
+        &pk.seed,
+        &relation,
+        &statement,
+        &symbt3_witness,
+        Some(setup_material.public_statement_digest),
+        Some(setup_material.relation_id),
+        Some(&mut build_profile.digest_canonical_serialization_ms),
+    )?;
+    build_profile.k6a_claim_extraction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let k6a_adapter =
+        symbt3_native_accumulator_k6a_workload_adapter_from_validated_direct_material(
+            &statement,
+            accumulator_instance,
+            ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+            &k6a_semantic_source,
+            setup_material,
+        )?;
+    build_profile.adapter_construction_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+
+    let section_start = Instant::now();
+    let native_tuple_leaf = build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness_profiled(
+        pk,
+        accumulator_instance,
+        witness,
+        &k6a_adapter,
+        Some(&mut build_profile),
+    )?;
+    build_profile.tuple_rlc_input_ms = section_start.elapsed().as_secs_f64() * 1_000.0;
+    build_profile.total_ms = total_start.elapsed().as_secs_f64() * 1_000.0;
+
+    Some(N8DirectSemanticInputsV1 {
+        relation,
+        statement,
+        k6a_semantic_source,
+        k6a_adapter,
+        native_tuple_leaf,
+        profile: build_profile,
+    })
 }
 
 #[must_use]
@@ -13573,7 +15757,7 @@ fn whir_initial_root_digest(
     num_variables: usize,
     evaluations: &[BabyBear],
 ) -> Option<Digest32> {
-    let (proof, _) = whir_commit_and_prove_multi(seed, num_variables, evaluations, &[]);
+    let proof = whir_commit_initial_root_only(seed, num_variables, evaluations)?;
     whir_pcs_initial_root_digest(&proof, root_policy)
 }
 
@@ -17345,6 +19529,332 @@ mod tests {
         (fixture, proof, descriptor)
     }
 
+    fn direct_semantic_n8_descriptor_for_test(
+        batch_size: usize,
+    ) -> (
+        K6aAdapterFixture,
+        N8DirectSemanticInputsV1,
+        Symbt3IntegratedK6aNativeWhirRelationV1,
+    ) {
+        let fixture = k6a_adapter_fixture_with_batch_size(batch_size);
+        let inputs = build_n8_semantic_inputs_from_k6a_witness(
+            &fixture.pk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+        )
+        .expect("direct N8 semantic inputs");
+        let descriptor =
+            build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs(
+                &inputs,
+            )
+            .expect("direct N8 descriptor");
+        (fixture, inputs, descriptor)
+    }
+
+    fn reference_n8_semantic_inputs_from_k6a_witness_for_test(
+        pk: &WhirProvingKey,
+        profile: &Symbt3AuthorityProfile,
+        accumulator_instance: &Symbt3AccumulatorInstance,
+        witness: &Symbt3AccumulatorWitness,
+    ) -> Option<N8DirectSemanticInputsV1> {
+        let relation = symbt3_k6a_relation_from_context(pk.relation.context.as_ref()?)?;
+        let statement =
+            super::super::symbt3_accumulator_product_non_zk_integrity_statement_for_relation(
+                profile,
+                accumulator_instance,
+                &relation,
+            )?;
+        let symbt3_witness = witness.to_symbt3_witness(&relation)?;
+        let k6a_semantic_source = symbt3_n8_k6a_semantic_source_from_witness(
+            &pk.seed,
+            &relation,
+            &statement,
+            &symbt3_witness,
+        )?;
+        let k6a_adapter =
+            symbt3_native_accumulator_k6a_workload_adapter_from_relation_statement_and_semantic_source(
+                &relation,
+                profile,
+                accumulator_instance,
+                &statement,
+                ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+                &k6a_semantic_source,
+            )?;
+        let native_tuple_leaf = build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness(
+            pk,
+            accumulator_instance,
+            witness,
+            &k6a_adapter,
+        )?;
+        Some(N8DirectSemanticInputsV1 {
+            relation,
+            statement,
+            k6a_semantic_source,
+            k6a_adapter,
+            native_tuple_leaf,
+            profile: N8DirectSemanticInputBuildProfileV1::default(),
+        })
+    }
+
+    #[test]
+    fn symbt3_n8_optimized_direct_setup_matches_reference_direct_setup() {
+        for batch_size in [1usize, 2] {
+            let fixture = k6a_adapter_fixture_with_batch_size(batch_size);
+            let optimized = build_n8_semantic_inputs_from_k6a_witness(
+                &fixture.pk,
+                &fixture.profile,
+                &fixture.accumulator_instance,
+                &fixture.accumulator_witness,
+            )
+            .expect("optimized direct N8 semantic inputs");
+            let reference = reference_n8_semantic_inputs_from_k6a_witness_for_test(
+                &fixture.pk,
+                &fixture.profile,
+                &fixture.accumulator_instance,
+                &fixture.accumulator_witness,
+            )
+            .expect("reference direct N8 semantic inputs");
+
+            assert_eq!(optimized.relation, reference.relation);
+            assert_eq!(optimized.statement, reference.statement);
+            assert_eq!(optimized.k6a_semantic_source, reference.k6a_semantic_source);
+            assert_eq!(optimized.k6a_adapter, reference.k6a_adapter);
+            assert_eq!(
+                optimized.native_tuple_leaf.proof.packed_root,
+                reference.native_tuple_leaf.proof.packed_root
+            );
+            assert_eq!(
+                optimized.native_tuple_leaf.proof.logical_eval_claims,
+                reference.native_tuple_leaf.proof.logical_eval_claims
+            );
+            assert_eq!(
+                optimized.native_tuple_leaf.proof.packed_eval_claims,
+                reference.native_tuple_leaf.proof.packed_eval_claims
+            );
+            assert_eq!(
+                optimized.native_tuple_leaf.native_oracle_descriptor_digest,
+                reference.native_tuple_leaf.native_oracle_descriptor_digest
+            );
+        }
+    }
+
+    fn assert_direct_n8_rows_match_source_proof_extraction(batch_size: usize) {
+        let (fixture, direct_inputs, direct_descriptor) =
+            direct_semantic_n8_descriptor_for_test(batch_size);
+        let source_proof = prove_symbt3_native_accumulator_authority_full_non_zk(
+            &fixture.pk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+        )
+        .expect("reference N7b source proof");
+        let source = symbt3_n8_k6a_semantic_source_from_proof(
+            &fixture.pk.seed,
+            &direct_inputs.relation,
+            &direct_inputs.statement,
+            &source_proof.k6a_main_proof,
+        )
+        .expect("source-proof-extracted K6a semantic material");
+        assert_eq!(source, direct_inputs.k6a_semantic_source);
+        let adapter =
+            symbt3_native_accumulator_k6a_workload_adapter_from_relation_and_semantic_source(
+                &direct_inputs.relation,
+                &fixture.profile,
+                &fixture.accumulator_instance,
+                ProductProofKind::Symbt3AccumulatorNonZkIntegrity,
+                &source,
+            )
+            .expect("source-material adapter");
+        let reference_inputs = N8DirectSemanticInputsV1 {
+            relation: direct_inputs.relation.clone(),
+            statement: direct_inputs.statement.clone(),
+            k6a_semantic_source: source,
+            k6a_adapter: adapter,
+            native_tuple_leaf: source_proof.wrapper.native_tuple_leaf,
+            profile: N8DirectSemanticInputBuildProfileV1::default(),
+        };
+        assert_eq!(
+            reference_inputs.native_tuple_leaf.proof.packed_root,
+            direct_inputs.native_tuple_leaf.proof.packed_root,
+            "direct tuple root must match source-proof tuple root"
+        );
+        let reference_descriptor =
+            build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs(
+                &reference_inputs,
+            )
+            .expect("reference descriptor from source proof material");
+        assert_eq!(
+            direct_descriptor.k6a_semantic_constraints.rows,
+            reference_descriptor.k6a_semantic_constraints.rows
+        );
+        assert_eq!(
+            direct_descriptor.tuple_rlc_semantic_constraints.rows,
+            reference_descriptor.tuple_rlc_semantic_constraints.rows
+        );
+        assert_eq!(
+            direct_descriptor
+                .transition_binding_semantic_constraints
+                .rows,
+            reference_descriptor
+                .transition_binding_semantic_constraints
+                .rows
+        );
+        assert_eq!(
+            direct_descriptor.real_evaluator.rows,
+            reference_descriptor.real_evaluator.rows
+        );
+        assert_eq!(
+            direct_descriptor.transcript_binding_digest,
+            reference_descriptor.transcript_binding_digest
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_direct_builder_rows_match_source_proof_extracted_rows_k1() {
+        assert_direct_n8_rows_match_source_proof_extraction(1);
+    }
+
+    #[test]
+    fn symbt3_n8_direct_builder_rows_match_source_proof_extracted_rows_k2() {
+        assert_direct_n8_rows_match_source_proof_extraction(2);
+    }
+
+    #[test]
+    fn symbt3_n8_direct_builder_uses_claim_material_digest_not_k6a_proof_digest() {
+        let (fixture, inputs, _descriptor) = direct_semantic_n8_descriptor_for_test(1);
+        assert_eq!(
+            inputs.k6a_adapter.main_symbt3_proof_digest,
+            inputs.k6a_semantic_source.source_digest
+        );
+        assert_ne!(
+            inputs.k6a_adapter.main_symbt3_proof_digest,
+            symbt3_main_whir_proof_digest(&fixture.proof),
+            "direct N8 must not bind the harness-built K6a proof digest"
+        );
+        assert_eq!(
+            serde_json::to_value(&inputs.native_tuple_leaf.proof.whir_pcs_proof)
+                .expect("direct tuple PCS placeholder serializes"),
+            serde_json::to_value(WhirPcsProof::<F, EF, WhirMmcs>::default())
+                .expect("default tuple PCS placeholder serializes")
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_direct_tuple_leaf_profiled_matches_unprofiled() {
+        let (fixture, inputs, _descriptor) = direct_semantic_n8_descriptor_for_test(1);
+        let unprofiled = build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness(
+            &fixture.pk,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+            &inputs.k6a_adapter,
+        )
+        .expect("unprofiled direct tuple leaf");
+        let mut profile = N8DirectSemanticInputBuildProfileV1::default();
+        let profiled = build_symbt3_n8_direct_native_tuple_leaf_from_k6a_witness_profiled(
+            &fixture.pk,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+            &inputs.k6a_adapter,
+            Some(&mut profile),
+        )
+        .expect("profiled direct tuple leaf");
+
+        assert_eq!(profiled.proof.packed_root, unprofiled.proof.packed_root);
+        assert_eq!(
+            profiled.proof.packed_root,
+            inputs.native_tuple_leaf.proof.packed_root
+        );
+        assert_eq!(
+            profiled.proof.packed_eval_claims,
+            unprofiled.proof.packed_eval_claims
+        );
+        assert_eq!(
+            profiled.proof.logical_eval_claims,
+            unprofiled.proof.logical_eval_claims
+        );
+        assert_eq!(
+            profiled.native_oracle_descriptor_digest,
+            unprofiled.native_oracle_descriptor_digest
+        );
+        assert!(profile.tuple_rlc_input_ms == 0.0);
+        assert!(profile.tuple_rlc_raw_values_ms >= 0.0);
+        assert!(profile.tuple_rlc_descriptor_ms >= 0.0);
+        assert!(profile.tuple_rlc_claims_ms >= 0.0);
+        assert!(profile.tuple_rlc_packed_root_ms >= 0.0);
+    }
+
+    #[test]
+    fn symbt3_n8_root_only_commit_matches_full_empty_opening_proof_root() {
+        let seed = [0x42u8; 32];
+        let num_variables = 4;
+        let evaluations = (0..(1usize << num_variables))
+            .map(|value| BabyBear::from_u32((value as u32).wrapping_mul(17).wrapping_add(3)))
+            .collect::<Vec<_>>();
+        let root_only = whir_initial_root_digest(
+            &seed,
+            NativeOracleRootPolicy::CanonicalWhirRootV1,
+            num_variables,
+            &evaluations,
+        )
+        .expect("root-only WHIR commitment digest");
+        let (proof, openings) =
+            whir_commit_and_prove_multi(&seed, num_variables, &evaluations, &[]);
+        assert!(openings.is_empty());
+        let full_proof_root =
+            whir_pcs_initial_root_digest(&proof, NativeOracleRootPolicy::CanonicalWhirRootV1)
+                .expect("full WHIR proof root");
+        assert_eq!(root_only, full_proof_root);
+    }
+
+    #[test]
+    fn symbt3_n8_root_only_tuple_leaf_is_not_standalone_verifier_authoritative() {
+        let fixture = k6a_adapter_fixture_with_batch_size(1);
+        let inputs = build_n8_semantic_inputs_from_k6a_witness(
+            &fixture.pk,
+            &fixture.profile,
+            &fixture.accumulator_instance,
+            &fixture.accumulator_witness,
+        )
+        .expect("direct N8 semantic inputs");
+        assert_eq!(
+            serde_json::to_value(&inputs.native_tuple_leaf.proof.whir_pcs_proof)
+                .expect("direct tuple PCS placeholder serializes"),
+            serde_json::to_value(WhirPcsProof::<F, EF, WhirMmcs>::default())
+                .expect("default tuple PCS placeholder serializes")
+        );
+        assert!(
+            !whir_verify_same_domain_multi_oracle(
+                &fixture.vk,
+                inputs.k6a_adapter.main_symbt3_relation_id,
+                inputs.k6a_adapter.public_statement_digest,
+                inputs.k6a_adapter.whir_param_digest,
+                &inputs.native_tuple_leaf.proof,
+                &inputs.native_tuple_leaf.proof.logical_eval_claims,
+            ),
+            "N8's root-only tuple leaf is prover material for the integrated proof, not a standalone verifier proof"
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_direct_builder_authority_candidate_verifies() {
+        let (fixture, _inputs, descriptor) = direct_semantic_n8_descriptor_for_test(1);
+        let plan = build_n8_integrated_whir_proof_plan(
+            &N8IntegratedWhirProofInputs::from_descriptor(&descriptor),
+        )
+        .expect("direct N8 proof plan builds");
+        let output = prove_symbt3_integrated_whir_from_claim_plan(&fixture.pk, &descriptor, &plan)
+            .expect("direct N8 integrated output");
+        let backend_report = verify_symbt3_integrated_whir_backend_from_verifier_input(
+            &fixture.vk,
+            &output.verifier_input(&descriptor),
+        );
+        assert!(backend_report.ok);
+        let authority_report =
+            verify_symbt3_n8_integrated_prover_output_authority_gate(&descriptor, &output);
+        assert!(authority_report.ok);
+    }
+
     fn semantic_n8_output_fixture_for_test() -> (
         K6aAdapterFixture,
         Symbt3N7bFullAuthorityProof,
@@ -17809,6 +20319,16 @@ mod tests {
             plan.combined_bridge_claim_descriptor_digest,
             n8_integrated_whir_claim_bridge_descriptors_digest(&plan.bridge_claim_descriptors)
         );
+        assert_eq!(plan.semantic_batching.version, N8_SEMANTIC_BATCHING_VERSION);
+        assert!(plan.semantic_batching.enabled);
+        assert_eq!(
+            plan.semantic_batching.descriptor_binding_digest,
+            n8_semantic_batching_binding_digest(&descriptor)
+        );
+        assert_eq!(
+            plan.semantic_batching.descriptor_digest,
+            n8_semantic_batching_descriptor_digest(&plan.semantic_batching)
+        );
         assert_ne!(plan.transcript_digest, [0u8; 32]);
         assert_eq!(
             plan.transcript_digest,
@@ -17993,9 +20513,205 @@ mod tests {
         );
         assert_eq!(
             output.query_schedule.query_claims,
-            n8_integrated_whir_real_query_claims(&descriptor.real_evaluator)
-                .expect("real query claims derive from integrated evaluator")
+            n8_integrated_whir_real_query_claims(
+                &descriptor.real_evaluator,
+                &output.proof_plan.semantic_batching,
+            )
+            .expect("real query claims derive from integrated evaluator")
         );
+    }
+
+    #[test]
+    fn symbt3_n8_semantic_batching_challenges_are_domain_separated() {
+        let (_fixture, _proof, descriptor, _vk, output) = semantic_n8_output_fixture_for_test();
+        let batching = output.proof_plan.semantic_batching;
+
+        assert_eq!(
+            batching.descriptor_binding_digest,
+            n8_semantic_batching_binding_digest(&descriptor)
+        );
+        assert!(batching.k6a_source.enabled);
+        assert_ne!(
+            batching.k6a_source.descriptor.challenge_point_digest,
+            [0u8; 32]
+        );
+        assert_ne!(batching.k6a.challenge_point_digest, [0u8; 32]);
+        assert_ne!(batching.tuple_rlc.challenge_point_digest, [0u8; 32]);
+        assert_ne!(
+            batching.transition_binding.challenge_point_digest,
+            [0u8; 32]
+        );
+        assert_ne!(
+            batching.k6a_source.descriptor.challenge_point_digest,
+            batching.k6a.challenge_point_digest
+        );
+        assert_ne!(
+            batching.k6a_source.descriptor.challenge_point_digest,
+            batching.tuple_rlc.challenge_point_digest
+        );
+        assert_ne!(
+            batching.k6a_source.descriptor.challenge_point_digest,
+            batching.transition_binding.challenge_point_digest
+        );
+        assert_ne!(
+            batching.k6a.challenge_point_digest,
+            batching.tuple_rlc.challenge_point_digest
+        );
+        assert_ne!(
+            batching.k6a.challenge_point_digest,
+            batching.transition_binding.challenge_point_digest
+        );
+        assert_ne!(
+            batching.tuple_rlc.challenge_point_digest,
+            batching.transition_binding.challenge_point_digest
+        );
+        assert_eq!(
+            batching.effective_soundness_bits,
+            N8_SEMANTIC_BATCHING_CHALLENGE_SOUNDNESS_BITS
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_semantic_batching_reduces_opening_count() {
+        let (_fixture, _proof, descriptor, _vk, output) = semantic_n8_output_fixture_for_test();
+        let k6a_source_rows = descriptor
+            .real_evaluator
+            .rows
+            .iter()
+            .filter(|row| n8_integrated_evaluator_row_is_k6a_source(row))
+            .count();
+        let batching = output.proof_plan.semantic_batching;
+        assert_eq!(
+            batching.k6a_source.unbatched_source_opening_count,
+            k6a_source_rows
+        );
+        assert_eq!(batching.k6a_source.batched_source_opening_count, 1);
+        let expected_openings = batching
+            .k6a_source
+            .batched_source_opening_count
+            .saturating_add(batching.k6a.batched_query_count)
+            .saturating_add(batching.tuple_rlc.batched_query_count)
+            .saturating_add(batching.transition_binding.batched_query_count);
+
+        assert_eq!(output.query_schedule.query_claims.len(), expected_openings);
+        assert_eq!(output.query_schedule.query_claims.len(), 4);
+        assert!(output.query_schedule.query_claims.len() < descriptor.real_evaluator.rows.len());
+        assert_eq!(
+            batching.unbatched_semantic_opening_count,
+            batching
+                .k6a
+                .source_row_count
+                .saturating_add(batching.tuple_rlc.source_row_count)
+                .saturating_add(batching.transition_binding.source_row_count)
+        );
+        assert_eq!(
+            batching.batched_semantic_opening_count,
+            batching
+                .k6a
+                .batched_query_count
+                .saturating_add(batching.tuple_rlc.batched_query_count)
+                .saturating_add(batching.transition_binding.batched_query_count)
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_semantic_batching_descriptor_mutation_rejects() {
+        let (_fixture, _proof, descriptor, _vk, output) = semantic_n8_output_fixture_for_test();
+        let mut bad_output = output.clone();
+        bad_output
+            .proof_plan
+            .semantic_batching
+            .k6a
+            .challenge_point_digest[0] ^= 0x01;
+        bad_output
+            .proof_plan
+            .semantic_batching
+            .k6a
+            .descriptor_digest = n8_semantic_batching_family_descriptor_digest(
+            &bad_output.proof_plan.semantic_batching.k6a,
+        );
+        bad_output.proof_plan.semantic_batching.descriptor_digest =
+            n8_semantic_batching_descriptor_digest(&bad_output.proof_plan.semantic_batching);
+        bad_output.proof_plan.transcript_digest =
+            n8_integrated_whir_proof_plan_transcript_digest(&bad_output.proof_plan);
+
+        let report =
+            verify_symbt3_n8_integrated_prover_output_authority_gate(&descriptor, &bad_output);
+        assert_eq!(
+            report.blocker,
+            Some(Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch)
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_k6a_source_row_batching_descriptor_mutation_rejects() {
+        let (_fixture, _proof, descriptor, _vk, output) = semantic_n8_output_fixture_for_test();
+        let mut bad_output = output.clone();
+        bad_output
+            .proof_plan
+            .semantic_batching
+            .k6a_source
+            .descriptor
+            .row_digest[0] ^= 0x01;
+        bad_output
+            .proof_plan
+            .semantic_batching
+            .k6a_source
+            .descriptor
+            .descriptor_digest = n8_semantic_batching_family_descriptor_digest(
+            &bad_output
+                .proof_plan
+                .semantic_batching
+                .k6a_source
+                .descriptor,
+        );
+        bad_output
+            .proof_plan
+            .semantic_batching
+            .k6a_source
+            .descriptor_digest = n8_k6a_source_row_batching_descriptor_digest(
+            &bad_output.proof_plan.semantic_batching.k6a_source,
+        );
+        bad_output.proof_plan.semantic_batching.descriptor_digest =
+            n8_semantic_batching_descriptor_digest(&bad_output.proof_plan.semantic_batching);
+        bad_output.proof_plan.transcript_digest =
+            n8_integrated_whir_proof_plan_transcript_digest(&bad_output.proof_plan);
+
+        let report =
+            verify_symbt3_n8_integrated_prover_output_authority_gate(&descriptor, &bad_output);
+        assert_eq!(
+            report.blocker,
+            Some(Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch)
+        );
+    }
+
+    #[test]
+    fn symbt3_n8_semantic_batching_row_mutations_still_reject() {
+        let (_fixture, _proof, descriptor, _vk, output) = semantic_n8_output_fixture_for_test();
+        for row_kind in [
+            RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1,
+            RealIntegratedK6aNativeEvaluatorRowKindV1::K6aSemanticFinalResidualZeroV1,
+            RealIntegratedK6aNativeEvaluatorRowKindV1::NativeTupleLeafRlcBindingResidualV1,
+            RealIntegratedK6aNativeEvaluatorRowKindV1::AccumulatorTransitionBindingClaimV1,
+        ] {
+            let mut bad_descriptor = descriptor.clone();
+            bad_descriptor
+                .real_evaluator
+                .rows
+                .iter_mut()
+                .find(|row| row.kind == row_kind)
+                .expect("batched semantic row exists")
+                .value += BabyBear::ONE;
+            let report =
+                verify_symbt3_n8_integrated_prover_output_authority_gate(&bad_descriptor, &output);
+            assert!(matches!(
+                report.blocker,
+                Some(
+                    Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch
+                        | Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch
+                )
+            ));
+        }
     }
 
     #[test]
@@ -18053,10 +20769,13 @@ mod tests {
             .value += BabyBear::ONE;
         let report =
             verify_symbt3_n8_integrated_prover_output_authority_gate(&bad_descriptor, &output);
-        assert_eq!(
+        assert!(matches!(
             report.blocker,
-            Some(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch)
-        );
+            Some(
+                Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch
+                    | Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch
+            )
+        ));
 
         let mut bad_descriptor = descriptor.clone();
         bad_descriptor
@@ -18071,10 +20790,13 @@ mod tests {
             .value += BabyBear::ONE;
         let report =
             verify_symbt3_n8_integrated_prover_output_authority_gate(&bad_descriptor, &output);
-        assert_eq!(
+        assert!(matches!(
             report.blocker,
-            Some(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch)
-        );
+            Some(
+                Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch
+                    | Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch
+            )
+        ));
 
         let mut bad_descriptor = descriptor.clone();
         bad_descriptor
@@ -18089,10 +20811,13 @@ mod tests {
             .value += BabyBear::ONE;
         let report =
             verify_symbt3_n8_integrated_prover_output_authority_gate(&bad_descriptor, &output);
-        assert_eq!(
+        assert!(matches!(
             report.blocker,
-            Some(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch)
-        );
+            Some(
+                Symbt3N8IntegratedPrototypeBlocker::DescriptorPlanMismatch
+                    | Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirQueryScheduleMismatch
+            )
+        ));
 
         let mut bad_descriptor = descriptor.clone();
         bad_descriptor.public_statement_digest[0] ^= 0x01;

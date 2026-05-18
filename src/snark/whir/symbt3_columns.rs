@@ -7,6 +7,7 @@ struct Symbt3CClaims {
     z_eval: BabyBear,
     num_vars: usize,
     product_sumcheck_rounds: Vec<[BabyBear; 4]>,
+    public_statement_digest: crate::snark::Digest32,
     eval_profile: Symbt3VerifierCostProfile,
 }
 
@@ -17,6 +18,26 @@ fn symbt3_c_table_and_claims(
     witness: Option<&crate::batched_cp::BatchedCpSymbt3Witness>,
     claimed_override: Option<&[BabyBear]>,
     product_sumcheck_rounds_override: Option<&[[BabyBear; 4]]>,
+) -> Option<Symbt3CClaims> {
+    symbt3_c_table_and_claims_with_public_digest(
+        seed,
+        relation,
+        statement,
+        witness,
+        claimed_override,
+        product_sumcheck_rounds_override,
+        None,
+    )
+}
+
+fn symbt3_c_table_and_claims_with_public_digest(
+    seed: &[u8; 32],
+    relation: &crate::batched_cp::BatchedCpSymbt3RelationDescription,
+    statement: &crate::batched_cp::BatchedCpSymbt3PublicStatement,
+    witness: Option<&crate::batched_cp::BatchedCpSymbt3Witness>,
+    claimed_override: Option<&[BabyBear]>,
+    product_sumcheck_rounds_override: Option<&[[BabyBear; 4]]>,
+    public_statement_digest_override: Option<crate::snark::Digest32>,
 ) -> Option<Symbt3CClaims> {
     let mut eval_profile = Symbt3VerifierCostProfile::default();
     if !statement.matches_relation(relation) || !relation.has_symbt3_i_families() {
@@ -323,8 +344,9 @@ fn symbt3_c_table_and_claims(
         return None;
     }
 
-    let public_digest =
-        crate::batched_cp::derive_symbt3_public_statement_digest(relation, statement);
+    let public_digest = public_statement_digest_override.unwrap_or_else(|| {
+        crate::batched_cp::derive_symbt3_public_statement_digest(relation, statement)
+    });
     let mut transcript = Vec::new();
     transcript.extend_from_slice(b"symphony-symbt3-c-coordinate-zeta-v1");
     transcript.extend_from_slice(seed);
@@ -504,6 +526,7 @@ fn symbt3_c_table_and_claims(
         z_eval: folded_commitment_eval,
         num_vars,
         product_sumcheck_rounds,
+        public_statement_digest: public_digest,
         eval_profile,
     })
 }

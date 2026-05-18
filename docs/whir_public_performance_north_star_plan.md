@@ -1817,10 +1817,11 @@ transcript work, and the tuple-leaf PCS multi-opening verification proxy.
 The N7b canonical proof bytes now serialize the tuple-leaf WHIR PCS proof with
 the compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. This is the
 actual canonical N7b proof serialization used by
-`symbt3_n7b_full_authority_proof_size_hint`, not just a benchmark accounting
-estimate. The compact payload is decoded back into the same `WhirPcsProof`
-value before verification, and the serialization test requires the reported
-section total to match the actual canonical N7b proof byte length exactly.
+`symbt3_native_accumulator_authority_full_vs_k`, not a benchmark accounting
+estimate or size hint. The compact payload is decoded back into the same
+`WhirPcsProof` value before verification, and the serialization test requires
+the reported section total to match the actual canonical N7b proof byte length
+exactly.
 
 Latest local `symbt3_native_accumulator_authority_full_vs_k` rows:
 
@@ -1854,6 +1855,7 @@ The N8 target is one WHIR proof over an integrated relation:
 ```text
 IntegratedK6aNativeWhirRelationV1 = K6a accumulator constraints
                                   + native tuple-leaf repeated-RLC constraints
+                                  + accumulator transition/binding constraints
 ```
 
 The current N8 slice is implemented as a real integrated claim-row evaluator,
@@ -1867,6 +1869,8 @@ transition/binding semantic family:
 - `N8IntegratedTupleRlcSemanticConstraintsV1`;
 - `N8IntegratedTransitionBindingSemanticConstraintsV1`;
 - `N8IntegratedSemanticCompletionFlagsV1`;
+- `N8SemanticBatchingV1`;
+- `N8K6aSourceRowBatchingV1`;
 - `RealIntegratedK6aNativeEvaluatorV1`;
 - `Symbt3IntegratedK6aNativeWhirRelationV1`;
 - `Symbt3N8IntegratedConstraintDescriptor`;
@@ -1874,7 +1878,9 @@ transition/binding semantic family:
 - `N8IntegratedWhirProofPlan`;
 - `build_integrated_k6a_native_claim_plan_v1`;
 - `build_integrated_k6a_native_committed_table_v1`;
+- `build_n8_semantic_inputs_from_k6a_witness`;
 - `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor`;
+- `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs`;
 - `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_semantics`;
 - `build_n8_integrated_whir_proof_plan`;
 - `prove_symbt3_n8_integrated_whir_non_zk`;
@@ -1885,15 +1891,17 @@ The planner records the future shared WHIR shape without producing a proof:
 `integrated_num_vars = max(k6a_num_vars, tuple_packed_num_vars)`, deterministic
 K6a zero-extension padding, the tuple-leaf repetition axis appended after the
 logical tuple axes, and combined logical oracle, constraint, and claim
-descriptors. The descriptor also binds real K6a WHIR opening/evaluation rows
-from the existing K6a proof, K6a semantic rows derived through
-`symbt3_c_table_and_claims(...)`, tuple packed and logical repeated-RLC claim
-rows, per-repetition tuple RLC residual rows, representative deterministic
-padding rows, and accumulator transition/binding semantic rows. The transition
-rows bind the old/new accumulator digests, accumulator instance and public
-statement digests, K6a proof digest, tuple root/layout digests, native
-descriptor/message roots digest, manifest/source/batch roots, batch size,
-active count, workload kind, and N8 plan/table/layout digests. It binds the K6a
+descriptors. The descriptor also binds real K6a verifier opening/evaluation
+rows extracted directly from the accumulator witness/public claim plan, K6a
+semantic rows derived through `symbt3_c_table_and_claims(...)`, tuple packed
+and logical repeated-RLC claim rows, per-repetition tuple RLC residual rows,
+representative deterministic padding rows, and accumulator transition/binding
+semantic rows. The old source-proof extraction path remains as a test/reference
+path and is checked for row equivalence. The transition rows bind the old/new
+accumulator digests, accumulator instance and public statement digests, K6a
+semantic source digest, tuple root/layout digests, native descriptor/message
+roots digest, manifest/source/batch roots, batch size, active count, workload
+kind, and N8 plan/table/layout digests. It binds the K6a
 relation id/public statement digest, K6a semantic descriptor digest,
 tuple-leaf descriptor/layout digest, RLC repetition metadata, integrated shape,
 padding policy, evaluator digests, tuple-RLC semantic descriptor, transition
@@ -1962,12 +1970,145 @@ The smallest explicit API extension reserved by the feasibility slice is
 `prove_symbt3_integrated_whir_from_claim_plan`,
 `verify_symbt3_integrated_whir_from_claim_plan`, and the lower-level
 `verify_symbt3_integrated_whir_backend_from_verifier_input`. The current prover
-prototype still calls the scalar `whir_commit_and_prove_multi` once, but it
-does so with a materialized N8 plan, one real integrated evaluator table, one
-set of combined bridge query claims, one root, one WHIR proof, one query
-schedule, and one transcript. The future implementation must audit/finalize
-the complete integrated K6a, tuple-RLC, and transition/binding semantic rows
-before any production authority claim.
+prototype calls the scalar `whir_commit_and_prove_multi` once for the final N8
+proof, and no longer materializes a full harness-side K6a/N7b source proof to
+derive the N8 semantic rows. It does so with a materialized N8 plan, one real
+integrated evaluator table, one set of combined bridge query claims, one root,
+one WHIR proof, one query schedule, and one transcript. The future
+implementation must audit/finalize the complete integrated K6a, tuple-RLC, and
+transition/binding semantic rows before any production authority claim.
+
+The benchmark target `symbt3_n8_integrated_authority_vs_k` compares the N8
+one-WHIR NonZK research authority-candidate path against the K6a and N7b
+routes. It emits `N8_INTEGRATED_AUTHORITY_CSV` rows for `k = 1, 2, 4` by
+default, uses actual serialized N8 output bytes, emits `BLOCKED` rows with a
+reason if the audited N8 authority-candidate gate rejects, and leaves default
+`verify_public` unchanged. N8 now uses `N8SemanticBatchingV1` for the
+integrated query schedule. `N8K6aSourceRowBatchingV1` binds the 52 K6a source
+row descriptors before deriving a domain-separated source-row batching point,
+reducing those rows from 52 direct openings to one batched opening. The 52
+source rows are 15 verifier opening rows, 3 final residual rows, 1 `z_eval`
+row, 32 product-sumcheck coefficient rows, and 1 deterministic padding row.
+K6a semantic rows, tuple-RLC rows, and transition/binding rows continue to use
+their own descriptor-bound batch challenge points, so the audited N8 query
+schedule currently has four PCS openings total. The same benchmark emits
+`N8_INTEGRATED_OPENING_BREAKDOWN_CSV`, `N8_K6A_SOURCE_ROW_BREAKDOWN_CSV`, and
+`N8_INTEGRATED_TIMER_CSV` rows for direct claim extraction, tuple-RLC input
+construction, descriptor/table construction, semantic row construction, WHIR
+prove, WHIR verify, query-opening verification, serialization, semantic
+batching construction, and the authority gate.
+
+Same-commit benchmark rerun after `N8K6aSourceRowBatchingV1`, using
+`SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 cargo bench --bench whir_scaling --features whir --
+"symbt3_accumulator_authority_vs_k|symbt3_native_accumulator_authority_full_vs_k|symbt3_n8_integrated_authority_vs_k"`:
+
+| k | K6a prove ms | K6a verify ms | K6a bytes | N7b prove ms | N7b verify ms | N7b bytes | N8 prove ms | N8 verify ms | N8 bytes | N8 openings |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16.952 | 17.284 | 331,223 | 32.675 | 32.153 | 701,255 | 44.570 | 14.871 | 643,784 | 4 |
+| 2 | 19.778 | 18.553 | 321,435 | 41.289 | 35.192 | 747,105 | 56.590 | 17.388 | 691,106 | 4 |
+| 4 | 23.688 | 22.111 | 321,465 | 56.234 | 41.148 | 762,060 | 81.555 | 21.101 | 725,646 | 4 |
+
+In those rows, the serialized byte columns are actual route payload sizes from
+the benchmark harness. N8 remains one WHIR instance/root/query
+schedule/transcript, has `tuple_pcs_proof_count = 0`, reports four total PCS
+openings, and reports `split_delegation_used = false`. N8 is now the fastest
+verifier in this research benchmark: relative to K6a it saves 2.413 ms
+(-14.0%) at k=1, 1.165 ms (-6.3%) at k=2, and 1.010 ms (-4.6%) at k=4; relative
+to N7b it saves 17.282 ms (-53.7%), 17.804 ms (-50.6%), and 20.047 ms (-48.7%).
+The prover is still slower: N8 is 2.63x, 2.86x, and 3.44x K6a prove time, and
+1.36x, 1.37x, and 1.45x N7b prove time for k=1,2,4 respectively. N8 proof
+bytes remain lower than N7b by 8.2%, 7.5%, and 4.8%, but remain 94.4%, 115.0%,
+and 125.7% larger than K6a.
+
+The follow-up N8 prover-overhead slice did not change verifier semantics,
+authority gates, roots/proofs, or split-delegation behavior. It removed three
+prover-side duplicates:
+
+- root-only tuple packed-root construction now uses a WHIR commit-only path
+  instead of a full empty-opening proof, with a test checking equality against
+  the old full-proof root;
+- direct adapter construction reuses the already-built public statement instead
+  of rebuilding it;
+- proof-plan construction reuses the semantic batching descriptor, and the
+  prover computes the integrated evaluator table once before deriving query
+  claims.
+
+N8-only rows after that first prover-overhead slice:
+
+| k | N8 prove ms | N8 verify ms | N8 bytes | openings | direct setup ms | tuple input ms | WHIR prove ms | serialization ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.660 | 14.810 | 642,893 | 4 | 25.464 | 2.012 | 6.614 | 0.415 |
+| 2 | 43.765 | 16.603 | 686,450 | 4 | 29.284 | 3.131 | 10.852 | 0.446 |
+| 4 | 61.671 | 20.206 | 724,474 | 4 | 37.946 | 5.611 | 17.439 | 0.465 |
+
+Relative to the same-run pre-optimization N8 rows above, N8 prove time improved
+by 9.910 ms (-22.2%) at k=1, 12.825 ms (-22.7%) at k=2, and 19.884 ms (-24.4%)
+at k=4. Verification stayed in the same shape and remains a four-opening
+one-WHIR check. The remaining prover bottlenecks are direct setup and WHIR
+prove. Inside direct setup, the largest measured sub-costs are K6a direct claim
+extraction and relation/statement construction at k=1, with WHIR prove becoming
+the second largest end-to-end prover cost for k=2 and k=4.
+
+The direct semantic setup reduction pass keeps the same verifier semantics and
+authority gate. It adds finer direct setup timers for K6a relation
+construction, public statement construction, witness conversion, direct claim
+extraction, adapter construction, digest/canonical serialization, tuple-RLC
+input/root construction, semantic row construction, WHIR prove, serialization,
+and verifier-side buckets. The direct builder now caches immutable material
+inside one proof call: relation id, profile digest, accumulator-instance digest,
+public-statement digest, and WHIR parameter digest. Adapter construction
+consumes this already-validated setup material instead of re-running the full
+statement/profile/instance path. `symbt3_c_table_and_claims` can also consume a
+precomputed public-statement digest in this direct path, while the reference
+path remains available for tests. New tests check optimized direct setup equals
+the old reference direct setup for k=1 and k=2, mutation tests continue to
+reject, and the root-only tuple leaf remains prover-only by rejecting as a
+standalone tuple-leaf verifier proof.
+
+Latest N8-only rows after direct setup caching:
+
+| k | N8 prove ms | N8 verify ms | N8 bytes | openings | direct setup ms | K6a claim ms | public statement ms | adapter ms | tuple input ms | WHIR prove ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 25.297 | 15.337 | 646,595 | 4 | 15.025 | 7.112 | 5.687 | 0.013 | 2.143 | 7.542 |
+| 2 | 30.911 | 16.811 | 686,648 | 4 | 17.276 | 7.724 | 6.534 | 0.000 | 2.954 | 10.040 |
+| 4 | 46.169 | 20.481 | 725,201 | 4 | 23.399 | 9.728 | 8.290 | 0.000 | 5.313 | 16.636 |
+
+Relative to the prior N8-only rows, prove time improved by 9.363 ms (-27.0%)
+at k=1, 12.854 ms (-29.4%) at k=2, and 15.502 ms (-25.1%) at k=4. Direct setup
+itself dropped by 10.439 ms (-41.0%), 12.008 ms (-41.0%), and 14.547 ms
+(-38.3%). Relative to the pre-optimization same-run rows, total N8 prove time
+is now down 43.2%, 45.4%, and 43.4% for k=1,2,4. The proof topology remains one
+WHIR proof/root/query schedule/transcript, `tuple_pcs_proof_count = 0`, four
+openings, and no split delegation. The remaining prover bottlenecks are direct
+K6a claim extraction/public statement construction and WHIR prove.
+
+Final same-commit comparison after direct setup caching, using
+`SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 cargo bench --bench whir_scaling --features whir --
+"symbt3_accumulator_authority_vs_k|symbt3_native_accumulator_authority_full_vs_k|symbt3_n8_integrated_authority_vs_k"`:
+
+| k | Route | prove ms | verify ms | proof bytes | openings | WHIR proofs/roots/schedules | tuple PCS proofs | split delegation |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| 1 | K6a | 16.890 | 17.055 | 337,692 | 15 | 1/1/1 | 0 | false |
+| 1 | N7b | 33.236 | 31.731 | 679,804 | 15 + 1 tuple | 2/2/2 | 1 | false; additive N7b route |
+| 1 | N8 | 23.207 | 14.534 | 639,716 | 4 | 1/1/1 | 0 | false |
+| 2 | K6a | 19.539 | 18.887 | 335,537 | 15 | 1/1/1 | 0 | false |
+| 2 | N7b | 43.090 | 35.297 | 725,787 | 15 + 1 tuple | 2/2/2 | 1 | false; additive N7b route |
+| 2 | N8 | 31.122 | 17.080 | 690,056 | 4 | 1/1/1 | 0 | false |
+| 4 | K6a | 23.696 | 21.951 | 337,700 | 15 | 1/1/1 | 0 | false |
+| 4 | N7b | 56.038 | 41.806 | 755,925 | 15 + 1 tuple | 2/2/2 | 1 | false; additive N7b route |
+| 4 | N8 | 70.437 | 20.400 | 728,322 | 4 | 1/1/1 | 0 | false |
+
+The byte columns are actual serialized route payload sizes from the benchmark
+harness. N8 counters remain `whir_instance_count = root_count =
+query_schedule_count = transcript_count = 1`, `tuple_pcs_proof_count = 0`,
+`native_oracle_pcs_opening_count = 4`, and `split_delegation_used = false`.
+N8 remains the fastest verifier in this same-run comparison: versus K6a it
+saves 2.521 ms (-14.8%) at k=1, 1.807 ms (-9.6%) at k=2, and 1.551 ms (-7.1%)
+at k=4; versus N7b it saves 17.197 ms (-54.2%), 18.217 ms (-51.6%), and
+21.406 ms (-51.2%). On proving, N8 is now faster than N7b at k=1 and k=2, but
+still slower than K6a at all three points. The k=4 N8 CSV row included a high
+WHIR prove timer in this run, so that point should be treated as the final
+same-commit measurement rather than as an optimized steady-state claim.
 
 ## K6a vs N6b Route Distinction
 

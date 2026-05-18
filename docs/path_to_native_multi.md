@@ -410,7 +410,8 @@ production authority proof: `IntegratedK6aNativeClaimPlanV1`,
 `N8IntegratedK6aSemanticConstraintsV1`,
 `N8IntegratedTupleRlcSemanticConstraintsV1`,
 `N8IntegratedTransitionBindingSemanticConstraintsV1`,
-`N8IntegratedSemanticCompletionFlagsV1`, and
+`N8IntegratedSemanticCompletionFlagsV1`,
+`N8SemanticBatchingV1`/`N8K6aSourceRowBatchingV1`, and
 `RealIntegratedK6aNativeEvaluatorV1` are embedded in
 `Symbt3IntegratedK6aNativeWhirRelationV1`. `N8IntegratedWhirProofInputs` and
 `N8IntegratedWhirProofPlan` add the typed bridge from that descriptor to one
@@ -421,14 +422,17 @@ The planner computes `k6a_num_vars`, `tuple_packed_num_vars`, and
 deterministic K6a zero-extension padding policy, maps the tuple-leaf repetition
 axis as appended after the logical tuple axes, and emits combined logical
 oracle, constraint, and claim descriptors. The descriptor now also binds real
-K6a WHIR opening/evaluation rows from the existing K6a proof, K6a semantic
-rows derived through `symbt3_c_table_and_claims(...)`, tuple packed and logical
-repeated-RLC claim rows, per-repetition tuple RLC residual rows, representative
-deterministic padding rows, and accumulator transition/binding semantic rows.
-Those transition rows bind the old/new accumulator digests, accumulator
-instance and public statement digests, K6a proof digest, tuple root/layout
-digests, native descriptor/message roots digest, manifest/source/batch roots,
-batch size, active count, workload kind, and N8 plan/table/layout digests. The
+K6a verifier opening/evaluation rows extracted directly from the accumulator
+witness/public claim plan, K6a semantic rows derived through
+`symbt3_c_table_and_claims(...)`, tuple packed and logical repeated-RLC claim
+rows, per-repetition tuple RLC residual rows, representative deterministic
+padding rows, and accumulator transition/binding semantic rows. The old
+source-proof extraction path remains as a test/reference path and is checked
+for row equivalence. Those transition rows bind the old/new accumulator
+digests, accumulator instance and public statement digests, K6a semantic source
+digest, tuple root/layout digests, native descriptor/message roots digest,
+manifest/source/batch roots, batch size, active count, workload kind, and N8
+plan/table/layout digests. The
 transcript binds the K6a relation id/public statement digest, the K6a semantic
 descriptor digest, tuple-leaf descriptor/layout digest, RLC repetition metadata,
 integrated shape, padding policy, evaluator digests, transition semantic
@@ -450,7 +454,8 @@ selector-gated regions is rejected as ambiguous. The bridge descriptors cover
 K6a accumulator constraints, tuple-leaf repeated-RLC constraints, and the
 accumulator transition/binding link. The proof-plan transcript binds those
 descriptors, `layout_digest`, `table_digest`, `integrated_num_vars`, and the
-workload kind.
+workload kind, including the descriptor-bound semantic/source row batching
+plan.
 
 The N8 gate remains strict. It accepts descriptor/plan/table/evaluator
 consistency plus the K6a semantic descriptor/row checks, tuple-leaf
@@ -480,22 +485,36 @@ schedule from the evaluator rows before checking the single WHIR opening. The
 K6a semantic slice now covers the verifier-facing K6a public/opening claims,
 three final residual-zero checks, `z_eval` binding, product-sumcheck acceptance,
 and deterministic K6a padding zero row obtained from the same
-`symbt3_c_table_and_claims(...)` construction used by K6a verification. The
-tuple-RLC semantic slice covers repeated challenge and opening-point derivation,
+`symbt3_c_table_and_claims(...)` construction used by K6a verification, without
+constructing a full K6a source proof in the direct N8 prover path. The tuple-RLC
+semantic slice covers repeated challenge and opening-point derivation,
 logical oracle order, packed/logical claim digests, residual-zero rows, padding
-rows, and the one-WHIR/no-tuple-PCS shape. The exact next blocker is the
-accumulator transition/binding link, plus turning the K6a semantic rows
-from verifier-facing acceptance rows into the final audited integrated K6a
-relation.
+rows, and the one-WHIR/no-tuple-PCS shape. The transition semantic slice covers
+the accumulator digest transition and binding to the public statement, K6a
+semantic source digest, tuple root/layout, native roots,
+manifest/source/batch roots, batch shape, workload kind, and N8
+plan/table/layout digests. The remaining blocker
+before any production claim is review and production audit of the complete
+integrated relation.
 
 The reserved internal entry points are
 `prove_symbt3_integrated_whir_from_claim_plan` and
 `verify_symbt3_integrated_whir_from_claim_plan`, plus the lower-level verifier
 backend `verify_symbt3_integrated_whir_backend_from_verifier_input`. The prover
 entry point uses one scalar WHIR call over a same-domain, multi-logical-column
-claim-row evaluator. The next implementation must replace claim-row replay with
-semantic checks for the K6a accumulator transition, tuple repeated-RLC algebra,
-and their binding link.
+claim-row evaluator. The benchmark target
+`symbt3_n8_integrated_authority_vs_k` emits
+`N8_INTEGRATED_AUTHORITY_CSV` rows with actual serialized N8 output bytes and
+`BLOCKED` rows if the audited authority-candidate gate rejects. The current N8
+query schedule uses `N8SemanticBatchingV1` and `N8K6aSourceRowBatchingV1`: the
+52 K6a source rows are descriptor-bound and checked by one source-row batch
+opening, while K6a semantic rows, tuple-RLC rows, and transition/binding rows
+are each checked by a separate descriptor-bound batch opening. The 52 source
+rows break down as 15 verifier opening rows, 3 final residual rows, 1 `z_eval`
+row, 32 product-sumcheck coefficient rows, and 1 deterministic padding row.
+The benchmark also emits opening-breakdown, K6a source-row breakdown, and
+timer rows for direct claim extraction, tuple-RLC input construction, and the
+rest of this batched research path.
 
 ### Tests
 

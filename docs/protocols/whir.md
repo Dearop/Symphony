@@ -1714,10 +1714,10 @@ production claim.
 N7b canonical proof serialization stores the tuple-leaf WHIR PCS proof with the
 compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. The full helper's
 `proof_bytes` counter is therefore the actual canonical N7b proof byte length,
-not a compact-size estimate. A serialization regression test requires the
-reported section total to equal the actual canonical byte length exactly and
-rebuilds a proof from the decoded compact PCS payload before running the full
-verifier.
+not a compact-size estimate or size hint. A serialization regression test
+requires the reported section total to equal the actual canonical byte length
+exactly and rebuilds a proof from the decoded compact PCS payload before
+running the full verifier.
 
 Latest local `symbt3_native_accumulator_authority_full_vs_k` rows:
 
@@ -1748,6 +1748,8 @@ semantic rows, and transition/binding semantic rows:
 - `N8IntegratedTupleRlcSemanticConstraintsV1`;
 - `N8IntegratedTransitionBindingSemanticConstraintsV1`;
 - `N8IntegratedSemanticCompletionFlagsV1`;
+- `N8SemanticBatchingV1`;
+- `N8K6aSourceRowBatchingV1`;
 - `RealIntegratedK6aNativeEvaluatorV1`;
 - `Symbt3IntegratedK6aNativeWhirRelationV1`;
 - `Symbt3N8IntegratedConstraintDescriptor`;
@@ -1755,7 +1757,9 @@ semantic rows, and transition/binding semantic rows:
 - `N8IntegratedWhirProofPlan`;
 - `build_integrated_k6a_native_claim_plan_v1`;
 - `build_integrated_k6a_native_committed_table_v1`;
+- `build_n8_semantic_inputs_from_k6a_witness`;
 - `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor`;
+- `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs`;
 - `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_semantics`;
 - `build_n8_integrated_whir_proof_plan`;
 - `prove_symbt3_n8_integrated_whir_non_zk`;
@@ -1766,14 +1770,17 @@ The planner records `integrated_num_vars = max(k6a_num_vars,
 tuple_packed_num_vars)`, the deterministic K6a zero-extension policy, the
 tuple-leaf repetition axis appended after the logical axes, and combined logical
 oracle, constraint, and claim descriptors. The descriptor also records real K6a
-WHIR opening/evaluation rows from the existing K6a proof, K6a semantic rows
-derived through `symbt3_c_table_and_claims(...)`, tuple packed and logical
-repeated-RLC claim rows, per-repetition tuple RLC residual rows, representative
-deterministic padding rows, and accumulator transition/binding semantic rows.
-Those transition rows bind the old/new accumulator digests, accumulator
-instance and public statement digests, K6a proof digest, tuple root/layout
-digests, native descriptor/message roots digest, manifest/source/batch roots,
-batch size, active count, workload kind, and N8 plan/table/layout digests. The
+verifier opening/evaluation rows extracted directly from the accumulator
+witness/public claim plan, K6a semantic rows derived through
+`symbt3_c_table_and_claims(...)`, tuple packed and logical repeated-RLC claim
+rows, per-repetition tuple RLC residual rows, representative deterministic
+padding rows, and accumulator transition/binding semantic rows. The old
+source-proof extraction path is retained only as a test/reference path and is
+checked for row equivalence. Those transition rows bind the old/new
+accumulator digests, accumulator instance and public statement digests, K6a
+semantic source digest, tuple root/layout digests, native descriptor/message
+roots digest, manifest/source/batch roots, batch size, active count, workload
+kind, and N8 plan/table/layout digests. The
 transcript binds the K6a relation id and public statement digest, K6a semantic
 descriptor digest, tuple-leaf descriptor/layout digest, RLC repetition metadata,
 integrated shape, padding policy, evaluator digests, transition semantic
@@ -1797,7 +1804,11 @@ layout as one scalar oracle with selector-gated regions is ambiguous and is
 rejected. `N8IntegratedWhirProofPlan` builds bridge descriptors for K6a
 accumulator constraints, native tuple-leaf repeated-RLC constraints, and the
 accumulator transition/binding link. Its transcript binds those descriptors,
-the table/layout digests, `integrated_num_vars`, and the workload kind.
+the table/layout digests, `integrated_num_vars`, the workload kind, and
+`N8SemanticBatchingV1`. Semantic batching binds the descriptor transcript,
+claim/table/evaluator digests, the K6a source-row descriptor, and the three
+semantic row-family descriptors before deriving separate source, K6a semantic,
+tuple-RLC, and transition/binding challenge points.
 
 N8 remains research prototype only and makes no production authority or
 performance claim. The product gate now accepts descriptor, plan,
@@ -1822,10 +1833,17 @@ shape is explicit:
 `N8IntegratedWhirVerifierInput` with one integrated descriptor/plan/table
 digest set, combined bridge descriptors, exactly one WHIR root/proof, and one
 `N8IntegratedWhirQueryScheduleV1`. It wraps the existing
-`whir_verify_opening_multi` PCS verifier over `integrated_num_vars` and rejects
+`whir_verify_opening_multi` PCS verifier over `integrated_num_vars`. The
+schedule opens one domain-separated K6a source-row batch plus three
+domain-separated semantic batch openings for K6a semantic rows, tuple-RLC rows,
+and transition/binding rows. `N8K6aSourceRowBatchingV1` binds the 52 K6a
+source rows before sampling that source batching point; those rows break down
+as 15 verifier opening rows, 3 final residual rows, 1 `z_eval` row, 32
+product-sumcheck coefficient rows, and 1 deterministic padding row. It rejects
 missing schedules, num-var mismatches, root mismatches, extra proof material,
-split K6a+tuple material, and real-mode schedule values that do not match the
-descriptor's evaluator rows.
+split K6a+tuple material, and real-mode
+schedule values that do not match the descriptor's evaluator rows and semantic
+batching descriptor.
 
 Local feasibility is partial. The field, root policy, WHIR security mode, rate,
 and folding counters are compatible, and the planner now normalizes the K6a and
@@ -1834,16 +1852,31 @@ verify K6a and tuple-leaf claims through two independent
 `whir_verify_opening_multi` calls. The current N8 K6a semantic slice covers the
 verifier-facing public/opening claims, final residual-zero checks, `z_eval`
 binding, product-sumcheck acceptance, and deterministic K6a padding zero row
-from the same `symbt3_c_table_and_claims(...)` path used by K6a verification.
+from the same `symbt3_c_table_and_claims(...)` path used by K6a verification,
+without first constructing a full K6a source proof in the direct N8 prover path.
 The current N8 tuple-RLC semantic slice covers repeated gamma/zeta derivation,
 logical oracle order, packed/logical claim digests, residual-zero rows, padding
 rows, and the one-WHIR/no-tuple-PCS shape. The current N8 transition semantic
 slice covers the accumulator digest transition and the binding of the
-accumulator instance, public statement, K6a proof digest, tuple root/layout,
+accumulator instance, public statement, K6a semantic source digest, tuple root/layout,
 native descriptor/message roots, manifest/source/batch roots, batch size,
 active count, workload kind, and N8 plan/table/layout digests into the
 integrated relation. The remaining blockers are review, audit, and
 productionization of the complete integrated relation.
+
+The benchmark target `symbt3_n8_integrated_authority_vs_k` emits
+`N8_INTEGRATED_AUTHORITY_CSV` rows for the N8 one-WHIR NonZK research
+authority-candidate path. Rows are emitted only after the audited
+authority-candidate gate accepts; failures are emitted as `BLOCKED` rows with a
+reason. The `proof_bytes` column is the actual serialized N8 output payload
+containing the plan, root, one WHIR proof, query schedule, and counters. The
+same target also emits `N8_INTEGRATED_OPENING_BREAKDOWN_CSV` rows and
+`N8_K6A_SOURCE_ROW_BREAKDOWN_CSV` rows. After source-row batching the audited
+opening surface is four PCS openings total: one K6a source batch plus the three
+semantic family batches. `N8_INTEGRATED_TIMER_CSV` rows separate direct K6a
+claim extraction, tuple-RLC input construction, descriptor/table construction,
+semantic row construction, WHIR proving, WHIR verification, query-opening
+verification, and authority-gate time.
 
 The feasibility API boundary is now named explicitly:
 `prove_symbt3_integrated_whir_from_claim_plan`,
@@ -1851,9 +1884,8 @@ The feasibility API boundary is now named explicitly:
 backend `verify_symbt3_integrated_whir_backend_from_verifier_input`. The prover
 uses `whir_commit_and_prove_multi` once and returns one root, one WHIR proof,
 one query schedule, and counters with no tuple PCS proof or split delegation.
-The remaining implementation slice must add real tuple repeated-RLC and
-transition semantic constraints inside the integrated relation and then close
-the authority gate only after all semantic completion flags are true.
+N8 remains a NonZK research authority-candidate path pending review and
+productionization; it is not production authority.
 
 ---
 

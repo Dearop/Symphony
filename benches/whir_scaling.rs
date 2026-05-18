@@ -54,6 +54,7 @@
 //!   whir_scaling/product_route_comparison_vs_k – K6b side-by-side monolithic product vs K6a NonZK integrity product route
 //!   whir_scaling/symbt3_native_accumulator_authority_vs_k – N7 smoke profile, not full accumulator workload
 //!   whir_scaling/symbt3_native_accumulator_authority_full_vs_k – N7b full K6a workload native NonZK authority candidate
+//!   whir_scaling/symbt3_n8_integrated_authority_vs_k – N8 integrated one-WHIR NonZK research authority candidate
 
 use std::collections::BTreeMap;
 use std::fs::{create_dir_all, File};
@@ -99,29 +100,40 @@ use symphony::snark::whir::instrumented_benchmark::{
     SYMBT3_INSTRUMENTED_BENCHMARK_PUBLIC_SECTION_NAMES,
 };
 use symphony::snark::whir::native_oracles::{
-    build_native_oracle_batch_axis_benchmark_specs, build_native_oracle_benchmark_eval_requests,
-    build_native_oracle_benchmark_evals, build_native_oracle_benchmark_specs,
+    build_n8_integrated_whir_proof_plan, build_n8_integrated_whir_proof_plan_profiled,
+    build_n8_semantic_inputs_from_k6a_witness, build_native_oracle_batch_axis_benchmark_specs,
+    build_native_oracle_benchmark_eval_requests, build_native_oracle_benchmark_evals,
+    build_native_oracle_benchmark_specs,
+    build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs,
+    build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs_profiled,
     native_round_message_view_eval_requests, profile_meets_native_non_zk_folding_integrity,
     prove_committed_private_manifest_membership, prove_native_manifest_source_membership,
     prove_native_round_message_oracle_views, prove_public_symbt3_native_folding_integrity_non_zk,
+    prove_symbt3_integrated_whir_from_claim_plan,
+    prove_symbt3_integrated_whir_from_claim_plan_profiled,
     prove_symbt3_native_accumulator_authority_full_non_zk,
     prove_symbt3_native_accumulator_authority_non_zk, prove_symbt3_native_folding_integrity_non_zk,
     symbt3_n7b_full_authority_proof_byte_sections, symbt3_n7b_full_authority_proof_canonical_bytes,
-    symbt3_n7b_full_authority_proof_size_hint, symbt3_native_accumulator_authority_proof_size_hint,
+    symbt3_native_accumulator_authority_proof_size_hint,
     symbt3_native_folding_integrity_monolithic_fallback_used,
     symbt3_native_folding_integrity_proof_size_hint,
     symbt3_native_folding_integrity_public_route_selected,
     symbt3_non_zk_folding_integrity_profile_report, verify_committed_private_manifest_membership,
     verify_native_manifest_source_membership, verify_native_round_message_oracle_views,
     verify_public_symbt3_native_folding_integrity_non_zk,
+    verify_symbt3_integrated_whir_backend_from_verifier_input,
+    verify_symbt3_integrated_whir_query_openings_for_benchmark,
+    verify_symbt3_n8_integrated_prover_output_authority_gate,
     verify_symbt3_native_accumulator_authority_full_non_zk,
     verify_symbt3_native_accumulator_authority_full_non_zk_report,
     verify_symbt3_native_accumulator_authority_non_zk,
     verify_symbt3_native_folding_integrity_non_zk, whir_commit_and_prove_oracles,
     whir_commit_and_prove_same_domain_multi_oracle, whir_verify_oracle_openings_with_counters,
     whir_verify_oracle_openings_with_counters_for_profile, whir_verify_same_domain_multi_oracle,
-    ManifestCommitmentPolicy, NativeOracleRootPolicy, NativeOracleVerificationProfile,
-    SourceCommitmentPolicy, Symbt3FoldingIntegritySemanticFamilies, Symbt3ManifestComponentKind,
+    ManifestCommitmentPolicy, N8IntegratedWhirProofInputs, N8IntegratedWhirProverOutput,
+    NativeOracleRootPolicy, NativeOracleVerificationProfile,
+    RealIntegratedK6aNativeEvaluatorRowKindV1, SourceCommitmentPolicy,
+    Symbt3FoldingIntegritySemanticFamilies, Symbt3ManifestComponentKind,
     Symbt3ManifestSourceComponentValues, Symbt3ManifestVisibility, Symbt3MessageOraclePolicy,
     Symbt3N7bFullAuthorityProof, Symbt3NativeFoldingIntegrityInstance,
     Symbt3NativeFoldingIntegrityPublicProfile, Symbt3NativeFoldingIntegrityWitness,
@@ -3957,6 +3969,60 @@ struct Symbt3AuthorityRouteMeasurement {
     proof: WhirProof,
 }
 
+struct Symbt3AuthorityRouteDirectFixture {
+    pk: WhirProvingKey,
+    vk: WhirVerifyingKey,
+    profile: Symbt3AuthorityProfile,
+    accumulator_instance: Symbt3AccumulatorInstance,
+    accumulator_witness: Symbt3AccumulatorWitness,
+}
+
+fn symbt3_authority_route_direct_fixture(
+    base_fixture: &PublicWhirBenchFixture,
+    k: usize,
+) -> Symbt3AuthorityRouteDirectFixture {
+    let bucket = batched_cp_bucket_from_fixture(base_fixture, k);
+    let descriptor = BatchedCpSymbt3SetupDescriptor::new(
+        bucket.shape.clone(),
+        &base_fixture.ajtai,
+        &base_fixture.r1cs,
+        base_fixture.input_bound,
+    );
+    let relation = <WhirSnark as CpBackend>::symbt3_relation_description(&descriptor)
+        .expect("WHIR exposes SYMBT3 accumulator relation");
+    let decoded_relation = BatchedCpSymbt3RelationDescription::from_context_bytes(
+        relation.context.as_ref().expect("SYMBT3 context"),
+    )
+    .expect("SYMBT3 context decodes");
+    let decoded_relation = symbt3_relation_for_bench_profile(decoded_relation, "symbt3_j");
+    let relation = decoded_relation.to_relation_description();
+    let (pk, vk) = <WhirSnark as CpBackend>::setup(&relation);
+    let public = bucket.symbt3_public_statement_for_relation(&decoded_relation);
+    let witness = bucket.symbt3_witness_for_relation(&decoded_relation);
+    let profile =
+        Symbt3AuthorityProfile::accumulator_non_zk_integrity_product_authority_from_relation(
+            &decoded_relation,
+            64,
+        );
+    let profile_digest = profile.digest(decoded_relation.shape.accumulator_shape.digest_scheme);
+    let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        bucket.shape.accumulator_shape.digest_scheme,
+        profile_digest,
+        public.old_accumulator_digest,
+        public.new_accumulator_digest,
+        &public,
+    );
+    let accumulator_witness =
+        Symbt3AccumulatorWitness::from_symbt3_witness(&decoded_relation, &witness);
+    Symbt3AuthorityRouteDirectFixture {
+        pk,
+        vk,
+        profile,
+        accumulator_instance,
+        accumulator_witness,
+    }
+}
+
 fn symbt3_authority_route_measurement(
     base_fixture: &PublicWhirBenchFixture,
     k: usize,
@@ -6533,7 +6599,7 @@ fn bench_symbt3_native_accumulator_authority_full_vs_k(c: &mut Criterion) {
         "NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV,k,round_count,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,main_whir_num_vars,main_oracle_len,native_multi_oracle,tuple_leaf_layout,logical_oracle_count,whir_instance_count,root_count,query_schedule_count,transcript_count,native_oracle_pcs_opening_count,native_oracle_eval_claim_count,rlc_repetition_count,rlc_batching_bits,effective_soundness_bits,family_columnar_subproof_count,top_level_whir_proof_count,backend_table_count,accumulator_transition_claims,fallback_used"
     );
 
-    for batch_size in symbt3_bench_k_values(&[1usize, 2]) {
+    for batch_size in symbt3_bench_k_values(&[1usize, 2, 4]) {
         let measurement = symbt3_authority_route_measurement(&base_fixture, batch_size);
         let prove_start = Instant::now();
         let Some(proof) = prove_symbt3_native_accumulator_authority_full_non_zk(
@@ -6581,11 +6647,11 @@ fn bench_symbt3_native_accumulator_authority_full_vs_k(c: &mut Criterion) {
             "N7b tuple-leaf proof must verify independently after full verification"
         );
         let serialization_start = Instant::now();
-        let _proof_bytes = symbt3_n7b_full_authority_proof_canonical_bytes(&proof)
+        let proof_bytes = symbt3_n7b_full_authority_proof_canonical_bytes(&proof)
             .expect("N7b full proof must canonical-serialize");
         let serialization_ms = serialization_start.elapsed().as_secs_f64() * 1_000.0;
         let counters = &proof.wrapper.counters;
-        let proof_bytes = symbt3_n7b_full_authority_proof_size_hint(&proof);
+        let proof_bytes = proof_bytes.len();
         eprintln!(
             "NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV,{batch_size},{round_count},{prove_ms:.3},{verify_ms:.3},{proof_bytes},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             measurement.csv.public_statement_bytes,
@@ -6644,11 +6710,357 @@ fn bench_symbt3_native_accumulator_authority_full_vs_k(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_symbt3_n8_integrated_authority_vs_k(c: &mut Criterion) {
+    if !bench_filter_allows("whir_scaling/symbt3_n8_integrated_authority_vs_k") {
+        return;
+    }
+    let mut group = c.benchmark_group("whir_scaling/symbt3_n8_integrated_authority_vs_k");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    let base_fixture = public_whir_fixture(1);
+    let round_count = 1usize;
+    eprintln!(
+        "N8_INTEGRATED_AUTHORITY_CSV,k,round_count,status,blocked_reason,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,semantic_mode,k6a_semantics_complete,tuple_rlc_semantics_complete,transition_semantics_complete,whir_instance_count,root_count,query_schedule_count,transcript_count,tuple_pcs_proof_count,native_oracle_pcs_opening_count,rlc_repetition_count,effective_soundness_bits,family_columnar_subproof_count,fallback_used,split_delegation_used"
+    );
+    eprintln!(
+        "N8_INTEGRATED_OPENING_BREAKDOWN_CSV,k,k6a_source_rows,k6a_semantic_rows,tuple_rlc_semantic_rows,transition_binding_rows,padding_metadata_link_rows,unbatched_opening_count,batched_opening_count,k6a_source_unbatched_opening_count,k6a_source_batched_opening_count,semantic_unbatched_opening_count,semantic_batched_opening_count,batching_soundness_bits"
+    );
+    eprintln!(
+        "N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,k,verifier_opening_rows,commitment_opening_rows,folded_opening_rows,ajtai_opening_rows,residual_opening_rows,range_projection_opening_rows,final_residual_rows,z_eval_rows,product_sumcheck_coefficient_rows,padding_rows,total_source_rows"
+    );
+    eprintln!(
+        "N8_INTEGRATED_TIMER_CSV,k,status,direct_relation_statement_ms,direct_k6a_relation_construction_ms,direct_k6a_public_statement_construction_ms,direct_k6a_witness_conversion_ms,direct_claim_extraction_ms,direct_adapter_construction_ms,direct_digest_canonical_serialization_ms,direct_tuple_rlc_input_ms,direct_tuple_rlc_raw_values_ms,direct_tuple_rlc_descriptor_ms,direct_tuple_rlc_claims_ms,direct_tuple_rlc_packed_root_ms,direct_semantic_input_total_ms,descriptor_total_ms,descriptor_digest_construction_ms,integrated_table_construction_ms,semantic_row_construction_ms,k6a_semantic_descriptor_ms,k6a_semantic_rows_ms,tuple_rlc_semantic_rows_ms,transition_binding_semantic_rows_ms,real_evaluator_ms,proof_plan_ms,proof_plan_semantic_batching_ms,proof_plan_bridge_descriptor_ms,proof_plan_transcript_digest_ms,proof_plan_validation_ms,whir_prove_ms,query_claim_construction_ms,integrated_table_values_ms,query_schedule_ms,serialization_ms,whir_verify_ms,query_opening_verify_ms,authority_gate_ms"
+    );
+
+    for batch_size in symbt3_bench_k_values(&[1usize, 2, 4]) {
+        let direct_fixture = symbt3_authority_route_direct_fixture(&base_fixture, batch_size);
+        let public_statement_bytes = direct_fixture.accumulator_instance.canonical_bytes().len();
+
+        let prove_start = Instant::now();
+        let direct_inputs = match build_n8_semantic_inputs_from_k6a_witness(
+            &direct_fixture.pk,
+            &direct_fixture.profile,
+            &direct_fixture.accumulator_instance,
+            &direct_fixture.accumulator_witness,
+        ) {
+            Some(inputs) => inputs,
+            None => {
+                let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+                eprintln!(
+                    "N8_INTEGRATED_AUTHORITY_CSV,{batch_size},{round_count},BLOCKED,DirectSemanticInputBuilderReturnedNone,{prove_ms:.3},0.000,0,{public_statement_bytes},true,false,n8_integrated_all_semantics_complete,false,false,false,0,0,0,0,0,0,0,0,0,false,false"
+                );
+                continue;
+            }
+        };
+        let (descriptor, descriptor_profile) =
+            match build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs_profiled(
+                &direct_inputs,
+            ) {
+                Ok(descriptor) => descriptor,
+                Err(blocker) => {
+                    let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+                    eprintln!(
+                        "N8_INTEGRATED_AUTHORITY_CSV,{batch_size},{round_count},BLOCKED,{blocker:?},{prove_ms:.3},0.000,0,{public_statement_bytes},{},{},n8_integrated_all_semantics_complete,false,false,false,0,0,0,0,0,0,0,0,0,false,false",
+                        direct_inputs.k6a_adapter.full_accumulator_workload,
+                        direct_inputs.k6a_adapter.smoke_profile,
+                    );
+                    continue;
+                }
+        };
+        let proof_plan_start = Instant::now();
+        let (proof_plan, proof_plan_profile) = match build_n8_integrated_whir_proof_plan_profiled(
+            &N8IntegratedWhirProofInputs::from_descriptor(&descriptor),
+        ) {
+            Ok(profiled) => profiled,
+            Err(blocker) => {
+                let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+                eprintln!(
+                        "N8_INTEGRATED_AUTHORITY_CSV,{batch_size},{round_count},BLOCKED,{blocker:?},{prove_ms:.3},0.000,0,{public_statement_bytes},{},{},n8_integrated_all_semantics_complete,{},{},{},0,0,0,0,0,0,{},{},0,false,false",
+                        direct_inputs.k6a_adapter.full_accumulator_workload,
+                        direct_inputs.k6a_adapter.smoke_profile,
+                        descriptor.semantic_completion.k6a_semantics_complete,
+                        descriptor.semantic_completion.tuple_rlc_semantics_complete,
+                        descriptor.semantic_completion.transition_semantics_complete,
+                        descriptor.claim_plan.rlc_repetition_count,
+                        descriptor.claim_plan.effective_soundness_bits,
+                    );
+                continue;
+            }
+        };
+        let proof_plan_ms = proof_plan_start.elapsed().as_secs_f64() * 1_000.0;
+        let (output, prove_profile) = match prove_symbt3_integrated_whir_from_claim_plan_profiled(
+            &direct_fixture.pk,
+            &descriptor,
+            &proof_plan,
+        ) {
+            Ok(profiled) => profiled,
+            Err(blocker) => {
+                let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+                eprintln!(
+                        "N8_INTEGRATED_AUTHORITY_CSV,{batch_size},{round_count},BLOCKED,{blocker:?},{prove_ms:.3},0.000,0,{public_statement_bytes},{},{},n8_integrated_all_semantics_complete,{},{},{},0,0,0,0,0,0,{},{},0,false,false",
+                        direct_inputs.k6a_adapter.full_accumulator_workload,
+                        direct_inputs.k6a_adapter.smoke_profile,
+                        descriptor.semantic_completion.k6a_semantics_complete,
+                        descriptor.semantic_completion.tuple_rlc_semantics_complete,
+                        descriptor.semantic_completion.transition_semantics_complete,
+                        descriptor.claim_plan.rlc_repetition_count,
+                        descriptor.claim_plan.effective_soundness_bits,
+                    );
+                continue;
+            }
+        };
+        let prove_ms = prove_start.elapsed().as_secs_f64() * 1_000.0;
+
+        let verify_start = Instant::now();
+        let whir_verify_start = Instant::now();
+        let backend_report = verify_symbt3_integrated_whir_backend_from_verifier_input(
+            &direct_fixture.vk,
+            &output.verifier_input(&descriptor),
+        );
+        let whir_verify_ms = whir_verify_start.elapsed().as_secs_f64() * 1_000.0;
+        let query_opening_start = Instant::now();
+        let query_opening_report = verify_symbt3_integrated_whir_query_openings_for_benchmark(
+            &direct_fixture.vk,
+            &output.verifier_input(&descriptor),
+        );
+        let query_opening_verify_ms = query_opening_start.elapsed().as_secs_f64() * 1_000.0;
+        let authority_gate_start = Instant::now();
+        let authority_report =
+            verify_symbt3_n8_integrated_prover_output_authority_gate(&descriptor, &output);
+        let authority_gate_ms = authority_gate_start.elapsed().as_secs_f64() * 1_000.0;
+        let verify_ms = verify_start.elapsed().as_secs_f64() * 1_000.0;
+        if !backend_report.ok || !query_opening_report.ok || !authority_report.ok {
+            let reason = backend_report
+                .blocker
+                .or(query_opening_report.blocker)
+                .or(authority_report.blocker)
+                .map(|blocker| format!("{blocker:?}"))
+                .unwrap_or_else(|| "Unknown".to_owned());
+            eprintln!(
+                "N8_INTEGRATED_AUTHORITY_CSV,{batch_size},{round_count},BLOCKED,{reason},{prove_ms:.3},{verify_ms:.3},0,{public_statement_bytes},{},{},n8_integrated_all_semantics_complete,{},{},{},{},{},{},1,{},{},{},{},{},false,{}",
+                direct_inputs.k6a_adapter.full_accumulator_workload,
+                direct_inputs.k6a_adapter.smoke_profile,
+                descriptor.semantic_completion.k6a_semantics_complete,
+                descriptor.semantic_completion.tuple_rlc_semantics_complete,
+                descriptor.semantic_completion.transition_semantics_complete,
+                output.counters.whir_instance_count,
+                output.counters.root_count,
+                output.counters.query_schedule_count,
+                output.counters.tuple_pcs_proof_count,
+                output.query_schedule.query_claims.len(),
+                descriptor.claim_plan.rlc_repetition_count,
+                descriptor.claim_plan.effective_soundness_bits,
+                output.integrated_whir_proof.family_columnar_subproofs.len(),
+                output.counters.delegated_split_proof_material_present,
+            );
+            continue;
+        }
+
+        let k6a_source_rows = descriptor
+            .real_evaluator
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.kind,
+                    RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1
+                        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorResidualClaimV1
+                        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1
+                        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aProductSumcheckRoundClaimV1
+                        | RealIntegratedK6aNativeEvaluatorRowKindV1::K6aZeroPaddingClaimV1
+                )
+            })
+            .count();
+        let k6a_source_kind_count = |kind| {
+            descriptor
+                .real_evaluator
+                .rows
+                .iter()
+                .filter(|row| row.kind == kind)
+                .count()
+        };
+        let k6a_verifier_opening_rows = k6a_source_kind_count(
+            RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorOpeningClaimV1,
+        );
+        let k6a_final_residual_rows = k6a_source_kind_count(
+            RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorResidualClaimV1,
+        );
+        let k6a_z_eval_rows = k6a_source_kind_count(
+            RealIntegratedK6aNativeEvaluatorRowKindV1::K6aAccumulatorZEvalClaimV1,
+        );
+        let k6a_product_sumcheck_rows = k6a_source_kind_count(
+            RealIntegratedK6aNativeEvaluatorRowKindV1::K6aProductSumcheckRoundClaimV1,
+        );
+        let k6a_padding_rows =
+            k6a_source_kind_count(RealIntegratedK6aNativeEvaluatorRowKindV1::K6aZeroPaddingClaimV1);
+        let k6a_semantic_rows = descriptor.real_evaluator.counters.k6a_semantic_rows;
+        let tuple_rlc_semantic_rows = descriptor.real_evaluator.counters.tuple_claim_rows;
+        let transition_binding_rows = descriptor.real_evaluator.counters.transition_binding_rows;
+        let padding_metadata_link_rows =
+            descriptor.real_evaluator.counters.padding_rows + transition_binding_rows;
+        let unbatched_opening_count = descriptor.real_evaluator.rows.len();
+        let batched_opening_count = output.query_schedule.query_claims.len();
+        let batching = output.proof_plan.semantic_batching;
+        let serialization_start = Instant::now();
+        let proof_bytes = n8_integrated_authority_output_canonical_bytes(&output).len();
+        let serialization_ms = serialization_start.elapsed().as_secs_f64() * 1_000.0;
+        eprintln!(
+            "N8_INTEGRATED_AUTHORITY_CSV,{batch_size},{round_count},OK,,{prove_ms:.3},{verify_ms:.3},{proof_bytes},{public_statement_bytes},{},{},n8_integrated_all_semantics_complete,{},{},{},{},{},{},1,{},{},{},{},{},false,{}",
+            direct_inputs.k6a_adapter.full_accumulator_workload,
+            direct_inputs.k6a_adapter.smoke_profile,
+            descriptor.semantic_completion.k6a_semantics_complete,
+            descriptor.semantic_completion.tuple_rlc_semantics_complete,
+            descriptor.semantic_completion.transition_semantics_complete,
+            output.counters.whir_instance_count,
+            output.counters.root_count,
+            output.counters.query_schedule_count,
+            output.counters.tuple_pcs_proof_count,
+            output.query_schedule.query_claims.len(),
+            descriptor.claim_plan.rlc_repetition_count,
+            descriptor.claim_plan.effective_soundness_bits,
+            output.integrated_whir_proof.family_columnar_subproofs.len(),
+            output.counters.delegated_split_proof_material_present,
+        );
+        eprintln!(
+            "N8_INTEGRATED_OPENING_BREAKDOWN_CSV,{batch_size},{k6a_source_rows},{k6a_semantic_rows},{tuple_rlc_semantic_rows},{transition_binding_rows},{padding_metadata_link_rows},{unbatched_opening_count},{batched_opening_count},{},{},{},{},{}",
+            batching.k6a_source.unbatched_source_opening_count,
+            batching.k6a_source.batched_source_opening_count,
+            batching.unbatched_semantic_opening_count,
+            batching.batched_semantic_opening_count,
+            batching.effective_soundness_bits,
+        );
+        eprintln!(
+            "N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,{batch_size},{k6a_verifier_opening_rows},3,4,1,4,3,{k6a_final_residual_rows},{k6a_z_eval_rows},{k6a_product_sumcheck_rows},{k6a_padding_rows},{k6a_source_rows}"
+        );
+        let timer_fields = [
+            direct_inputs.profile.relation_statement_ms,
+            direct_inputs.profile.k6a_relation_construction_ms,
+            direct_inputs.profile.k6a_public_statement_construction_ms,
+            direct_inputs.profile.k6a_witness_conversion_ms,
+            direct_inputs.profile.k6a_claim_extraction_ms,
+            direct_inputs.profile.adapter_construction_ms,
+            direct_inputs.profile.digest_canonical_serialization_ms,
+            direct_inputs.profile.tuple_rlc_input_ms,
+            direct_inputs.profile.tuple_rlc_raw_values_ms,
+            direct_inputs.profile.tuple_rlc_descriptor_ms,
+            direct_inputs.profile.tuple_rlc_claims_ms,
+            direct_inputs.profile.tuple_rlc_packed_root_ms,
+            direct_inputs.profile.total_ms,
+            descriptor_profile.total_ms,
+            descriptor_profile.descriptor_digest_construction_ms,
+            descriptor_profile.integrated_table_construction_ms,
+            descriptor_profile.semantic_row_construction_ms,
+            descriptor_profile.k6a_semantic_descriptor_ms,
+            descriptor_profile.k6a_semantic_rows_ms,
+            descriptor_profile.tuple_rlc_semantic_rows_ms,
+            descriptor_profile.transition_binding_semantic_rows_ms,
+            descriptor_profile.real_evaluator_ms,
+            proof_plan_ms,
+            proof_plan_profile.semantic_batching_ms,
+            proof_plan_profile.bridge_descriptor_ms,
+            proof_plan_profile.transcript_digest_ms,
+            prove_profile.proof_plan_validation_ms,
+            prove_profile.whir_prove_ms,
+            prove_profile.query_claim_construction_ms,
+            prove_profile.integrated_table_values_ms,
+            prove_profile.query_schedule_ms,
+            serialization_ms,
+            whir_verify_ms,
+            query_opening_verify_ms,
+            authority_gate_ms,
+        ]
+        .into_iter()
+        .map(|value| format!("{value:.3}"))
+        .collect::<Vec<_>>()
+        .join(",");
+        eprintln!("N8_INTEGRATED_TIMER_CSV,{batch_size},OK,{timer_fields}");
+
+        group.throughput(Throughput::Elements(batch_size as u64));
+        group.bench_function(BenchmarkId::new("prove_verify", batch_size), |b| {
+            b.iter(|| {
+                let direct_inputs = build_n8_semantic_inputs_from_k6a_witness(
+                    black_box(&direct_fixture.pk),
+                    black_box(&direct_fixture.profile),
+                    black_box(&direct_fixture.accumulator_instance),
+                    black_box(&direct_fixture.accumulator_witness),
+                )
+                .expect("direct N8 semantic inputs");
+                let descriptor = build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs(
+                    black_box(&direct_inputs),
+                )
+                .expect("N8 integrated semantic descriptor");
+                let proof_plan = build_n8_integrated_whir_proof_plan(
+                    &N8IntegratedWhirProofInputs::from_descriptor(&descriptor),
+                )
+                .expect("N8 integrated proof plan");
+                let output = prove_symbt3_integrated_whir_from_claim_plan(
+                    black_box(&direct_fixture.pk),
+                    black_box(&descriptor),
+                    black_box(&proof_plan),
+                )
+                .expect("N8 integrated authority-candidate output");
+                let backend_report = verify_symbt3_integrated_whir_backend_from_verifier_input(
+                    black_box(&direct_fixture.vk),
+                    black_box(&output.verifier_input(&descriptor)),
+                );
+                let authority_report =
+                    verify_symbt3_n8_integrated_prover_output_authority_gate(
+                        black_box(&descriptor),
+                        black_box(&output),
+                    );
+                black_box((backend_report.ok, authority_report.ok));
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn hex_digest(digest: &[u8; 32]) -> String {
     digest
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+fn push_bench_u64(out: &mut Vec<u8>, value: usize) {
+    out.extend_from_slice(&(value as u64).to_le_bytes());
+}
+
+fn push_bench_bool(out: &mut Vec<u8>, value: bool) {
+    out.push(u8::from(value));
+}
+
+fn push_bench_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    push_bench_u64(out, bytes.len());
+    out.extend_from_slice(bytes);
+}
+
+fn n8_integrated_authority_output_canonical_bytes(
+    output: &N8IntegratedWhirProverOutput,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_bench_bytes(&mut out, b"N8_INTEGRATED_AUTHORITY_OUTPUT_BENCH_V1");
+    push_bench_u64(&mut out, output.version as usize);
+    push_bench_bytes(&mut out, &output.mode.canonical_bytes());
+    push_bench_bytes(&mut out, &output.proof_plan.canonical_bytes());
+    out.extend_from_slice(&output.integrated_whir_root);
+    push_bench_bytes(
+        &mut out,
+        &canonical_whir_proof_bytes(&output.integrated_whir_proof),
+    );
+    push_bench_bytes(&mut out, &output.query_schedule.canonical_bytes());
+    push_bench_u64(&mut out, output.counters.whir_instance_count);
+    push_bench_u64(&mut out, output.counters.root_count);
+    push_bench_u64(&mut out, output.counters.query_schedule_count);
+    push_bench_u64(&mut out, output.counters.tuple_pcs_proof_count);
+    push_bench_bool(
+        &mut out,
+        output.counters.delegated_split_proof_material_present,
+    );
+    push_bench_bool(&mut out, output.counters.synthetic_non_authoritative);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -6673,6 +7085,7 @@ criterion_group!(
     bench_symbt3_route_matrix_vs_k,
     bench_symbt3_native_accumulator_authority_vs_k,
     bench_symbt3_native_accumulator_authority_full_vs_k,
+    bench_symbt3_n8_integrated_authority_vs_k,
     bench_public_verify_v2_vs_k,
     bench_typed_cp_prove_only_vs_k,
     bench_typed_cp_verify_only_vs_k,

@@ -570,6 +570,33 @@ fn whir_commit_and_prove_multi(
     whir_commit_and_prove_multi_with_profile(seed, num_variables, evaluations, points, None)
 }
 
+fn whir_commit_initial_root_only(
+    seed: &[u8; 32],
+    num_variables: usize,
+    evaluations: &[BabyBear],
+) -> Option<WhirPcsProof<F, EF, WhirMmcs>> {
+    if evaluations.len() != 1usize.checked_shl(num_variables as u32)? {
+        return None;
+    }
+
+    let infra = build_whir_infra(seed, num_variables);
+    let dft = Radix2DFTSmallBatch::<F>::default();
+    let poly = EvaluationsList::new(evaluations.to_vec());
+    let mut statement = infra
+        .params
+        .initial_statement(poly, SumcheckStrategy::Classic);
+    let mut challenger = make_challenger(&infra.perm);
+    infra.domainsep.observe_domain_separator(&mut challenger);
+    let mut proof = WhirPcsProof::<F, EF, WhirMmcs>::from_protocol_parameters(
+        &infra.protocol_params,
+        num_variables,
+    );
+    CommitmentWriter::new(&infra.params)
+        .commit(&dft, &mut proof, &mut challenger, &mut statement)
+        .ok()?;
+    Some(proof)
+}
+
 fn whir_commit_and_prove_multi_with_profile(
     seed: &[u8; 32],
     num_variables: usize,
