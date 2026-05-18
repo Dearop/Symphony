@@ -22,6 +22,7 @@
 
 pub mod field;
 pub mod instrumented_benchmark;
+pub mod native_oracles;
 pub mod serialize;
 
 use std::collections::HashMap;

@@ -1,0 +1,887 @@
+# SYMBT3 Native Accumulator Authority Plan
+
+Status: design + implementation plan  
+Target: full NonZK native accumulator authority route  
+Scope: integrity only, no privacy claim  
+Deferred: K5 ZK/masking, true vector tuple leaves, default product routing  
+
+---
+
+## 0. Current State
+
+The implementation currently has two major lines of work.
+
+### K-series: full public-canonical accumulator route
+
+Implemented:
+
+- K1e.2 public-canonical manifest binding
+- K2 accumulator instance and transition
+- K3 authority profile hardening
+- K4 public accumulator research API
+- K4.5 source residual verifier batching
+- K4.6 compressed public accumulator boundary
+- K6a explicit opt-in NonZK accumulator integrity route
+- K6b side-by-side product comparison benchmark
+
+This route is the current full accumulator workload path.
+
+Properties:
+
+- full accumulator workload
+- NonZK integrity only
+- explicit opt-in
+- not default `verify_public`
+- public-canonical manifest
+- no private manifest membership
+- no native message-oracle authority
+- no K5 masking
+
+### N/M-series: native multi-oracle infrastructure
+
+Implemented:
+
+- N1 native multi-oracle WHIR envelope
+- N1b canonical WHIR root serialization
+- N2 native manifest/source equality
+- N3 committed-private NonZK manifest membership
+- N4 native CP round-message oracles
+- N4b batch-axis-native message oracle layout `M_i(T,U_i)`
+- N5 native NonZK folding-integrity metadata gate
+- N6a integrated native folding-integrity proof wrapper
+- N6b explicit native NonZK folding-integrity public route
+- N6c route matrix/reporting layer
+- M1a instrumented compatibility multi-oracle benchmark
+- M1b same-domain RLC tuple-leaf multi-oracle benchmark
+
+This route currently proves native-oracle plumbing and smoke/infrastructure claims, but it is not yet the full accumulator authority route.
+
+---
+
+## 1. Target Claim
+
+The target claim is:
+
+```text
+verify_symbt3_native_accumulator_authority_non_zk(profile, instance, proof) = true
+````
+
+implies that there exist committed source columns, manifest oracle values, CP round message oracles, folded witness data, Ajtai openings, and accumulator witness data such that:
+
+1. `old_accumulator + batch -> new_accumulator` under the declared accumulator transition law.
+2. Manifest/source membership is enforced through native WHIR oracle roots.
+3. CP round messages are native oracles `M_i(T,U_i)`, with one oracle per CP round.
+4. The batch axis `T` lives inside each message oracle domain, not in the oracle count.
+5. Folding challenges are derived from input-side native roots only.
+6. Folded output and accumulator transition are correctly bound.
+7. GR1CS/R1CS residual checks hold.
+8. Ajtai commitment/opening algebra holds.
+9. Norm/range constraints hold under the declared production-shaped range policy.
+10. Native multi-oracle openings use one WHIR instance/root/query schedule via same-domain RLC tuple-leaf packing.
+11. RLC tuple-leaf soundness is included in the authority profile.
+12. The proof satisfies the declared WHIR, sumcheck, RLC, and Fiat-Shamir soundness profile.
+
+This is **not** a ZK claim.
+
+---
+
+## 2. Non-Goals
+
+Do not implement in this phase:
+
+* K5 masking
+* zero-knowledge
+* privacy for witness-bearing columns
+* true vector-valued tuple leaves
+* default `verify_public` promotion
+* silent monolithic fallback
+* byte transcript reconstruction
+* Poseidon digest-body reconstruction
+* SYMBT2F-style family proof forests
+
+---
+
+## 3. Key Distinctions
+
+### K6a
+
+K6a is the current full accumulator route.
+
+```text
+K6a = full accumulator workload + public-canonical manifest + NonZK integrity
+```
+
+It is useful and report-worthy, but it is not native-oracle authoritative.
+
+### N6b / M1b
+
+N6b/M1b demonstrates native-oracle infrastructure.
+
+```text
+N6b/M1b = native oracle infrastructure + RLC tuple-leaf smoke/benchmark path
+```
+
+It is not yet the full accumulator route.
+
+### N7 Target
+
+N7 must combine both:
+
+```text
+N7 = K6a full accumulator workload + N/M native oracle infrastructure
+```
+
+---
+
+## 4. Authority Requirements
+
+A native accumulator authority proof must require:
+
+```text
+full_accumulator_workload = true
+smoke_profile = false
+native_multi_oracle = true
+tuple_leaf_layout = same_domain_rlc_tuple_leaf_v1
+whir_instance_count = 1
+root_count = 1
+query_schedule_count = 1
+transcript_count = 1
+family_columnar_subproof_count = 0
+backend_table_count = 1
+native_oracle_pcs_opening_count = 1
+rlc_repetition_count >= 4
+total_rlc_batching_bits >= 120
+effective_soundness_bits >= 100
+accumulator_transition_claims = 1
+source_r1cs_residual_verifier_evaluations = 1
+```
+
+The authority gate must reject:
+
+* N7 smoke profile
+* compatibility multi-oracle envelope
+* single BabyBear RLC check with ~31 bits
+* `PublicCanonicalManifestViewV1`
+* `DigestOnlyMessageRootsV1`
+* `DebugDevelopmentOnly` roots
+* one-oracle-per-batch-item message layout
+* missing native manifest/source/message policies
+* missing `AccumulatorTransitionConsistency`
+* missing production norm/range bundle
+* `semantic_profile_version` too old
+* `ZkRequired` without K5
+* fallback flags
+* family-columnar subproofs
+* K6a proof kind
+* monolithic proof kind
+
+---
+
+## 5. RLC Tuple-Leaf Soundness
+
+M1b uses:
+
+```text
+same_domain_rlc_tuple_leaf_v1
+```
+
+The packed oracle is:
+
+```text
+F_tuple(x) = Σ_j γ_j · f_j(x)
+```
+
+This is not a true vector-valued tuple leaf.
+
+Authority requires explicit RLC soundness accounting.
+
+### BabyBear single check
+
+BabyBear is about 31 bits, so a single RLC challenge gives only around:
+
+```text
+~31 bits
+```
+
+This is insufficient for a 100-bit authority target.
+
+### Chosen implementation path
+
+Use repeated independent BabyBear RLC checks:
+
+```text
+rlc_repetition_count >= 4
+```
+
+Approximate target:
+
+```text
+4 × 31 ≈ 124 bits
+```
+
+After union-bound overhead, require:
+
+```text
+effective_soundness_bits >= 100
+```
+
+### Future alternatives
+
+Future work may replace repeated BabyBear RLC with:
+
+* extension-field RLC challenges
+* true vector tuple leaves
+* a dedicated multi-oracle PCS interface
+
+---
+
+## 6. Milestone N7-0: Soundness Metadata and Gates
+
+### Goal
+
+Add the native accumulator authority profile and fail-closed gate.
+
+### Add
+
+```rust
+Symbt3NativeAccumulatorAuthorityProfile
+Symbt3NativeAccumulatorAuthorityCounters
+Symbt3NativeAccumulatorAuthorityReport
+Symbt3NativeAccumulatorAuthorityWorkload
+```
+
+Workload enum:
+
+```rust
+pub enum Symbt3NativeAccumulatorAuthorityWorkload {
+    N7SmokeProfileV1,
+    FullK6aAccumulatorV1,
+}
+```
+
+Gate:
+
+```rust
+profile_meets_native_accumulator_authority(profile, metadata) -> bool
+```
+
+### Gate must require
+
+* `FullK6aAccumulatorV1`
+* `smoke_profile = false`
+* `same_domain_rlc_tuple_leaf_v1`
+* `rlc_repetition_count >= 4`
+* `effective_soundness_bits >= 100`
+* `total_rlc_batching_bits >= 120`
+* native manifest/source policy
+* native round-message policy
+* canonical WHIR roots
+* production norm/range bundle
+* accumulator transition consistency
+* no fallback
+* no family subproofs
+
+### Tests
+
+Positive:
+
+* valid full-authority metadata passes
+
+Negative:
+
+* smoke profile rejects
+* missing RLC bits rejects
+* low effective soundness rejects
+* compatibility envelope rejects
+* one-oracle-per-batch layout rejects
+* public-canonical policy rejects
+* digest-only message roots reject
+* debug roots reject
+* K6a proof kind rejects
+* monolithic proof kind rejects
+
+---
+
+## 7. Milestone N7-1: Full Workload Proof Wrapper
+
+### Goal
+
+Add a native accumulator authority proof wrapper around:
+
+1. the full K6a main SYMBT3 accumulator proof
+2. the same-domain RLC tuple-leaf native multi-oracle proof
+3. a binding digest tying both to the same statement
+
+### Add
+
+```rust
+Symbt3NativeAccumulatorAuthorityProof
+Symbt3NativeAccumulatorAuthorityWitness
+Symbt3NativeAccumulatorAuthorityInstance
+Symbt3NativeAccumulatorAuthorityCounters
+```
+
+### Binding digest
+
+Add:
+
+```text
+native_accumulator_authority_binding_digest =
+H(
+  "SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_BINDING_V1",
+  profile_digest,
+  accumulator_instance_digest,
+  public_statement_digest,
+  whir_param_digest,
+  main_symbt3_relation_id,
+  main_symbt3_proof_digest,
+  rlc_tuple_leaf_root,
+  rlc_tuple_leaf_layout_digest,
+  native_oracle_descriptor_digest,
+  native_message_roots_digest,
+  manifest_oracle_root,
+  source_oracle_root,
+  batch_manifest_root,
+  old_accumulator_digest,
+  new_accumulator_digest,
+  batch_size,
+  active_count
+)
+```
+
+The verifier must recompute this and reject mismatch.
+
+Current prerequisite status:
+
+* The typed K6a native workload adapter exists. It extracts the K6a product
+  profile digest, accumulator instance digest, public statement digest, WHIR
+  parameter digest, relation id, main proof digest, old/new accumulator digests,
+  batch manifest root, manifest/message roots, `batch_size`, and `active_count`
+  from verified K6a objects.
+* The N7b full wrapper layer now composes verified adapter fields with M1b
+  native RLC tuple-leaf proof/profile parts and builds the full authority
+  binding digest.
+* M1b repeated RLC tuple-leaf evidence is wired for the wrapper: four
+  independent repetitions are verified without adding WHIR instances or roots.
+  The wrapper advances past `RepeatedRlcSoundnessMissingOrWeak` only when those
+  repetitions verify.
+* The product-facing N7b full helper/benchmark path is wired end to end through
+  the verified K6a adapter, repeated-RLC tuple-leaf proof, and wrapper verifier.
+  It emits full CSV rows only when proving and verification both succeed.
+* N7b canonical proof serialization now stores the tuple-leaf PCS proof as the
+  compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. The benchmark
+  `proof_bytes` value is the actual canonical N7b proof byte length, not a
+  compact-size estimate, and the serialization test requires section accounting
+  to equal that actual length exactly.
+* The fail-closed full helpers must keep rejecting smoke, missing tuple-leaf
+  proof parts, binding mismatches, fallback use, family subproofs, and
+  incomplete adapter state.
+
+Latest local full-path rows:
+
+| k | prove ms | verify ms | proof bytes | compact tuple PCS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 34.214 | 33.697 | 722,833 | 373,364 |
+| 2 | 42.467 | 35.658 | 742,230 | 402,834 |
+| 4 | 58.223 | 42.941 | 768,420 | 427,594 |
+
+The remaining bottleneck is verifier-needed MMCS opening material: Merkle
+authentication paths and opened query values. The measured full rows did not
+show whole Merkle proof or opened-value payload duplication, so further size
+reduction needs a shared/batched MMCS opening representation rather than another
+metadata-only encoding pass.
+
+### N8 Integrated K6a + Native WHIR Prototype
+
+N8 is the next non-additive direction: replace the current N7b shape
+
+```text
+K6a WHIR proof + tuple-leaf WHIR/PCS proof + N7b wrapper
+```
+
+with one integrated WHIR proof whose relation includes the K6a accumulator
+constraints, the native tuple-leaf repeated-RLC constraints, and the
+accumulator transition/binding link. The current N8 slice is a real integrated
+claim-row evaluator plus committed-table layout builder with K6a
+verifier-facing semantic rows, tuple-RLC semantic rows, and transition/binding
+semantic rows. It is a NonZK research authority-candidate route, not a
+production authority proof: `IntegratedK6aNativeClaimPlanV1`,
+`IntegratedK6aNativeCommittedTableV1`,
+`N8IntegratedK6aSemanticConstraintsV1`,
+`N8IntegratedTupleRlcSemanticConstraintsV1`,
+`N8IntegratedTransitionBindingSemanticConstraintsV1`,
+`N8IntegratedSemanticCompletionFlagsV1`,
+`N8SemanticBatchingV1`/`N8K6aSourceRowBatchingV1`, and
+`RealIntegratedK6aNativeEvaluatorV1` are embedded in
+`Symbt3IntegratedK6aNativeWhirRelationV1`. `N8IntegratedWhirProofInputs` and
+`N8IntegratedWhirProofPlan` add the typed bridge from that descriptor to one
+WHIR proof without accepting the route.
+
+The planner computes `k6a_num_vars`, `tuple_packed_num_vars`, and
+`integrated_num_vars = max(k6a_num_vars, tuple_packed_num_vars)`. It records the
+deterministic K6a zero-extension padding policy, maps the tuple-leaf repetition
+axis as appended after the logical tuple axes, and emits combined logical
+oracle, constraint, and claim descriptors. The descriptor now also binds real
+K6a verifier opening/evaluation rows extracted directly from the accumulator
+witness/public claim plan, K6a semantic rows derived through
+`symbt3_c_table_and_claims(...)`, tuple packed and logical repeated-RLC claim
+rows, per-repetition tuple RLC residual rows, representative deterministic
+padding rows, and accumulator transition/binding semantic rows. The old
+source-proof extraction path remains as a test/reference path and is checked
+for row equivalence. Those transition rows bind the old/new accumulator
+digests, accumulator instance and public statement digests, K6a semantic source
+digest, tuple root/layout digests, native descriptor/message roots digest,
+manifest/source/batch roots, batch size, active count, workload kind, and N8
+plan/table/layout digests. The
+transcript binds the K6a relation id/public statement digest, the K6a semantic
+descriptor digest, tuple-leaf descriptor/layout digest, RLC repetition metadata,
+integrated shape, padding policy, evaluator digests, transition semantic
+descriptor digest, semantic completion flags, and workload kind with
+`SYMBT3_N8_INTEGRATED_K6A_NATIVE_WHIR_RELATION_V1`.
+
+The committed-table builder maps K6a source rows and deterministic K6a
+zero-padding rows into the integrated domain, maps tuple-leaf repeated-RLC rows
+into that same domain, records row/axis ownership metadata, and emits stable
+`layout_digest` and `table_digest` values. Its counters record
+`integrated_num_vars`, `integrated_oracle_len`, `k6a_padded_rows`,
+`tuple_rows`, and `combined_constraint_count`. It does not introduce a WHIR
+root or proof and explicitly rejects one-oracle-per-batch-item layout metadata.
+
+The proof-plan bridge represents the current layout as same-domain multiple
+logical columns. K6a and tuple-leaf row/axis overlap is therefore intentional
+only under that representation; interpreting it as one scalar oracle with
+selector-gated regions is rejected as ambiguous. The bridge descriptors cover
+K6a accumulator constraints, tuple-leaf repeated-RLC constraints, and the
+accumulator transition/binding link. The proof-plan transcript binds those
+descriptors, `layout_digest`, `table_digest`, `integrated_num_vars`, and the
+workload kind, including the descriptor-bound semantic/source row batching
+plan.
+
+The N8 gate remains strict. It accepts descriptor/plan/table/evaluator
+consistency plus the K6a semantic descriptor/row checks, tuple-leaf
+repeated-RLC semantic descriptor/row checks, and transition/binding semantic
+descriptor/row checks only when all three semantic flags are true. The semantic
+builder now sets `k6a_semantics_complete=true`,
+`tuple_rlc_semantics_complete=true`, and
+`transition_semantics_complete=true`; any missing flag, synthetic backend
+proof, split delegation material, N7b proof-as-N8 shape, fallback smoke proof,
+or family subproof remains rejected. This moves N8 to a NonZK research
+authority-candidate path, not production authority and not a performance
+result. N7b is unchanged and remains the working full native authority
+candidate. The low-level prover now emits one real WHIR PCS proof/root/query
+schedule over the real integrated claim evaluator and labels the output
+`RealIntegratedK6aNativeEvaluatorV1`; it rejects split K6a+tuple delegation and
+emits no tuple PCS proof. The synthetic backend-plumbing prover is retained
+only under `SyntheticNonAuthoritativeV1`, and that mode is rejected by the N8
+authority gate. The verifier-side backend entry point accepts an
+`N8IntegratedWhirVerifierInput` with the integrated claim plan,
+committed-table/layout digests, combined bridge descriptors, exactly one WHIR
+root/proof, and one
+`N8IntegratedWhirQueryScheduleV1`; it reuses `whir_verify_opening_multi` over
+`integrated_num_vars` and rejects missing schedules, num-var mismatches, root
+mismatches, extra proof material, split delegation, and descriptor/schedule
+mutations. Real-mode backend verification recomputes the expected query
+schedule from the evaluator rows before checking the single WHIR opening. The
+K6a semantic slice now covers the verifier-facing K6a public/opening claims,
+three final residual-zero checks, `z_eval` binding, product-sumcheck acceptance,
+and deterministic K6a padding zero row obtained from the same
+`symbt3_c_table_and_claims(...)` construction used by K6a verification, without
+constructing a full K6a source proof in the direct N8 prover path. The tuple-RLC
+semantic slice covers repeated challenge and opening-point derivation,
+logical oracle order, packed/logical claim digests, residual-zero rows, padding
+rows, and the one-WHIR/no-tuple-PCS shape. The transition semantic slice covers
+the accumulator digest transition and binding to the public statement, K6a
+semantic source digest, tuple root/layout, native roots,
+manifest/source/batch roots, batch shape, workload kind, and N8
+plan/table/layout digests. The remaining blocker
+before any production claim is review and production audit of the complete
+integrated relation.
+
+The reserved internal entry points are
+`prove_symbt3_integrated_whir_from_claim_plan` and
+`verify_symbt3_integrated_whir_from_claim_plan`, plus the lower-level verifier
+backend `verify_symbt3_integrated_whir_backend_from_verifier_input`. The prover
+entry point uses one scalar WHIR call over a same-domain, multi-logical-column
+claim-row evaluator. The benchmark target
+`symbt3_n8_integrated_authority_vs_k` emits
+`N8_INTEGRATED_AUTHORITY_CSV` rows with actual serialized N8 output bytes and
+`BLOCKED` rows if the audited authority-candidate gate rejects. The current N8
+query schedule uses `N8SemanticBatchingV1` and `N8K6aSourceRowBatchingV1`: the
+52 K6a source rows are descriptor-bound and checked by one source-row batch
+opening, while K6a semantic rows, tuple-RLC rows, and transition/binding rows
+are each checked by a separate descriptor-bound batch opening. The 52 source
+rows break down as 15 verifier opening rows, 3 final residual rows, 1 `z_eval`
+row, 32 product-sumcheck coefficient rows, and 1 deterministic padding row.
+The benchmark also emits opening-breakdown, K6a source-row breakdown, and
+timer rows for direct claim extraction, tuple-RLC input construction, and the
+rest of this batched research path.
+
+### Tests
+
+Positive:
+
+* honest wrapper verifies for small full workload
+
+Negative:
+
+* stale main proof rejects
+* stale native proof rejects
+* profile digest mutation rejects
+* public statement digest mutation rejects
+* WHIR param mutation rejects
+* old accumulator digest mutation rejects
+* new accumulator digest mutation rejects
+* tuple root mutation rejects
+* descriptor digest mutation rejects
+
+---
+
+## 8. Milestone N7-2: Full Workload Prover
+
+### Goal
+
+Implement:
+
+```rust
+prove_symbt3_native_accumulator_authority_non_zk(...)
+```
+
+It must:
+
+1. Build the full K6a accumulator statement/witness.
+2. Produce the main full SYMBT3 WHIR proof.
+3. Build native logical oracles:
+
+   * manifest
+   * source
+   * one native CP message oracle per round `M_i(T,U_i)`
+4. Pack them with same-domain RLC tuple-leaf mode.
+5. Repeat RLC packing independently `rlc_repetition_count` times.
+6. Bind all roots/proofs/descriptors with the binding digest.
+7. Return `Symbt3NativeAccumulatorAuthorityProof`.
+
+### Requirements
+
+* `full_accumulator_workload = true`
+* no smoke relation
+* no synthetic `main_whir_num_vars = 2`
+* no `main_oracle_len = 4`
+* no fallback to K6a-only proof
+* no family subproofs
+* no one-oracle-per-batch layout
+
+---
+
+## 9. Milestone N7-3: Full Workload Verifier
+
+### Goal
+
+Implement:
+
+```rust
+verify_symbt3_native_accumulator_authority_non_zk(...)
+```
+
+It must:
+
+1. Check native accumulator authority gate.
+2. Recompute profile digest.
+3. Recompute accumulator instance digest.
+4. Recompute public statement digest.
+5. Recompute native binding digest.
+6. Verify the full main SYMBT3 WHIR proof.
+7. Verify RLC tuple-leaf native multi-oracle proof.
+8. Check RLC packed values against logical claims.
+9. Check manifest/source equality through RLC aggregate relation.
+10. Check native CP message roots and prefix challenge schedule.
+11. Check accumulator transition.
+12. Reject stale/mismatched components.
+13. Reject fallback flags.
+
+### Tests
+
+Positive:
+
+* `k=1`, `round_count=1`
+* `k=2`, `round_count=1`
+* `k=4`, `round_count=1` if feasible
+
+Negative:
+
+* RLC challenge mutation
+* tuple component order mutation
+* manifest/source root swap
+* message root swap
+* message prefix challenge mutation
+* folded output mutation
+* old/new accumulator mutation
+* proof kind mutation
+* fallback flag mutation
+* family subproof injection
+
+---
+
+## 10. Milestone N7-4: RLC Repetition Support
+
+### Goal
+
+Make RLC repetition real.
+
+For repetition index `r`:
+
+```text
+γ_{r,j}, ζ_r = H(
+  "SYMBT3_RLC_TUPLE_LEAF_PACKING_V1",
+  repetition_index = r,
+  proof_relation_id,
+  public_statement_digest,
+  whir_param_digest,
+  descriptor_digest,
+  tuple_leaf_layout_digest,
+  logical_oracle_count,
+  num_vars
+)
+```
+
+For every repetition, prove:
+
+```text
+F_tuple_r(z) = Σ_j γ_{r,j} · f_j(z)
+```
+
+### Counters
+
+Add:
+
+```text
+rlc_repetition_count
+rlc_batching_bits_per_repetition
+total_rlc_batching_bits
+effective_soundness_bits
+native_oracle_pcs_opening_count
+```
+
+Expected:
+
+```text
+rlc_repetition_count = 4
+rlc_batching_bits_per_repetition = 31
+total_rlc_batching_bits = 124
+effective_soundness_bits = 124
+native_oracle_pcs_opening_count = 1
+```
+
+not:
+
+```text
+native_oracle_pcs_opening_count = logical_oracle_count
+whir_instance_count = rlc_repetition_count
+root_count = rlc_repetition_count
+```
+
+---
+
+## 11. Milestone N7-5: Benchmark
+
+Add:
+
+```text
+symbt3_native_accumulator_authority_vs_k
+```
+
+Run:
+
+```text
+k = 1,2,4
+round_count = 1
+rlc_repetition_count = 4
+```
+
+Emit:
+
+```text
+NATIVE_ACCUMULATOR_AUTHORITY_CSV
+```
+
+Fields:
+
+```text
+k
+round_count
+prove_ms
+verify_ms
+proof_bytes
+public_statement_bytes
+main_whir_num_vars
+main_oracle_len
+full_accumulator_workload
+smoke_profile
+native_multi_oracle
+tuple_leaf_layout
+logical_oracle_count
+rlc_repetition_count
+total_rlc_batching_bits
+effective_soundness_bits
+whir_instance_count
+root_count
+query_schedule_count
+transcript_count
+native_oracle_pcs_opening_count
+family_columnar_subproof_count
+top_level_whir_proof_count
+backend_table_count
+accumulator_transition_claims
+source_r1cs_residual_verifier_evaluations
+fallback_used
+```
+
+Acceptance:
+
+```text
+full_accumulator_workload = true
+smoke_profile = false
+native_multi_oracle = true
+tuple_leaf_layout = same_domain_rlc_tuple_leaf_v1
+rlc_repetition_count >= 4
+effective_soundness_bits >= 100
+whir_instance_count = 1
+root_count = 1
+query_schedule_count = 1
+transcript_count = 1
+family_columnar_subproof_count = 0
+fallback_used = false
+```
+
+---
+
+## 12. Milestone N7-6: Documentation
+
+Update:
+
+* `docs/whir.md`
+* `docs/whir_public_performance_north_star_plan.md`
+* `docs/symbt3_accumulator_authoritative_roadmap.md`
+* optional: `docs/symbt3_soundness_profile.md`
+
+Must state:
+
+* N7 is NonZK.
+* N7 uses repeated BabyBear RLC.
+* N7 is not privacy preserving.
+* N7 is not true vector tuple leaves.
+* K5 remains deferred.
+* Default `verify_public` remains unchanged unless explicitly changed later.
+* Full authority requires full workload + RLC soundness + native binding.
+* Smoke profiles fail closed.
+
+---
+
+## 13. Milestone N7-7: Final Negative Matrix
+
+Required negative tests:
+
+### Profile and gate
+
+* smoke profile rejects
+* low RLC bits rejects
+* missing RLC bits rejects
+* wrong tuple layout rejects
+* compatibility envelope rejects
+* debug root rejects
+* public-canonical manifest rejects
+* digest-only message roots reject
+* semantic profile too old rejects
+* ZK-required without K5 rejects
+
+### Proof binding
+
+* binding digest mutation rejects
+* profile digest mutation rejects
+* accumulator instance digest mutation rejects
+* public statement digest mutation rejects
+* WHIR param digest mutation rejects
+* native descriptor digest mutation rejects
+* main proof digest mutation rejects
+* tuple root mutation rejects
+
+### Accumulator relation
+
+* old accumulator digest mutation rejects
+* new accumulator digest mutation rejects
+* folded output mutation rejects
+* accumulator transition mutation rejects
+
+### Native oracle relation
+
+* manifest/source root swap rejects
+* message root swap rejects
+* tuple component order swap rejects
+* RLC challenge mutation rejects
+* logical value mutation rejects
+* packed value mutation rejects
+* one-oracle-per-batch layout rejects
+* wrong batch axis rejects
+* wrong message axis rejects
+* stale prefix challenge rejects
+
+### Routing
+
+* K6a proof rejected as N7
+* N7 proof rejected as K6a unless explicitly converted
+* monolithic proof rejected as N7
+* fallback flag rejects
+* family subproof injection rejects
+
+---
+
+## 14. Commands
+
+Run after each major milestone:
+
+```bash
+cargo fmt
+cargo check --features whir --tests
+cargo test --features whir native_oracle -- --nocapture
+cargo test --features whir symbt3 -- --nocapture
+cargo test --features whir verify_public -- --nocapture
+cargo bench --bench whir_scaling --features whir --no-run
+cargo test --features whir
+cargo test
+git diff --check
+```
+
+Benchmark:
+
+```bash
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 \
+cargo bench --bench whir_scaling --features whir -- "symbt3_native_accumulator_authority_vs_k"
+```
+
+---
+
+## 15. Stop Conditions
+
+Do not claim N7 authority unless all are true:
+
+```text
+full_accumulator_workload = true
+smoke_profile = false
+rlc_repetition_count >= 4
+effective_soundness_bits >= 100
+main proof is full K6a workload
+native proof is bound to same statement
+all negative tests pass
+fallback_used = false
+```
+
+If any are false, the route must fail closed.
+
+---
+
+## 16. Final Claim If Successful
+
+If successful, the honest claim is:
+
+```text
+We implement a NonZK native accumulator authority route for SYMBT3, using the full accumulator workload and same-domain RLC tuple-leaf native multi-oracle WHIR. The route uses one WHIR instance/root/query schedule for the native oracle batch, repeated RLC checks for soundness, and fail-closed authority gates. It is not zero-knowledge and does not claim privacy.
+```

@@ -20,12 +20,14 @@ whir = [
     "p3-maybe-rayon",
     "p3-multilinear-util",
     "p3-commit",
+    "ciborium",
 ]
 
 [dependencies]
 rand = { version = "0.10.0", features = ["chacha"] }
 sha2 = "0.11.0"
 serde_json = "1"
+ciborium = { version = "0.2.2", optional = true }
 zeroize = { version = "1", features = ["derive"] }
 curve25519-dalek = { version = "4.1", features = ["digest"] }
 

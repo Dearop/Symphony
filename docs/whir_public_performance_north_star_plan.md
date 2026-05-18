@@ -1,5 +1,333 @@
 # WHIR Public Performance North Star Plan
 
+## N1 Native Multi-Oracle WHIR Evaluation Layer
+
+SYMBT3-N1 introduces a versioned native multi-oracle WHIR evaluation envelope.
+It is infrastructure only and does not change the current product
+`verify_public` route.
+
+N1 uses Option A: one logical SYMBT3/native-oracle proof envelope containing
+multiple ordered native oracle descriptors and roots. It does not use
+SYMBT2F-style family subproofs, does not add `family_columnar_subproofs`, and
+does not replace any existing explicit NonZK integrity route.
+
+The new descriptor layer records:
+
+- `oracle_id`;
+- oracle role;
+- layout digest;
+- `num_vars`;
+- root;
+- opening schedule.
+
+The descriptor digest binds the ordered descriptors:
+
+```text
+H("SYMBT3_NATIVE_ORACLE_DESCRIPTORS_V1", ordered descriptors)
+```
+
+Opening points bind the proof relation id, public statement digest, WHIR
+parameter digest, descriptor/root digest, root policy, opening schedule, and
+claim kind.
+For equality checks, all compared oracles should use
+`WhirNativeEvalClaimKind::EqualitySide` and
+`TranscriptDerived { domain_separator }`; this gives the compared oracles the
+same point while still binding that point to all ordered roots/layouts/IDs.
+`PerOraclePoint` is for independent claims.
+
+Current implementation note: whir-p3 exposes one polynomial commitment per PCS
+payload. N1 therefore stores one internal PCS opening payload per native oracle
+inside the single logical envelope. These are reported as
+`native_oracle_pcs_opening_count`, not `family_columnar_subproof_count`.
+
+Counters added by N1:
+
+- `native_oracle_count`;
+- `native_oracle_descriptor_bytes`;
+- `native_oracle_eval_claim_count`;
+- `native_oracle_opening_count`;
+- `native_oracle_pcs_opening_count`;
+- `native_oracle_transcript_squeezes`;
+- `native_oracle_verify_ms` in the verification report.
+
+N1 deliberately does not implement:
+
+- product routing;
+- K5/ZK;
+- private manifest membership;
+- native CP message semantics;
+- `NativeMessageOracleRootsV1`.
+
+## N1b Canonical Native-Oracle Root Hardening
+
+SYMBT3-N1b replaces the default N1 root derivation with
+`NativeOracleRootPolicy::CanonicalWhirRootV1`. The whir-p3 initial commitment is
+available as a typed `MerkleCap<BabyBear, [BabyBear; 8]>`, so the descriptor root
+digest is derived from stable cap roots and canonical BabyBear words rather than
+Rust formatting.
+
+`NativeOracleRootPolicy::DebugDevelopmentOnly` remains only as an explicit
+development policy. Product, authority, native-manifest, and native-message
+verification profiles reject it. The native-oracle opening transcript and
+envelope metadata digest both bind the root policy, so proofs cannot be replayed
+under a different policy.
+
+N1b also adds stable canonical bytes/digests for native oracle specs,
+descriptors, roles, opening schedules, eval requests, eval claims, and the
+proof-envelope metadata. The internal WHIR PCS payload remains backend-native;
+the hardened metadata layer is what N2/N4 will build on.
+
+## N1bench Native Multi-Oracle Benchmarks
+
+N1bench adds isolated native multi-oracle WHIR benchmarks that do not exercise
+K6a full accumulator routing or N6b native folding-integrity routing:
+
+| Benchmark | Fixed Shape | Scaling Axis |
+| --- | --- | --- |
+| `symbt3_native_multi_oracle_vs_oracle_count` | small fixed `num_vars`; one claim per oracle | `native_oracle_count` |
+| `symbt3_native_multi_oracle_vs_num_vars` | fixed native oracle count | per-oracle WHIR domain size |
+| `symbt3_native_multi_oracle_batch_axis_vs_k` | fixed `round_count` | batch size inside `num_vars` |
+
+The CSV rows are the primary scaling report. Criterion timings are secondary.
+Because whir-p3 currently produces one internal PCS opening payload per native
+oracle, `native_oracle_pcs_opening_count` is expected to scale with native
+oracle count. That cost is visible in N1bench and is not counted as
+`family_columnar_subproof_count`.
+
+The batch-axis benchmark validates the N4b shape: for fixed `round_count`,
+native oracle count and native PCS opening count stay constant while
+`num_vars = batch_log_size + message_axis_log_size` grows. N1bench is NonZK,
+not K6a, not an N6b full accumulator benchmark, and not a product-route
+promotion.
+
+## M1a Instrumented Multi-Oracle Shape Report
+
+M1a adds the filtered benchmark `symbt3_instrumented_multi_oracle`. It emits
+`SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON` rows to
+`benchmarks/symbt3_instrumented_multi_oracle.jsonl` using schema
+`symphony.symbt3.instrumented_multi_oracle.v1`.
+
+The `multi_oracle` section distinguishes the current logical compatibility
+envelope from future tuple-leaf native WHIR. Today rows report
+`native_multi_oracle = false`, `logical_envelope = true`,
+`compat_internal_pcs_payloads = true`, `tuple_leaf_layout = "none"`, and
+`whir_instance_count = root_count = logical_oracle_count`. The shape guard must
+not report true native multi-oracle WHIR until the implementation has one WHIR
+instance, one query schedule, one transcript, and one root for the tuple-leaf
+layout.
+
+The analyzer `scripts/analyze_symbt3_instrumented_multi_oracle.py` compares
+verification time with the count=1 single-oracle baseline and a naive
+`N * single_oracle` estimate. This is a benchmark/schema milestone only: no
+protocol semantics, product routing, K6a/K6b/N6b behavior, family subproof
+shape, or K5/ZK status changes.
+
+## M1b Same-Domain RLC Tuple-Leaf Native Shape
+
+M1b extends the same `symbt3_instrumented_multi_oracle` JSONL report with a
+same-domain tuple-leaf benchmark/proof path. The current whir-p3 integration
+does not expose vector-valued tuple leaves, so M1b uses
+`same_domain_rlc_tuple_leaf_v1`: logical oracle values at the same domain point
+are packed into one BabyBear scalar by verifier-derived RLC challenges.
+
+For `logical_oracle_count > 1`, M1b rows are the first true native multi-oracle
+shape rows:
+
+- `native_multi_oracle = true`;
+- `logical_envelope = false`;
+- `compat_internal_pcs_payloads = false`;
+- `whir_instance_count = query_schedule_count = transcript_count = 1`;
+- `root_count = native_oracle_pcs_opening_count = 1`;
+- `tuple_leaf_layout = "same_domain_rlc_tuple_leaf_v1"`;
+- `product_verify_public_allowed = false`.
+
+The analyzer distinguishes compatibility rows from tuple-leaf rows and reports
+ratios against both the single-oracle baseline and the naive `N * single`
+estimate. RLC prover work may still grow with oracle count because the packed
+evaluation vector must be constructed, but verifier shape is one WHIR proof,
+one root, one schedule, and one PCS multi-opening. M1b now carries repeated RLC
+evidence by default: four independently derived repetitions at 31 bits each,
+reported as `rlc_repetition_count = 4`,
+`rlc_batching_bits_per_repetition = 31`,
+`total_rlc_batching_bits = effective_soundness_bits = 124`. The repetitions
+reuse the same tuple-leaf root and WHIR instance; `packed_eval_claims` grows
+with the repetition count while `native_oracle_pcs_opening_count = 1`.
+
+M1b remains a dev benchmark path. It is NonZK, does not implement K5, does not
+change product routing, and does not alter K6a/K6b/N6b behavior.
+
+## N2 Native Manifest/Source Membership
+
+SYMBT3-N2 implements the `NativeManifestOracleOpeningV1` development path using
+the N1 native multi-oracle envelope. It opens a native manifest oracle and a
+native source oracle at the same transcript-derived equality point and checks:
+
+```text
+ManifestOracle(zeta_manifest_source) = SourceOracle(zeta_manifest_source)
+```
+
+N2 is NonZK. It adds no masking, does not implement K5, does not replace K6a,
+and does not change the product `verify_public` or v2 public verifier route.
+`PublicCanonicalManifestViewV1` remains the existing K6a route.
+
+The N2 public manifest binding is:
+
+```text
+batch_manifest_root = H(
+    "SYMBT3_NATIVE_MANIFEST",
+    manifest_layout_digest,
+    manifest_oracle_root,
+    native_oracle_root_policy_digest
+)
+```
+
+The verifier recomputes this binding from the manifest descriptor root. The N2
+challenge binds the proof relation id, public statement digest, WHIR parameter
+digest, native descriptor/root digest, manifest/source layout digests,
+`batch_manifest_root`, the canonical root policy digest, and the
+`SYMBT3_N2_MANIFEST_SOURCE_EQUALITY` domain. The compared claims both use
+`WhirNativeEvalClaimKind::EqualitySide`.
+
+The N2 smoke counters are expected to remain:
+
+- `top_level_whir_proof_count = 1`;
+- `family_columnar_subproof_count = 0`;
+- `native_oracle_count = 2`;
+- `native_oracle_eval_claim_count = 2`;
+- `native_oracle_opening_count = 2`;
+- `native_oracle_pcs_opening_count = 2`.
+
+N2 v1 rejects manifest/source `num_vars` mismatches rather than applying a
+layout mapping. Committed/private manifest membership is deferred to N3, and
+native CP message oracles are deferred to N4.
+
+## N3 Committed-Private NonZK Manifest Membership
+
+SYMBT3-N3 adds the committed-private manifest/source development path on top of
+N2. The new visibility tag is
+`Symbt3ManifestVisibility::CommittedPrivateNonZk`. It means committed through
+native manifest/source oracle roots but not included as expanded values in the
+public boundary. It does not mean hidden from the WHIR verifier; queried
+coordinates can be revealed by NonZK openings.
+
+The N3 public statement contains component metadata, roots, layout digests,
+value counts, and public-boundary component values. It omits committed-private
+component values, so the smoke counter is expected to report:
+
+- `committed_private_component_count > 0`;
+- `committed_private_public_bytes = 0`;
+- compressed `public_statement_bytes`;
+- `native_oracle_pcs_opening_count = 2`.
+
+Policy gates are:
+
+- `PublicCanonicalManifestViewV1` rejects `CommittedPrivateNonZk`;
+- `NativeManifestOracleOpeningV1` plus `NativeSourceOracleOpeningV1` accepts it
+  only under `NonZkIntegrityOnly` or explicit NonZK research status;
+- ZK-required profiles reject until K5 masking exists;
+- `DebugDevelopmentOnly` native roots remain rejected by native-manifest
+  authority.
+
+N3 keeps product routing unchanged. K6a remains the public canonical manifest
+view route, N3 is not privacy-preserving, and native CP message oracles remain
+deferred to N4.
+
+## N4 Native CP Round-Message Oracles
+
+SYMBT3-N4 makes CP round messages native WHIR oracles under
+`Symbt3MessageOraclePolicy::NativeRoundMessageOraclesV1`. Each round message has
+a typed `Symbt3NativeRoundMessageOracleLayoutV1`, role
+`MessageRound { round }`, stable oracle id `1000 + round`, and a native
+`MessageView` opening.
+
+SYMBT3-N4b makes the batch axis native to each round oracle. A round oracle is
+`M_i(T, U_i)`: `T` is the internal batch item axis, and `U_i` is the typed
+message-coordinate axis for round `i`. The layout records
+`batch_axis_log_size`, `message_axis_log_size`, and `total_num_vars`; increasing
+batch size changes `total_num_vars`, not the number of native oracle
+descriptors. Round message coordinate domains may differ, but the native-oracle
+count must scale with CP round count, not batch size.
+
+N4 adds compressed native-message public metadata:
+
+- `message_oracle_roots_digest`;
+- `message_round_layouts_digest`;
+- `message_oracle_policy_digest`.
+
+The native message roots are input-side transcript data. Round challenges are
+derived from ordered prefix roots plus the folding protocol id, input public
+boundary digest, batch manifest root, source roots digest, round layout digest,
+active count, and batch size. Later roots do not affect earlier challenges, and
+folded output does not affect round challenges. WHIR proof-checking challenges
+remain separate from folding challenges.
+
+The round-count smoke counters are expected to report:
+
+- `native_message_round_count = round_count`;
+- `native_oracle_count = round_count`;
+- `native_oracle_eval_claim_count = round_count`;
+- `native_oracle_pcs_opening_count = round_count`;
+- `message_to_trace_binding_count = 0`;
+- `family_columnar_subproof_count = 0`;
+- `top_level_whir_proof_count = 1`.
+
+The N4b batch-size smoke counter uses `k` as batch size and keeps
+`native_oracle_count` and `native_oracle_pcs_opening_count` constant for a fixed
+`round_count`.
+
+N4 is NonZK and infrastructure-only. It does not change K6a/product routing,
+does not prove byte transcript reconstruction, does not add
+`message_trace_values` or byte-body reconstruction, and does not implement
+K5 masking. It prepares the native message-oracle substrate for a later
+`Symbt3NonZkFoldingIntegrityV1` route if that route is explicitly promoted.
+
+## N5 NonZK Folding-Integrity Profile Gate
+
+SYMBT3-N5 adds the native-oracle NonZK folding-integrity gate:
+`Symbt3NativeOracleProfile::NonZkFoldingIntegrityV1`. This is a strong metadata
+profile, not product routing. The product `verify_public` path remains
+unchanged, and K6a remains the explicit `PublicCanonicalManifestViewV1` route.
+
+The gate accepts only the native N2/N3/N4b shape:
+
+- `NativeManifestOracleOpeningV1`;
+- `NativeSourceOracleOpeningV1`;
+- `NativeRoundMessageOraclesV1`;
+- `CanonicalWhirRootV1`;
+- committed-private components only under `NonZkIntegrityOnly` or explicit
+  NonZK research status;
+- no `DebugDevelopmentOnly`;
+- no public-canonical manifest policy;
+- no row-byte/digest-only message root policy;
+- one logical native-oracle envelope;
+- `top_level_whir_proof_count = 1`;
+- `family_columnar_subproof_count = 0`;
+- manifest/source native oracle count `= 2`;
+- native message oracle count `= round_count`, not batch size;
+- no monolithic fallback.
+
+The gate also requires folding-integrity semantics to be present: the N2
+manifest evaluation claim, accumulator transition consistency, K1/K2/K3/K4
+semantic families, and the production norm/range bundle. `ZkRequired` rejects
+because K5 masking is not implemented.
+
+The gate-only smoke benchmark is
+`symbt3_native_folding_integrity_gate_vs_k`. It reports:
+
+- `native_oracle_count_manifest_source`;
+- `native_oracle_count_messages`;
+- `native_message_round_count`;
+- `native_message_oracle_count`;
+- `native_message_oracle_count_is_round_count`;
+- `family_columnar_subproof_count`;
+- `gate_ok`.
+
+N5 prepares for a future N6 versioned proof envelope and opt-in native route.
+It does not implement K5, byte transcript reconstruction, default routing, or
+product promotion.
+
+---
+
 ## Contents
 
 1. [Current Finding](#current-finding)
@@ -1360,3 +1688,450 @@ The next concrete step is a design/implementation plan for `SYMBT3` with:
 
 The implementation must still avoid appended typed CP R1CS lowering and must
 not open private oracle bytes to run `CpFieldRelation::check` in the verifier.
+
+---
+
+## N6a Integrated Native-Oracle Folding-Integrity Proof
+
+SYMBT3-N6a adds the first real native-oracle folding-integrity proof wrapper:
+`Symbt3NativeFoldingIntegrityProof`. It binds the main SYMBT3 WHIR proof and one
+combined N1 native envelope containing both N2 manifest/source equality and N4b
+round-message views.
+
+The binding digest covers the relation id, recomputed public statement digest,
+profile digest, WHIR parameter digest, native descriptor digest, native message
+roots digest, manifest/source roots, batch manifest root, source-column layout,
+message and manifest policy digests, active count, and batch size. The verifier
+rejects any stale main proof, stale native envelope, descriptor/root/policy
+mismatch, or N5 gate failure.
+
+The smoke benchmark is `symbt3_native_folding_integrity_vs_k`. For fixed
+`round_count = 1`, it reports:
+
+- `native_oracle_count = 2 + round_count`;
+- `native_message_oracle_count = round_count`;
+- `native_oracle_pcs_opening_count = 2 + round_count`;
+- `family_columnar_subproof_count = 0`;
+- `top_level_whir_proof_count = 1`;
+- `message_to_trace_binding_count = 0`;
+- proof/public-statement byte estimates and prove/verify timings.
+
+N6a does not implement K5, byte transcript reconstruction, default routing, or
+product promotion. K6a remains the explicit `PublicCanonicalManifestViewV1`
+route, and product `verify_public` remains unchanged. N6b, below, adds the
+explicit opt-in native route while keeping default routing unchanged.
+
+## N6b Opt-In Native NonZK Public Route
+
+SYMBT3-N6b adds the explicit public-route wrapper around N6a:
+`prove_public_symbt3_native_folding_integrity_non_zk` and
+`verify_public_symbt3_native_folding_integrity_non_zk`. The route is selected
+only by `Symbt3NativeFoldingProofKind::Symbt3NativeNonZkFoldingIntegrityV1` plus
+`Symbt3NativeFoldingIntegrityPublicProfile` with explicit native NonZK or
+research-only status.
+
+The N6b verifier rejects K6a `PublicCanonicalManifestViewV1` proof kinds,
+monolithic typed CP proof kinds, disabled/default route status, digest-only
+message roots, `DebugDevelopmentOnly`, stale profile versions, `ZkRequired`
+without K5, monolithic fallback flags, stale native envelopes, stale main WHIR
+proofs, and one-oracle-per-batch message layouts. There is no fallback path.
+
+The public benchmark is `symbt3_native_folding_integrity_public_vs_k`. For fixed
+`round_count = 1`, expected counters remain:
+
+- `native_oracle_count = 3`;
+- `native_message_oracle_count = 1`;
+- `native_oracle_pcs_opening_count = 3`;
+- `family_columnar_subproof_count = 0`;
+- `top_level_whir_proof_count = 1`;
+- `monolithic_fallback_used = false`.
+
+N6b is stronger than K6a because manifest/source/message roots are native WHIR
+oracles, but it is still NonZK, not privacy-preserving, not default
+`verify_public`, and not a K5 masking implementation. N7 may consider a default
+route only after full negative-matrix and benchmark review.
+
+## N7 Native Accumulator Authority Smoke Profile
+
+N7 adds `Symbt3NativeAccumulatorAuthorityProof` and the helpers
+`prove_symbt3_native_accumulator_authority_non_zk` /
+`verify_symbt3_native_accumulator_authority_non_zk`. Inspection of the current
+implementation classifies this route as `N7SmokeProfileV1`: it proves a tiny
+synthetic main WHIR relation and is not the full K6a accumulator workload.
+
+The route uses M1b `same_domain_rlc_tuple_leaf_v1` for manifest, source, and one
+CP round-message oracle per round. The authority profile requires the RLC
+batching bits to be present in soundness accounting. The shape remains:
+
+- one WHIR instance/root/transcript/query schedule for the tuple-leaf native
+  proof;
+- `native_oracle_pcs_opening_count = 1`;
+- `logical_oracle_count = 2 + round_count`;
+- no family-columnar subproofs;
+- no monolithic fallback.
+
+The benchmark `symbt3_native_accumulator_authority_vs_k` emits
+`NATIVE_ACCUMULATOR_AUTHORITY_SMOKE_CSV` with tuple-leaf shape counters,
+`full_accumulator_workload = false`, `smoke_profile = true`,
+`rlc_batching_bits`, `effective_soundness_bits`, and fallback status. It also
+prints "N7 smoke profile, not full accumulator workload". N7 is still
+explicit/development-only: default product `verify_public` remains unchanged,
+K6a remains separate, K5/ZK masking is not implemented, and RLC tuple-leaf
+batching is not a privacy claim or a true vector tuple-leaf claim.
+
+## N7b Full Workload Candidate
+
+N7b is reserved for
+`Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1`. The repository
+now has a typed K6a native workload adapter that extracts the K6a product
+profile digest, accumulator instance digest, public statement digest, WHIR
+parameter digest, relation id, main proof digest, old/new accumulator digests,
+batch manifest root, manifest/message roots, and batch counters from verified
+K6a objects. The product-facing full helper now composes those adapter fields
+with M1b tuple-leaf proof parts, builds the N7b full authority binding digest,
+and verifies through the wrapper. It still fails closed unless every component
+is present and every gate passes. M1b repeated RLC tuple-leaf evidence is now
+implemented, so the wrapper can advance past
+`RepeatedRlcSoundnessMissingOrWeak` when the repeated evidence verifies. The
+full helper names are:
+
+- `prove_symbt3_native_accumulator_authority_full_non_zk`;
+- `verify_symbt3_native_accumulator_authority_full_non_zk`;
+- `profile_meets_native_accumulator_authority_full`.
+
+The full wrapper rejects missing tuple-leaf proof parts, binding mismatches,
+fallback use, family subproofs, stale K6a adapter/proof matches, and
+`smoke_profile = true`. The full gate requires
+`full_accumulator_workload = true`, requires the full workload kind, and requires
+four RLC repetitions with enough total/effective soundness before a report may
+label the proof as native accumulator authority. The benchmark
+`symbt3_native_accumulator_authority_full_vs_k` emits
+`NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV` rows only when the full helper proves and
+verifies; otherwise it emits `NATIVE_ACCUMULATOR_AUTHORITY_FULL_BLOCKED` with
+the verifier blocker or prover failure reason. It also emits
+`NATIVE_ACCUMULATOR_AUTHORITY_FULL_OVERHEAD_CSV` rows for evidence-only overhead
+analysis: K6a WHIR proof sections, adapter metadata, tuple-leaf native proof,
+repeated RLC evidence, binding/profile metadata, serialization proxy,
+transcript work, and the tuple-leaf PCS multi-opening verification proxy.
+
+The N7b canonical proof bytes now serialize the tuple-leaf WHIR PCS proof with
+the compact canonical payload `WHIR_PCS_COMPACT_JSON_CBOR_V1`. This is the
+actual canonical N7b proof serialization used by
+`symbt3_native_accumulator_authority_full_vs_k`, not a benchmark accounting
+estimate or size hint. The compact payload is decoded back into the same
+`WhirPcsProof` value before verification, and the serialization test requires
+the reported section total to match the actual canonical N7b proof byte length
+exactly.
+
+Latest local `symbt3_native_accumulator_authority_full_vs_k` rows:
+
+| k | prove ms | verify ms | proof bytes | tuple-leaf native proof | legacy tuple PCS JSON | compact tuple PCS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.214 | 33.697 | 722,833 | 376,857 | 738,035 | 373,364 |
+| 2 | 42.467 | 35.658 | 742,230 | 406,327 | 799,038 | 402,834 |
+| 4 | 58.223 | 42.941 | 768,420 | 431,087 | 850,049 | 427,594 |
+
+The remaining size bottleneck is verifier-needed MMCS opening material inside
+the tuple-leaf PCS proof: Merkle authentication paths and opened query values.
+Whole Merkle proof payloads and opened-value payloads were not duplicated across
+the measured query openings, so the next size reduction is an architectural
+shared/batched MMCS opening representation rather than metadata-only
+compression. N7b remains NonZK only, has no K5 masking or privacy claim, uses
+RLC tuple-leaf batching rather than true vector tuple leaves, leaves default
+product `verify_public` unchanged, and still requires external cryptographic
+review before a production authority claim.
+
+## N8 Integrated K6a Native WHIR Prototype
+
+N8 is the planned path to make the native authority route non-additive. Current
+N7b verifies:
+
+```text
+K6a WHIR proof + repeated-RLC tuple-leaf WHIR/PCS proof + binding wrapper
+```
+
+The N8 target is one WHIR proof over an integrated relation:
+
+```text
+IntegratedK6aNativeWhirRelationV1 = K6a accumulator constraints
+                                  + native tuple-leaf repeated-RLC constraints
+                                  + accumulator transition/binding constraints
+```
+
+The current N8 slice is implemented as a real integrated claim-row evaluator,
+committed-table layout builder, the first K6a verifier-facing semantic family,
+the tuple-leaf repeated-RLC semantic family, and the accumulator
+transition/binding semantic family:
+
+- `IntegratedK6aNativeClaimPlanV1`;
+- `IntegratedK6aNativeCommittedTableV1`;
+- `N8IntegratedK6aSemanticConstraintsV1`;
+- `N8IntegratedTupleRlcSemanticConstraintsV1`;
+- `N8IntegratedTransitionBindingSemanticConstraintsV1`;
+- `N8IntegratedSemanticCompletionFlagsV1`;
+- `N8SemanticBatchingV1`;
+- `N8K6aSourceRowBatchingV1`;
+- `RealIntegratedK6aNativeEvaluatorV1`;
+- `Symbt3IntegratedK6aNativeWhirRelationV1`;
+- `Symbt3N8IntegratedConstraintDescriptor`;
+- `N8IntegratedWhirProofInputs`;
+- `N8IntegratedWhirProofPlan`;
+- `build_integrated_k6a_native_claim_plan_v1`;
+- `build_integrated_k6a_native_committed_table_v1`;
+- `build_n8_semantic_inputs_from_k6a_witness`;
+- `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor`;
+- `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs`;
+- `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_with_k6a_semantics`;
+- `build_n8_integrated_whir_proof_plan`;
+- `prove_symbt3_n8_integrated_whir_non_zk`;
+- `verify_symbt3_n8_integrated_whir_non_zk`;
+- `verify_symbt3_n8_integrated_k6a_native_whir_relation_gate`.
+
+The planner records the future shared WHIR shape without producing a proof:
+`integrated_num_vars = max(k6a_num_vars, tuple_packed_num_vars)`, deterministic
+K6a zero-extension padding, the tuple-leaf repetition axis appended after the
+logical tuple axes, and combined logical oracle, constraint, and claim
+descriptors. The descriptor also binds real K6a verifier opening/evaluation
+rows extracted directly from the accumulator witness/public claim plan, K6a
+semantic rows derived through `symbt3_c_table_and_claims(...)`, tuple packed
+and logical repeated-RLC claim rows, per-repetition tuple RLC residual rows,
+representative deterministic padding rows, and accumulator transition/binding
+semantic rows. The old source-proof extraction path remains as a test/reference
+path and is checked for row equivalence. The transition rows bind the old/new
+accumulator digests, accumulator instance and public statement digests, K6a
+semantic source digest, tuple root/layout digests, native descriptor/message
+roots digest, manifest/source/batch roots, batch size, active count, workload
+kind, and N8 plan/table/layout digests. It binds the K6a
+relation id/public statement digest, K6a semantic descriptor digest,
+tuple-leaf descriptor/layout digest, RLC repetition metadata, integrated shape,
+padding policy, evaluator digests, tuple-RLC semantic descriptor, transition
+semantic descriptor, semantic completion flags, and workload kind into
+`SYMBT3_N8_INTEGRATED_K6A_NATIVE_WHIR_RELATION_V1`. The local compatibility
+result is:
+
+- same field: yes, BabyBear;
+- same WHIR root/security mode: yes, canonical WHIR root and unique-decoding
+  WHIR configuration;
+- same rate/folding counters: yes for the current tuple-leaf proof counters;
+- one planned domain size: recorded by the planner only. The K6a table is
+  planned as zero-extended when `k6a_num_vars < integrated_num_vars`.
+- one committed-table layout: recorded by `IntegratedK6aNativeCommittedTableV1`.
+  K6a source rows, K6a zero-padding rows, and tuple-leaf repeated-RLC rows are
+  mapped into the same integrated domain with deterministic row and axis
+  ownership metadata. The builder emits `layout_digest`, `table_digest`,
+  `integrated_num_vars`, `integrated_oracle_len`, `k6a_padded_rows`,
+  `tuple_rows`, and `combined_constraint_count`, but no WHIR root or proof.
+- one planned representation: `N8IntegratedWhirProofPlan` currently selects
+  same-domain multiple logical columns. The current row/axis ownership overlaps
+  by design across the K6a and tuple-leaf logical columns, so interpreting the
+  same layout as one scalar oracle with selector-gated regions is ambiguous and
+  rejected.
+- one claim bridge: the proof plan builds bridge descriptors for K6a
+  accumulator constraints, native tuple-leaf repeated-RLC constraints, and the
+  accumulator transition/binding link. The proof-plan transcript binds these
+  descriptors, `layout_digest`, `table_digest`, `integrated_num_vars`, and the
+  workload kind.
+- one real evaluator: K6a claim rows, K6a verifier-facing semantic rows, tuple
+  repeated-RLC claim rows, representative padding rows, and transition/binding
+  semantic rows are packed as same-domain logical columns and opened by one
+  WHIR PCS proof. This is now real K6a verifier-facing semantics, real tuple
+  repeated-RLC semantics, and real transition/binding semantics for a NonZK
+  research authority-candidate route, not production authority.
+
+N8 still remains prototype only. The product gate is strict and N8 has no
+production authority or performance claim. The low-level prover entry point now
+validates descriptor, plan, table, layout representation, claim bridge, K6a
+semantic descriptor/row consistency, tuple-RLC semantic descriptor/row
+consistency, and transition/binding semantic descriptor/row consistency,
+rejects split K6a+tuple delegation attempts, and emits one real WHIR PCS
+proof/root/query schedule over the real integrated evaluator with mode
+`RealIntegratedK6aNativeEvaluatorV1`. The semantic gate state is explicit for
+the semantic builder: `k6a_semantics_complete=true`,
+`tuple_rlc_semantics_complete=true`, and
+`transition_semantics_complete=true`. Any missing flag, synthetic backend
+proof, N7b proof-as-N8 shape, fallback smoke proof, family subproof, or split
+delegation material remains rejected. The synthetic
+`SyntheticNonAuthoritativeV1` prover remains only as backend plumbing and is
+rejected by the N8 authority gate. The verifier-side backend entry
+point is explicit:
+`verify_symbt3_integrated_whir_backend_from_verifier_input` accepts an
+`N8IntegratedWhirVerifierInput` containing the integrated claim plan,
+committed-table/layout digests, combined bridge descriptors, exactly one WHIR
+root/proof, and one `N8IntegratedWhirQueryScheduleV1`. It reuses
+`whir_verify_opening_multi` over `integrated_num_vars` and rejects missing
+integrated proof material, proof num-var mismatches, root mismatches, extra
+roots/proofs, split delegation, and schedule/descriptor mutations. Real-mode
+backend verification recomputes the expected query schedule from the descriptor
+evaluator rows before checking the single WHIR opening. This reaches a NonZK
+research authority-candidate path for the one-WHIR integrated relation, pending
+review, audit, and productionization.
+
+The smallest explicit API extension reserved by the feasibility slice is
+`prove_symbt3_integrated_whir_from_claim_plan`,
+`verify_symbt3_integrated_whir_from_claim_plan`, and the lower-level
+`verify_symbt3_integrated_whir_backend_from_verifier_input`. The current prover
+prototype calls the scalar `whir_commit_and_prove_multi` once for the final N8
+proof, and no longer materializes a full harness-side K6a/N7b source proof to
+derive the N8 semantic rows. It does so with a materialized N8 plan, one real
+integrated evaluator table, one set of combined bridge query claims, one root,
+one WHIR proof, one query schedule, and one transcript. The future
+implementation must audit/finalize the complete integrated K6a, tuple-RLC, and
+transition/binding semantic rows before any production authority claim.
+
+The benchmark target `symbt3_n8_integrated_authority_vs_k` compares the N8
+one-WHIR NonZK research authority-candidate path against the K6a and N7b
+routes. It emits `N8_INTEGRATED_AUTHORITY_CSV` rows for `k = 1, 2, 4` by
+default, uses actual serialized N8 output bytes, emits `BLOCKED` rows with a
+reason if the audited N8 authority-candidate gate rejects, and leaves default
+`verify_public` unchanged. N8 now uses `N8SemanticBatchingV1` for the
+integrated query schedule. `N8K6aSourceRowBatchingV1` binds the 52 K6a source
+row descriptors before deriving a domain-separated source-row batching point,
+reducing those rows from 52 direct openings to one batched opening. The 52
+source rows are 15 verifier opening rows, 3 final residual rows, 1 `z_eval`
+row, 32 product-sumcheck coefficient rows, and 1 deterministic padding row.
+K6a semantic rows, tuple-RLC rows, and transition/binding rows continue to use
+their own descriptor-bound batch challenge points, so the audited N8 query
+schedule currently has four PCS openings total. The same benchmark emits
+`N8_INTEGRATED_OPENING_BREAKDOWN_CSV`, `N8_K6A_SOURCE_ROW_BREAKDOWN_CSV`, and
+`N8_INTEGRATED_TIMER_CSV` rows for direct claim extraction, tuple-RLC input
+construction, descriptor/table construction, semantic row construction, WHIR
+prove, WHIR verify, query-opening verification, serialization, semantic
+batching construction, and the authority gate.
+
+Same-commit benchmark rerun after `N8K6aSourceRowBatchingV1`, using
+`SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 cargo bench --bench whir_scaling --features whir --
+"symbt3_accumulator_authority_vs_k|symbt3_native_accumulator_authority_full_vs_k|symbt3_n8_integrated_authority_vs_k"`:
+
+| k | K6a prove ms | K6a verify ms | K6a bytes | N7b prove ms | N7b verify ms | N7b bytes | N8 prove ms | N8 verify ms | N8 bytes | N8 openings |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16.952 | 17.284 | 331,223 | 32.675 | 32.153 | 701,255 | 44.570 | 14.871 | 643,784 | 4 |
+| 2 | 19.778 | 18.553 | 321,435 | 41.289 | 35.192 | 747,105 | 56.590 | 17.388 | 691,106 | 4 |
+| 4 | 23.688 | 22.111 | 321,465 | 56.234 | 41.148 | 762,060 | 81.555 | 21.101 | 725,646 | 4 |
+
+In those rows, the serialized byte columns are actual route payload sizes from
+the benchmark harness. N8 remains one WHIR instance/root/query
+schedule/transcript, has `tuple_pcs_proof_count = 0`, reports four total PCS
+openings, and reports `split_delegation_used = false`. N8 is now the fastest
+verifier in this research benchmark: relative to K6a it saves 2.413 ms
+(-14.0%) at k=1, 1.165 ms (-6.3%) at k=2, and 1.010 ms (-4.6%) at k=4; relative
+to N7b it saves 17.282 ms (-53.7%), 17.804 ms (-50.6%), and 20.047 ms (-48.7%).
+The prover is still slower: N8 is 2.63x, 2.86x, and 3.44x K6a prove time, and
+1.36x, 1.37x, and 1.45x N7b prove time for k=1,2,4 respectively. N8 proof
+bytes remain lower than N7b by 8.2%, 7.5%, and 4.8%, but remain 94.4%, 115.0%,
+and 125.7% larger than K6a.
+
+The follow-up N8 prover-overhead slice did not change verifier semantics,
+authority gates, roots/proofs, or split-delegation behavior. It removed three
+prover-side duplicates:
+
+- root-only tuple packed-root construction now uses a WHIR commit-only path
+  instead of a full empty-opening proof, with a test checking equality against
+  the old full-proof root;
+- direct adapter construction reuses the already-built public statement instead
+  of rebuilding it;
+- proof-plan construction reuses the semantic batching descriptor, and the
+  prover computes the integrated evaluator table once before deriving query
+  claims.
+
+N8-only rows after that first prover-overhead slice:
+
+| k | N8 prove ms | N8 verify ms | N8 bytes | openings | direct setup ms | tuple input ms | WHIR prove ms | serialization ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.660 | 14.810 | 642,893 | 4 | 25.464 | 2.012 | 6.614 | 0.415 |
+| 2 | 43.765 | 16.603 | 686,450 | 4 | 29.284 | 3.131 | 10.852 | 0.446 |
+| 4 | 61.671 | 20.206 | 724,474 | 4 | 37.946 | 5.611 | 17.439 | 0.465 |
+
+Relative to the same-run pre-optimization N8 rows above, N8 prove time improved
+by 9.910 ms (-22.2%) at k=1, 12.825 ms (-22.7%) at k=2, and 19.884 ms (-24.4%)
+at k=4. Verification stayed in the same shape and remains a four-opening
+one-WHIR check. The remaining prover bottlenecks are direct setup and WHIR
+prove. Inside direct setup, the largest measured sub-costs are K6a direct claim
+extraction and relation/statement construction at k=1, with WHIR prove becoming
+the second largest end-to-end prover cost for k=2 and k=4.
+
+The direct semantic setup reduction pass keeps the same verifier semantics and
+authority gate. It adds finer direct setup timers for K6a relation
+construction, public statement construction, witness conversion, direct claim
+extraction, adapter construction, digest/canonical serialization, tuple-RLC
+input/root construction, semantic row construction, WHIR prove, serialization,
+and verifier-side buckets. The direct builder now caches immutable material
+inside one proof call: relation id, profile digest, accumulator-instance digest,
+public-statement digest, and WHIR parameter digest. Adapter construction
+consumes this already-validated setup material instead of re-running the full
+statement/profile/instance path. `symbt3_c_table_and_claims` can also consume a
+precomputed public-statement digest in this direct path, while the reference
+path remains available for tests. New tests check optimized direct setup equals
+the old reference direct setup for k=1 and k=2, mutation tests continue to
+reject, and the root-only tuple leaf remains prover-only by rejecting as a
+standalone tuple-leaf verifier proof.
+
+Latest N8-only rows after direct setup caching:
+
+| k | N8 prove ms | N8 verify ms | N8 bytes | openings | direct setup ms | K6a claim ms | public statement ms | adapter ms | tuple input ms | WHIR prove ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 25.297 | 15.337 | 646,595 | 4 | 15.025 | 7.112 | 5.687 | 0.013 | 2.143 | 7.542 |
+| 2 | 30.911 | 16.811 | 686,648 | 4 | 17.276 | 7.724 | 6.534 | 0.000 | 2.954 | 10.040 |
+| 4 | 46.169 | 20.481 | 725,201 | 4 | 23.399 | 9.728 | 8.290 | 0.000 | 5.313 | 16.636 |
+
+Relative to the prior N8-only rows, prove time improved by 9.363 ms (-27.0%)
+at k=1, 12.854 ms (-29.4%) at k=2, and 15.502 ms (-25.1%) at k=4. Direct setup
+itself dropped by 10.439 ms (-41.0%), 12.008 ms (-41.0%), and 14.547 ms
+(-38.3%). Relative to the pre-optimization same-run rows, total N8 prove time
+is now down 43.2%, 45.4%, and 43.4% for k=1,2,4. The proof topology remains one
+WHIR proof/root/query schedule/transcript, `tuple_pcs_proof_count = 0`, four
+openings, and no split delegation. The remaining prover bottlenecks are direct
+K6a claim extraction/public statement construction and WHIR prove.
+
+Final same-commit comparison after direct setup caching, using
+`SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 cargo bench --bench whir_scaling --features whir --
+"symbt3_accumulator_authority_vs_k|symbt3_native_accumulator_authority_full_vs_k|symbt3_n8_integrated_authority_vs_k"`:
+
+| k | Route | prove ms | verify ms | proof bytes | openings | WHIR proofs/roots/schedules | tuple PCS proofs | split delegation |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| 1 | K6a | 16.890 | 17.055 | 337,692 | 15 | 1/1/1 | 0 | false |
+| 1 | N7b | 33.236 | 31.731 | 679,804 | 15 + 1 tuple | 2/2/2 | 1 | false; additive N7b route |
+| 1 | N8 | 23.207 | 14.534 | 639,716 | 4 | 1/1/1 | 0 | false |
+| 2 | K6a | 19.539 | 18.887 | 335,537 | 15 | 1/1/1 | 0 | false |
+| 2 | N7b | 43.090 | 35.297 | 725,787 | 15 + 1 tuple | 2/2/2 | 1 | false; additive N7b route |
+| 2 | N8 | 31.122 | 17.080 | 690,056 | 4 | 1/1/1 | 0 | false |
+| 4 | K6a | 23.696 | 21.951 | 337,700 | 15 | 1/1/1 | 0 | false |
+| 4 | N7b | 56.038 | 41.806 | 755,925 | 15 + 1 tuple | 2/2/2 | 1 | false; additive N7b route |
+| 4 | N8 | 70.437 | 20.400 | 728,322 | 4 | 1/1/1 | 0 | false |
+
+The byte columns are actual serialized route payload sizes from the benchmark
+harness. N8 counters remain `whir_instance_count = root_count =
+query_schedule_count = transcript_count = 1`, `tuple_pcs_proof_count = 0`,
+`native_oracle_pcs_opening_count = 4`, and `split_delegation_used = false`.
+N8 remains the fastest verifier in this same-run comparison: versus K6a it
+saves 2.521 ms (-14.8%) at k=1, 1.807 ms (-9.6%) at k=2, and 1.551 ms (-7.1%)
+at k=4; versus N7b it saves 17.197 ms (-54.2%), 18.217 ms (-51.6%), and
+21.406 ms (-51.2%). On proving, N8 is now faster than N7b at k=1 and k=2, but
+still slower than K6a at all three points. The k=4 N8 CSV row included a high
+WHIR prove timer in this run, so that point should be treated as the final
+same-commit measurement rather than as an optimized steady-state claim.
+
+## K6a vs N6b Route Distinction
+
+K6b real product comparison:
+
+| Route | Benchmark | Scope |
+| --- | --- | --- |
+| Public product verifier | `public_verify_v2_vs_k` | Real product public-verifier comparison target. |
+| K6a | K6a public-canonical accumulator benchmark | Explicit public-canonical full accumulator NonZK integrity route. |
+
+N6c route matrix:
+
+| Route | Benchmark label | Scope |
+| --- | --- | --- |
+| typed CP smoke | `typed_cp_smoke` | Standalone typed CP smoke baseline, not `public_verify_v2`. |
+| K6a | `k6a=full_accumulator_public_canonical` | Explicit public-canonical full accumulator workload. |
+| N6b | `n6b=native_oracle_smoke_not_full_accumulator` | Explicit native-oracle folding-integrity smoke/native route. |
+
+N6c route matrix is for route-shape comparison; it is not the heavy monolithic
+product benchmark unless explicitly using public_verify_v2.
+
+The route matrix deliberately labels N6b as a smoke/native route unless or until
+it is run against the same full accumulator workload as K6a. N6b binds native
+manifest/source and CP round-message oracle roots through the N6a wrapper; K6a
+remains the full accumulator route. Neither route is ZK, neither is default
+`verify_public`, and K5 masking remains deferred.
