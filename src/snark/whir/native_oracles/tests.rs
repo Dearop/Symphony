@@ -3531,10 +3531,82 @@ fn n8_accumulation_api_fixture(batch_size: usize) -> N8AccumulationApiFixture {
     }
 }
 
+fn retarget_n8_batch_to_old_accumulator(
+    pk: &WhirProvingKey,
+    batch: &mut Symbt3AccumulationBatch,
+    old_public: &Symbt3AccumulatorPublicInstance,
+) {
+    let relation = symbt3_k6a_relation_from_context(
+        pk.relation
+            .context
+            .as_ref()
+            .expect("SYMBT3 relation context"),
+    )
+    .expect("SYMBT3 relation");
+    let scheme = relation.shape.accumulator_shape.digest_scheme;
+    batch.public_statement.old_accumulator_coordinates = old_public.accumulator_coordinates.clone();
+    batch.public_statement.old_accumulator_digest = symbt3_accumulator_coordinates_digest(
+        scheme,
+        b"old",
+        &batch.public_statement.old_accumulator_coordinates,
+    );
+    batch.public_statement.new_accumulator_coordinates =
+        symbt3_accumulator_transition_coordinates(&relation, &batch.public_statement)
+            .expect("retargeted accumulator transition");
+    batch.public_statement.new_accumulator_digest = symbt3_accumulator_coordinates_digest(
+        scheme,
+        b"new",
+        &batch.public_statement.new_accumulator_coordinates,
+    );
+}
+
+fn n8_accumulation_api_nontrivial_fixture(batch_size: usize) -> N8AccumulationApiFixture {
+    let fixture = k6a_adapter_fixture_with_batch_size(batch_size);
+    for shift in 1..=8 {
+        let mut batch = Symbt3AccumulationBatch::from_accumulator_instance(
+            fixture.profile.clone(),
+            &fixture.accumulator_instance,
+        );
+        let mut old_public = Symbt3AccumulatorPublicInstance::from_old_public_statement(
+            fixture.accumulator_instance.profile_digest,
+            &batch.public_statement,
+        );
+        old_public.accumulator_coordinates[0] += shift;
+        old_public.accumulator_digest = symbt3_accumulator_coordinates_digest(
+            PublicDigestScheme::Poseidon2BabyBear,
+            b"state",
+            &old_public.accumulator_coordinates,
+        );
+        retarget_n8_batch_to_old_accumulator(&fixture.pk, &mut batch, &old_public);
+        let old_accumulator = Symbt3AccumulatorObject::from_public_instance(old_public);
+        let Ok((new_accumulator, proof)) = accumulate_symbt3_n8_non_zk(
+            &fixture.pk,
+            &batch,
+            &old_accumulator,
+            &fixture.accumulator_witness,
+        ) else {
+            continue;
+        };
+        if old_accumulator.public_instance.accumulator_digest
+            != new_accumulator.public_instance.accumulator_digest
+        {
+            return N8AccumulationApiFixture {
+                fixture,
+                batch,
+                old_accumulator,
+                new_accumulator,
+                proof,
+            };
+        }
+    }
+    panic!("N8 fixture did not produce a nontrivial accumulator transition");
+}
+
 fn verify_n8_accumulation_fixture(
     fixture: &N8AccumulationApiFixture,
 ) -> Symbt3AccumulationVerificationReport {
-    verify_symbt3_n8_accumulation_non_zk(
+    decide_symbt3_n8_accumulator_non_zk(
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
         &fixture.fixture.vk,
         &fixture.batch,
         &fixture.old_accumulator.public_instance,
@@ -3549,6 +3621,59 @@ fn assert_n8_accumulation_rejects(report: Symbt3AccumulationVerificationReport) 
     assert!(report.blocker.is_some());
 }
 
+fn assert_n8_accumulation_rejects_named(
+    name: &'static str,
+    report: Symbt3AccumulationVerificationReport,
+) {
+    assert!(
+        !report.ok,
+        "N8 accumulation accepted unexpected case {name}: {report:?}"
+    );
+    assert!(report.blocked, "N8 accumulation was not blocked for {name}");
+    assert!(
+        report.blocker.is_some(),
+        "N8 accumulation blocker missing for {name}"
+    );
+}
+
+fn decide_n8_accumulation_fixture_with_proof(
+    fixture: &N8AccumulationApiFixture,
+    proof: &Symbt3AccumulationProof,
+) -> Symbt3AccumulationVerificationReport {
+    decide_symbt3_n8_accumulator_non_zk(
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
+        &fixture.fixture.vk,
+        &fixture.batch,
+        &fixture.old_accumulator.public_instance,
+        &fixture.new_accumulator.public_instance,
+        proof,
+    )
+}
+
+fn mutate_first_i64(values: &mut Vec<i64>) {
+    if let Some(value) = values.first_mut() {
+        *value += 1;
+    } else {
+        values.push(1);
+    }
+}
+
+fn mutate_first_nested_i64(values: &mut Vec<Vec<i64>>) {
+    if let Some(row) = values.first_mut() {
+        mutate_first_i64(row);
+    } else {
+        values.push(vec![1]);
+    }
+}
+
+fn mutate_first_digest(values: &mut Vec<Digest32>, label: &'static [u8]) {
+    if let Some(value) = values.first_mut() {
+        *value = digest(label);
+    } else {
+        values.push(digest(label));
+    }
+}
+
 fn assert_n8_accumulation_accepts(batch_size: usize) -> N8AccumulationApiFixture {
     let fixture = n8_accumulation_api_fixture(batch_size);
     let report = verify_n8_accumulation_fixture(&fixture);
@@ -3556,7 +3681,15 @@ fn assert_n8_accumulation_accepts(batch_size: usize) -> N8AccumulationApiFixture
     assert!(!report.blocked);
     assert_eq!(report.blocker, None);
     assert!(report.semantic_completion.all_complete());
+    assert_eq!(
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1.version(),
+        SYMBT3_ACCUMULATION_AUTHORITY_PROFILE_VERSION
+    );
     assert_eq!(fixture.proof.version, SYMBT3_N8_ACCUMULATION_PROOF_VERSION);
+    assert_eq!(
+        fixture.proof.output.version,
+        N8_INTEGRATED_WHIR_PROVER_OUTPUT_VERSION
+    );
     assert_eq!(
         fixture.proof.old_accumulator_digest,
         fixture.batch.public_statement.old_accumulator_digest
@@ -3599,6 +3732,23 @@ fn assert_n8_accumulation_accepts(batch_size: usize) -> N8AccumulationApiFixture
             .delegated_split_proof_material_present
     );
     assert!(!fixture.proof.output.counters.synthetic_non_authoritative);
+    assert_eq!(
+        fixture.old_accumulator.public_instance.canonical_bytes(),
+        fixture.old_accumulator.public_instance.canonical_bytes()
+    );
+    assert_eq!(
+        fixture.batch.canonical_bytes(),
+        fixture.batch.canonical_bytes()
+    );
+    assert_eq!(
+        fixture.new_accumulator.canonical_bytes(),
+        fixture.new_accumulator.canonical_bytes()
+    );
+    assert_eq!(
+        fixture.proof.canonical_bytes(),
+        fixture.proof.canonical_bytes()
+    );
+    assert_ne!(fixture.proof.proof_digest(), [0u8; 32]);
     fixture
 }
 
@@ -3606,33 +3756,8 @@ fn n8_successor_batch(
     fixture: &N8AccumulationApiFixture,
     old_accumulator_public: &Symbt3AccumulatorPublicInstance,
 ) -> Symbt3AccumulationBatch {
-    let relation = symbt3_k6a_relation_from_context(
-        fixture
-            .fixture
-            .pk
-            .relation
-            .context
-            .as_ref()
-            .expect("SYMBT3 relation context"),
-    )
-    .expect("SYMBT3 relation");
-    let scheme = relation.shape.accumulator_shape.digest_scheme;
     let mut batch = fixture.batch.clone();
-    batch.public_statement.old_accumulator_coordinates =
-        old_accumulator_public.accumulator_coordinates.clone();
-    batch.public_statement.old_accumulator_digest = symbt3_accumulator_coordinates_digest(
-        scheme,
-        b"old",
-        &batch.public_statement.old_accumulator_coordinates,
-    );
-    batch.public_statement.new_accumulator_coordinates =
-        symbt3_accumulator_transition_coordinates(&relation, &batch.public_statement)
-            .expect("successor accumulator transition");
-    batch.public_statement.new_accumulator_digest = symbt3_accumulator_coordinates_digest(
-        scheme,
-        b"new",
-        &batch.public_statement.new_accumulator_coordinates,
-    );
+    retarget_n8_batch_to_old_accumulator(&fixture.fixture.pk, &mut batch, old_accumulator_public);
     batch
 }
 
@@ -3652,8 +3777,380 @@ fn symbt3_n8_accumulation_api_honest_k4_verifies() {
 }
 
 #[test]
+fn symbt3_n8_authoritative_decider_accepts_opt_in_profile_only() {
+    let fixture = n8_accumulation_api_fixture(1);
+    let report = decide_symbt3_n8_accumulator_non_zk(
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
+        &fixture.fixture.vk,
+        &fixture.batch,
+        &fixture.old_accumulator.public_instance,
+        &fixture.new_accumulator.public_instance,
+        &fixture.proof,
+    );
+    assert!(report.ok);
+    assert_eq!(
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1.canonical_bytes(),
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1.canonical_bytes()
+    );
+}
+
+#[test]
+fn symbt3_n8_accumulation_public_instance_mutation_matrix_rejects() {
+    type InstanceMutation = (&'static str, fn(&mut Symbt3AccumulatorPublicInstance));
+    let cases: &[InstanceMutation] = &[
+        ("profile_digest", |instance| {
+            instance.profile_digest = digest(b"n8-mutated-profile-digest")
+        }),
+        ("shape_id", |instance| {
+            instance.shape_id = digest(b"n8-mutated-shape-id")
+        }),
+        ("accumulator_digest", |instance| {
+            instance.accumulator_digest = digest(b"n8-mutated-accumulator-digest")
+        }),
+        ("accumulator_coordinates", |instance| {
+            mutate_first_i64(&mut instance.accumulator_coordinates)
+        }),
+    ];
+
+    let fixture = n8_accumulation_api_fixture(1);
+    for (name, mutate) in cases {
+        let mut old_public = fixture.old_accumulator.public_instance.clone();
+        mutate(&mut old_public);
+        assert_n8_accumulation_rejects(decide_symbt3_n8_accumulator_non_zk(
+            Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
+            &fixture.fixture.vk,
+            &fixture.batch,
+            &old_public,
+            &fixture.new_accumulator.public_instance,
+            &fixture.proof,
+        ));
+
+        let mut new_public = fixture.new_accumulator.public_instance.clone();
+        mutate(&mut new_public);
+        let report = decide_symbt3_n8_accumulator_non_zk(
+            Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
+            &fixture.fixture.vk,
+            &fixture.batch,
+            &fixture.old_accumulator.public_instance,
+            &new_public,
+            &fixture.proof,
+        );
+        assert!(
+            !report.ok,
+            "N8 authoritative route accepted mutated accumulator public field {name}"
+        );
+    }
+}
+
+#[test]
+fn symbt3_n8_accumulation_public_batch_mutation_matrix_rejects() {
+    type BatchMutation = (&'static str, fn(&mut Symbt3AccumulationBatch));
+    let cases: &[BatchMutation] = &[
+        ("profile", |batch| {
+            batch.profile.relation_id = digest(b"n8-mutated-profile")
+        }),
+        ("shape_id", |batch| {
+            batch.public_statement.shape_id = digest(b"n8-mutated-shape-id")
+        }),
+        ("batch_capacity", |batch| {
+            batch.public_statement.batch_capacity += 1
+        }),
+        ("active_count", |batch| {
+            batch.public_statement.active_count += 1
+        }),
+        ("old_accumulator_digest", |batch| {
+            batch.public_statement.old_accumulator_digest = digest(b"n8-mutated-old-digest")
+        }),
+        ("new_accumulator_digest", |batch| {
+            batch.public_statement.new_accumulator_digest = digest(b"n8-mutated-new-digest")
+        }),
+        ("old_accumulator_coordinates", |batch| {
+            mutate_first_i64(&mut batch.public_statement.old_accumulator_coordinates)
+        }),
+        ("new_accumulator_coordinates", |batch| {
+            mutate_first_i64(&mut batch.public_statement.new_accumulator_coordinates)
+        }),
+        ("input_public_boundary_digest", |batch| {
+            batch.public_statement.input_public_boundary_digest =
+                digest(b"n8-mutated-input-public-boundary")
+        }),
+        ("batch_manifest_root", |batch| {
+            batch.public_statement.batch_manifest_root = digest(b"n8-mutated-batch-manifest-root")
+        }),
+        ("manifest_oracle_root", |batch| {
+            batch.public_statement.manifest_oracle_root = digest(b"n8-mutated-manifest-root")
+        }),
+        ("manifest_eval_claim", |batch| {
+            batch.public_statement.manifest_eval_claim =
+                batch.public_statement.manifest_eval_claim.wrapping_add(1)
+        }),
+        ("batch_manifest_layout_digest", |batch| {
+            batch.public_statement.batch_manifest_layout_digest =
+                digest(b"n8-mutated-batch-manifest-layout")
+        }),
+        ("source_column_layout_digest", |batch| {
+            batch.public_statement.source_column_layout_digest =
+                digest(b"n8-mutated-source-column-layout")
+        }),
+        ("message_semantic_layout_digest", |batch| {
+            batch.public_statement.message_semantic_layout_digest =
+                digest(b"n8-mutated-message-semantic-layout")
+        }),
+        ("production_norm_range_layout_digest", |batch| {
+            batch.public_statement.production_norm_range_layout_digest =
+                digest(b"n8-mutated-production-norm-layout")
+        }),
+        ("structured_projection_layout_digest", |batch| {
+            batch.public_statement.structured_projection_layout_digest =
+                digest(b"n8-mutated-projection-layout")
+        }),
+        ("monomial_embedding_layout_digest", |batch| {
+            batch.public_statement.monomial_embedding_layout_digest =
+                digest(b"n8-mutated-monomial-layout")
+        }),
+        ("representative_layout_digest", |batch| {
+            batch.public_statement.representative_layout_digest =
+                digest(b"n8-mutated-representative-layout")
+        }),
+        ("norm_range_public_digest", |batch| {
+            batch.public_statement.norm_range_public_digest =
+                digest(b"n8-mutated-norm-range-public")
+        }),
+        ("input_public_values", |batch| {
+            mutate_first_nested_i64(&mut batch.public_statement.input_public_values)
+        }),
+        ("input_commitment_values", |batch| {
+            mutate_first_nested_i64(&mut batch.public_statement.input_commitment_values)
+        }),
+        ("input_evaluation_values", |batch| {
+            mutate_first_nested_i64(&mut batch.public_statement.input_evaluation_values)
+        }),
+        ("input_accumulator_values", |batch| {
+            mutate_first_nested_i64(&mut batch.public_statement.input_accumulator_values)
+        }),
+        ("source_assignment_roots", |batch| {
+            mutate_first_digest(
+                &mut batch.public_statement.source_assignment_roots,
+                b"n8-mutated-source-assignment-root",
+            )
+        }),
+        ("source_assignment_boundary_digest", |batch| {
+            batch.public_statement.source_assignment_boundary_digest =
+                digest(b"n8-mutated-source-assignment-boundary")
+        }),
+        ("source_ajtai_opening_roots", |batch| {
+            mutate_first_digest(
+                &mut batch.public_statement.source_ajtai_opening_roots,
+                b"n8-mutated-source-ajtai-root",
+            )
+        }),
+        ("source_ajtai_commitment_boundary_digest", |batch| {
+            batch
+                .public_statement
+                .source_ajtai_commitment_boundary_digest =
+                digest(b"n8-mutated-source-ajtai-boundary")
+        }),
+        ("message_oracle_roots", |batch| {
+            mutate_first_digest(
+                &mut batch.public_statement.message_oracle_roots,
+                b"n8-mutated-message-oracle-root",
+            )
+        }),
+        ("folded_public_input", |batch| {
+            mutate_first_i64(&mut batch.public_statement.folded_public_input)
+        }),
+        ("folded_commitment", |batch| {
+            mutate_first_i64(&mut batch.public_statement.folded_commitment)
+        }),
+        ("folded_evaluation", |batch| {
+            mutate_first_i64(&mut batch.public_statement.folded_evaluation)
+        }),
+        ("folded_accumulator_coordinates", |batch| {
+            mutate_first_i64(&mut batch.public_statement.folded_accumulator_coordinates)
+        }),
+        ("folded_ajtai_opening_root", |batch| {
+            batch.public_statement.folded_ajtai_opening_root =
+                digest(b"n8-mutated-folded-ajtai-root")
+        }),
+        ("folded_ajtai_commitment", |batch| {
+            mutate_first_i64(&mut batch.public_statement.folded_ajtai_commitment)
+        }),
+        ("folded_gr1cs_boundary_digest", |batch| {
+            batch.public_statement.folded_gr1cs_boundary_digest =
+                digest(b"n8-mutated-folded-gr1cs-boundary")
+        }),
+        ("ring_module_layout_digest", |batch| {
+            batch.public_statement.ring_module_layout_digest =
+                digest(b"n8-mutated-ring-module-layout")
+        }),
+        ("ajtai_commit_layout_digest", |batch| {
+            batch.public_statement.ajtai_commit_layout_digest =
+                digest(b"n8-mutated-ajtai-commit-layout")
+        }),
+        ("r1cs_evaluator_layout_digest", |batch| {
+            batch.public_statement.r1cs_evaluator_layout_digest =
+                digest(b"n8-mutated-r1cs-evaluator-layout")
+        }),
+        ("gr1cs_residual_layout_digest", |batch| {
+            batch.public_statement.gr1cs_residual_layout_digest =
+                digest(b"n8-mutated-gr1cs-residual-layout")
+        }),
+        ("algebra_law_digest", |batch| {
+            batch.public_statement.algebra_law_digest = digest(b"n8-mutated-algebra-law")
+        }),
+        ("ajtai_linear_algebra_layout_digest", |batch| {
+            batch.public_statement.ajtai_linear_algebra_layout_digest =
+                digest(b"n8-mutated-ajtai-linear-layout")
+        }),
+        ("ajtai_norm_range_layout_digest", |batch| {
+            batch.public_statement.ajtai_norm_range_layout_digest =
+                digest(b"n8-mutated-ajtai-norm-layout")
+        }),
+        ("projection_layout_digest", |batch| {
+            batch.public_statement.projection_layout_digest =
+                digest(b"n8-mutated-projection-layout")
+        }),
+        ("range_layout_digest", |batch| {
+            batch.public_statement.range_layout_digest = digest(b"n8-mutated-range-layout")
+        }),
+        ("folded_gr1cs_product_residual_layout_digest", |batch| {
+            batch
+                .public_statement
+                .folded_gr1cs_product_residual_layout_digest =
+                digest(b"n8-mutated-product-residual-layout")
+        }),
+        ("folded_output_accumulator_root", |batch| {
+            batch.public_statement.folded_output_accumulator_root =
+                digest(b"n8-mutated-folded-output-root")
+        }),
+        ("whir_parameter_digest", |batch| {
+            batch.public_statement.whir_parameter_digest = digest(b"n8-mutated-whir-params")
+        }),
+    ];
+
+    let fixture = n8_accumulation_api_fixture(1);
+    for (name, mutate) in cases {
+        let mut batch = fixture.batch.clone();
+        mutate(&mut batch);
+        let report = decide_symbt3_n8_accumulator_non_zk(
+            Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
+            &fixture.fixture.vk,
+            &batch,
+            &fixture.old_accumulator.public_instance,
+            &fixture.new_accumulator.public_instance,
+            &fixture.proof,
+        );
+        assert!(
+            !report.ok,
+            "N8 authoritative route accepted mutated public batch field {name}"
+        );
+    }
+}
+
+#[test]
+fn symbt3_n8_accumulation_proof_mutation_matrix_rejects() {
+    type ProofMutation = (&'static str, fn(&mut Symbt3AccumulationProof));
+    let cases: &[ProofMutation] = &[
+        ("version", |proof| proof.version += 1),
+        ("public_statement_digest", |proof| {
+            proof.public_statement_digest = digest(b"n8-mutated-public-statement-digest")
+        }),
+        ("accumulator_instance_digest", |proof| {
+            proof.accumulator_instance_digest = digest(b"n8-mutated-accumulator-instance-digest")
+        }),
+        ("old_accumulator_digest", |proof| {
+            proof.old_accumulator_digest = digest(b"n8-mutated-proof-old")
+        }),
+        ("new_accumulator_digest", |proof| {
+            proof.new_accumulator_digest = digest(b"n8-mutated-proof-new")
+        }),
+        ("batch_size", |proof| proof.batch_size += 1),
+        ("active_count", |proof| proof.active_count += 1),
+        ("k6a_relation_id", |proof| {
+            proof.k6a_relation_id = digest(b"n8-mutated-k6a-relation")
+        }),
+        ("whir_param_digest", |proof| {
+            proof.whir_param_digest = digest(b"n8-mutated-whir-param")
+        }),
+        ("tuple_leaf_root", |proof| {
+            proof.tuple_leaf_root = digest(b"n8-mutated-tuple-root")
+        }),
+        ("tuple_leaf_layout_digest", |proof| {
+            proof.tuple_leaf_layout_digest = digest(b"n8-mutated-tuple-layout")
+        }),
+        ("tuple_leaf_descriptor_digest", |proof| {
+            proof.tuple_leaf_descriptor_digest = digest(b"n8-mutated-tuple-descriptor")
+        }),
+        ("native_oracle_descriptor_digest", |proof| {
+            proof.native_oracle_descriptor_digest = digest(b"n8-mutated-native-descriptor")
+        }),
+        ("native_message_roots_digest", |proof| {
+            proof.native_message_roots_digest = digest(b"n8-mutated-native-message-roots")
+        }),
+        ("n8_transcript_binding_digest", |proof| {
+            proof.n8_transcript_binding_digest = digest(b"n8-mutated-transcript-binding")
+        }),
+        ("n8_claim_plan_digest", |proof| {
+            proof.n8_claim_plan_digest = digest(b"n8-mutated-claim-plan")
+        }),
+        ("n8_committed_table_layout_digest", |proof| {
+            proof.n8_committed_table_layout_digest = digest(b"n8-mutated-table-layout")
+        }),
+        ("n8_committed_table_digest", |proof| {
+            proof.n8_committed_table_digest = digest(b"n8-mutated-table")
+        }),
+        ("semantic_completion", |proof| {
+            proof.semantic_completion.transition_semantics_complete = false
+        }),
+        ("descriptor", |proof| {
+            proof.descriptor.public_statement_digest = digest(b"n8-mutated-descriptor")
+        }),
+        ("output", |proof| proof.output.version += 1),
+    ];
+
+    let fixture = n8_accumulation_api_fixture(1);
+    for (name, mutate) in cases {
+        let mut proof = fixture.proof.clone();
+        mutate(&mut proof);
+        let report = decide_n8_accumulation_fixture_with_proof(&fixture, &proof);
+        assert!(
+            !report.ok,
+            "N8 authoritative route accepted mutated proof field {name}"
+        );
+    }
+}
+
+#[test]
+fn symbt3_n8_accumulation_wrong_versions_and_fallback_shapes_reject() {
+    let fixture = n8_accumulation_api_fixture(1);
+
+    let mut proof = fixture.proof.clone();
+    proof.descriptor.version += 1;
+    assert_eq!(
+        decide_n8_accumulation_fixture_with_proof(&fixture, &proof).blocker,
+        Some(Symbt3N8IntegratedPrototypeBlocker::WorkloadKindMismatch)
+    );
+
+    let mut proof = fixture.proof.clone();
+    proof.output.query_schedule.version += 1;
+    assert_eq!(
+        decide_n8_accumulation_fixture_with_proof(&fixture, &proof).blocker,
+        Some(Symbt3N8IntegratedPrototypeBlocker::WorkloadKindMismatch)
+    );
+
+    let mut proof = fixture.proof.clone();
+    proof.output.counters.whir_instance_count = 0;
+    proof.output.counters.root_count = 0;
+    proof.output.counters.query_schedule_count = 0;
+    assert_eq!(
+        decide_n8_accumulation_fixture_with_proof(&fixture, &proof).blocker,
+        Some(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirProofApiMissing)
+    );
+}
+
+#[test]
 fn symbt3_n8_accumulation_api_multistep_replay_rejects() {
-    let first = n8_accumulation_api_fixture(1);
+    let first = n8_accumulation_api_nontrivial_fixture(1);
     let second_batch = n8_successor_batch(&first, &first.new_accumulator.public_instance);
     let (second_new_accumulator, second_proof) = accumulate_symbt3_n8_non_zk(
         &first.fixture.pk,
@@ -3675,34 +4172,46 @@ fn symbt3_n8_accumulation_api_multistep_replay_rejects() {
         .ok
     );
 
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &first.fixture.vk,
-        &second_batch,
-        &first.new_accumulator.public_instance,
-        &second_new_accumulator.public_instance,
-        &first.proof,
-    ));
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &first.fixture.vk,
-        &first.batch,
-        &first.old_accumulator.public_instance,
-        &first.new_accumulator.public_instance,
-        &second_proof,
-    ));
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &first.fixture.vk,
-        &second_batch,
-        &first.old_accumulator.public_instance,
-        &second_new_accumulator.public_instance,
-        &second_proof,
-    ));
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &first.fixture.vk,
-        &second_batch,
-        &first.new_accumulator.public_instance,
-        &first.new_accumulator.public_instance,
-        &second_proof,
-    ));
+    assert_n8_accumulation_rejects_named(
+        "first proof as second transition",
+        verify_symbt3_n8_accumulation_non_zk(
+            &first.fixture.vk,
+            &second_batch,
+            &first.new_accumulator.public_instance,
+            &second_new_accumulator.public_instance,
+            &first.proof,
+        ),
+    );
+    assert_n8_accumulation_rejects_named(
+        "second proof as first transition",
+        verify_symbt3_n8_accumulation_non_zk(
+            &first.fixture.vk,
+            &first.batch,
+            &first.old_accumulator.public_instance,
+            &first.new_accumulator.public_instance,
+            &second_proof,
+        ),
+    );
+    assert_n8_accumulation_rejects_named(
+        "wrong old accumulator on second transition",
+        verify_symbt3_n8_accumulation_non_zk(
+            &first.fixture.vk,
+            &second_batch,
+            &first.old_accumulator.public_instance,
+            &second_new_accumulator.public_instance,
+            &second_proof,
+        ),
+    );
+    assert_n8_accumulation_rejects_named(
+        "wrong new accumulator on second transition",
+        verify_symbt3_n8_accumulation_non_zk(
+            &first.fixture.vk,
+            &second_batch,
+            &first.new_accumulator.public_instance,
+            &first.new_accumulator.public_instance,
+            &second_proof,
+        ),
+    );
 }
 
 #[test]
@@ -3790,7 +4299,8 @@ fn symbt3_n8_accumulation_api_empty_public_batch_rejects() {
     let mut batch = fixture.batch.clone();
     batch.public_statement.batch_capacity = 0;
     batch.public_statement.active_count = 0;
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
+    assert_n8_accumulation_rejects(decide_symbt3_n8_accumulator_non_zk(
+        Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1,
         &fixture.fixture.vk,
         &batch,
         &fixture.old_accumulator.public_instance,
@@ -3940,13 +4450,7 @@ fn symbt3_n8_accumulation_api_rejects_n7b_proof_as_n8() {
     .expect("N7b full proof");
     let mut proof = api.proof.clone();
     proof.output.integrated_whir_proof = n7b.k6a_main_proof;
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &api.fixture.vk,
-        &api.batch,
-        &api.old_accumulator.public_instance,
-        &api.new_accumulator.public_instance,
-        &proof,
-    ));
+    assert_n8_accumulation_rejects(decide_n8_accumulation_fixture_with_proof(&api, &proof));
 }
 
 #[test]
@@ -3968,13 +4472,7 @@ fn symbt3_n8_accumulation_api_rejects_n7b_split_delegation_shape() {
         .output
         .proof_plan
         .delegated_split_proof_material_present = true;
-    let report = verify_symbt3_n8_accumulation_non_zk(
-        &api.fixture.vk,
-        &api.batch,
-        &api.old_accumulator.public_instance,
-        &api.new_accumulator.public_instance,
-        &proof,
-    );
+    let report = decide_n8_accumulation_fixture_with_proof(&api, &proof);
     assert_eq!(
         report.blocker,
         Some(Symbt3N8IntegratedPrototypeBlocker::SplitK6aTupleDelegationAttempt)
@@ -3987,13 +4485,7 @@ fn symbt3_n8_accumulation_api_rejects_smoke_proof_as_n8() {
     let smoke = n7_fixture(1, 1);
     let mut proof = api.proof.clone();
     proof.output.integrated_whir_proof = smoke.proof.main_symbt3_whir_proof;
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &api.fixture.vk,
-        &api.batch,
-        &api.old_accumulator.public_instance,
-        &api.new_accumulator.public_instance,
-        &proof,
-    ));
+    assert_n8_accumulation_rejects(decide_n8_accumulation_fixture_with_proof(&api, &proof));
 }
 
 #[test]
@@ -4001,13 +4493,7 @@ fn symbt3_n8_accumulation_api_rejects_default_product_proof_as_n8() {
     let api = n8_accumulation_api_fixture(1);
     let mut proof = api.proof.clone();
     proof.output.integrated_whir_proof = api.fixture.proof.clone();
-    assert_n8_accumulation_rejects(verify_symbt3_n8_accumulation_non_zk(
-        &api.fixture.vk,
-        &api.batch,
-        &api.old_accumulator.public_instance,
-        &api.new_accumulator.public_instance,
-        &proof,
-    ));
+    assert_n8_accumulation_rejects(decide_n8_accumulation_fixture_with_proof(&api, &proof));
 }
 
 #[test]
@@ -4029,13 +4515,7 @@ fn symbt3_n8_accumulation_api_rejects_synthetic_n8_output() {
         api.proof.descriptor.clone(),
         synthetic,
     );
-    let report = verify_symbt3_n8_accumulation_non_zk(
-        &api.fixture.vk,
-        &api.batch,
-        &api.old_accumulator.public_instance,
-        &api.new_accumulator.public_instance,
-        &proof,
-    );
+    let report = decide_n8_accumulation_fixture_with_proof(&api, &proof);
     assert_eq!(
         report.blocker,
         Some(Symbt3N8IntegratedPrototypeBlocker::SyntheticNonAuthoritativeOutput)

@@ -20,6 +20,7 @@
 //!
 //! For the classical (non-PQ) alternative, see [`SpartanSnark`](super::spartan::SpartanSnark).
 
+pub mod canonical_encoding;
 pub mod field;
 pub mod instrumented_benchmark;
 pub mod native_oracles;
