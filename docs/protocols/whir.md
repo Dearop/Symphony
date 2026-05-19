@@ -1766,6 +1766,50 @@ semantic rows, and transition/binding semantic rows:
 - `verify_symbt3_n8_integrated_whir_non_zk`;
 - `verify_symbt3_n8_integrated_k6a_native_whir_relation_gate`.
 
+N8 is now also exposed through a first-class NonZK accumulation API:
+
+```text
+ACC.P(batch, old_accumulator, witness) -> (new_accumulator, proof)
+ACC.V(public_batch, old_accumulator_public, new_accumulator_public, proof)
+    -> accept/reject
+```
+
+The typed API separates `Symbt3AccumulatorObject`,
+`Symbt3AccumulatorPublicInstance`, `Symbt3AccumulatorWitness`,
+`Symbt3AccumulationBatch`, `Symbt3AccumulationProof`, and
+`Symbt3AccumulationVerificationReport`. `accumulate_symbt3_n8_non_zk` derives
+the new accumulator object from the public batch and old accumulator, builds the
+existing N8 integrated descriptor/proof, and returns the object plus proof.
+`verify_symbt3_n8_accumulation_non_zk` recomputes the public accumulator
+context and calls the audited N8 authority-candidate verifier/backend path. The
+proof binds the old and new accumulator digests, batch size, active count,
+public statement digest, accumulator instance digest, K6a/N8 relation digests,
+tuple root/layout/native descriptor/message-root digests, table/claim-plan
+digests, and semantic completion flags.
+
+`Symbt3AccumulatorPublicInstance` is a role-neutral accumulator state object:
+its `accumulator_digest` is the Poseidon2/BabyBear `state` coordinate digest.
+The public statement and `Symbt3AccumulationProof` continue to bind the
+role-specific `old` and `new` coordinate digests used by the K6a/N8 transition
+relation. This lets the `new_accumulator` returned by one successful call be
+used directly as the `old_accumulator` of the next call while preserving the
+old/new digest checks inside each transition proof.
+
+The accumulation API audit tests cover `acc0 -> acc1 -> acc2`, independent
+verification of both transitions, replay/swaps across batches and old/new
+accumulators, malformed public accumulators, proof old/new digest mutation,
+empty public-batch rejection, active-count and batch-size mismatch rejection,
+and honest `k = 1, 2, 4`. Empty prover batches remain unsupported at the
+underlying batch-shape construction boundary. The verifier accepts only the real
+integrated N8 output: N7b proof material, synthetic N8 output, split delegation
+material, N7 smoke proof material, and the default K6a product proof all reject
+when presented through the N8 accumulation verifier.
+
+This API is a research authority-candidate wrapper around the existing N8
+integrated NonZK proof. It is not production authority, does not implement
+K5/ZK masking, does not make a privacy claim, does not accept N7b/split
+delegation as N8, and leaves default `verify_public` unchanged.
+
 The planner records `integrated_num_vars = max(k6a_num_vars,
 tuple_packed_num_vars)`, the deterministic K6a zero-extension policy, the
 tuple-leaf repetition axis appended after the logical axes, and combined logical

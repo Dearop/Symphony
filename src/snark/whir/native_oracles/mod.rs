@@ -14,10 +14,12 @@ use p3_baby_bear::BabyBear;
 use p3_field::{PrimeCharacteristicRing, PrimeField64};
 use sha2::{Digest, Sha256};
 
+pub use crate::batched_cp::Symbt3AccumulatorWitness;
+
 use crate::batched_cp::{
-    derive_symbt3_public_statement_digest, BatchedCpSymbt3RelationDescription, ProductProofKind,
-    Symbt3AccumulatorInstance, Symbt3AccumulatorWitness, Symbt3AuthorityProfile,
-    Symbt3TypedMessageOracle,
+    derive_symbt3_public_statement_digest, symbt3_accumulator_coordinates_digest,
+    BatchedCpSymbt3PublicStatement, BatchedCpSymbt3RelationDescription, ProductProofKind,
+    Symbt3AccumulatorInstance, Symbt3AuthorityProfile, Symbt3TypedMessageOracle,
 };
 use crate::folding::digest::Digest32;
 use crate::snark::BackendSnark;
@@ -59,6 +61,7 @@ pub const N8_INTEGRATED_WHIR_PROOF_PLAN_VERSION: u64 = 1;
 pub const N8_INTEGRATED_WHIR_VERIFIER_INPUT_VERSION: u64 = 1;
 pub const N8_INTEGRATED_WHIR_QUERY_SCHEDULE_VERSION: u64 = 1;
 pub const N8_INTEGRATED_WHIR_PROVER_OUTPUT_VERSION: u64 = 1;
+pub const SYMBT3_N8_ACCUMULATION_PROOF_VERSION: u64 = 1;
 pub const REAL_INTEGRATED_K6A_NATIVE_EVALUATOR_VERSION: u64 = 1;
 pub const N8_INTEGRATED_K6A_SEMANTIC_CONSTRAINTS_VERSION: u64 = 1;
 pub const N8_INTEGRATED_TUPLE_RLC_SEMANTIC_CONSTRAINTS_VERSION: u64 = 1;
@@ -1486,6 +1489,58 @@ pub struct N8IntegratedWhirProverOutput {
     pub integrated_whir_proof: WhirProof,
     pub query_schedule: N8IntegratedWhirQueryScheduleV1,
     pub counters: N8IntegratedWhirPrototypeCounters,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AccumulatorPublicInstance {
+    pub profile_digest: Digest32,
+    pub shape_id: Digest32,
+    pub accumulator_digest: Digest32,
+    pub accumulator_coordinates: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AccumulationBatch {
+    pub profile: Symbt3AuthorityProfile,
+    pub public_statement: BatchedCpSymbt3PublicStatement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AccumulatorObject {
+    pub public_instance: Symbt3AccumulatorPublicInstance,
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbt3AccumulationProof {
+    pub version: u64,
+    pub public_statement_digest: Digest32,
+    pub accumulator_instance_digest: Digest32,
+    pub old_accumulator_digest: Digest32,
+    pub new_accumulator_digest: Digest32,
+    pub batch_size: u64,
+    pub active_count: u64,
+    pub k6a_relation_id: Digest32,
+    pub whir_param_digest: Digest32,
+    pub tuple_leaf_root: Digest32,
+    pub tuple_leaf_layout_digest: Digest32,
+    pub tuple_leaf_descriptor_digest: Digest32,
+    pub native_oracle_descriptor_digest: Digest32,
+    pub native_message_roots_digest: Digest32,
+    pub n8_transcript_binding_digest: Digest32,
+    pub n8_claim_plan_digest: Digest32,
+    pub n8_committed_table_layout_digest: Digest32,
+    pub n8_committed_table_digest: Digest32,
+    pub semantic_completion: N8IntegratedSemanticCompletionFlagsV1,
+    pub descriptor: Symbt3IntegratedK6aNativeWhirRelationV1,
+    pub output: N8IntegratedWhirProverOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbt3AccumulationVerificationReport {
+    pub ok: bool,
+    pub blocked: bool,
+    pub blocker: Option<Symbt3N8IntegratedPrototypeBlocker>,
+    pub semantic_completion: N8IntegratedSemanticCompletionFlagsV1,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -4806,6 +4861,383 @@ impl Symbt3N8IntegratedPrototypeGateReport {
             semantic_completion,
         }
     }
+}
+
+impl Symbt3AccumulatorPublicInstance {
+    fn from_statement_coordinates(
+        profile_digest: Digest32,
+        shape_id: Digest32,
+        coordinates: Vec<i64>,
+    ) -> Self {
+        let accumulator_digest = symbt3_accumulator_coordinates_digest(
+            crate::digest_core::PublicDigestScheme::Poseidon2BabyBear,
+            b"state",
+            &coordinates,
+        );
+        Self {
+            profile_digest,
+            shape_id,
+            accumulator_digest,
+            accumulator_coordinates: coordinates,
+        }
+    }
+
+    #[must_use]
+    pub fn from_old_public_statement(
+        profile_digest: Digest32,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Self {
+        Self::from_statement_coordinates(
+            profile_digest,
+            statement.shape_id,
+            statement.old_accumulator_coordinates.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn from_new_public_statement(
+        profile_digest: Digest32,
+        statement: &BatchedCpSymbt3PublicStatement,
+    ) -> Self {
+        Self::from_statement_coordinates(
+            profile_digest,
+            statement.shape_id,
+            statement.new_accumulator_coordinates.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_bytes(&mut out, b"SYMBT3_ACCUMULATOR_PUBLIC_INSTANCE_V1");
+        push_digest(&mut out, &self.profile_digest);
+        push_digest(&mut out, &self.shape_id);
+        push_digest(&mut out, &self.accumulator_digest);
+        push_i64_slice(&mut out, &self.accumulator_coordinates);
+        out
+    }
+
+    #[must_use]
+    pub fn object_digest(&self) -> Digest32 {
+        digest_bytes(&self.canonical_bytes())
+    }
+}
+
+impl Symbt3AccumulatorObject {
+    #[must_use]
+    pub fn from_public_instance(public_instance: Symbt3AccumulatorPublicInstance) -> Self {
+        Self { public_instance }
+    }
+}
+
+impl Symbt3AccumulationBatch {
+    #[must_use]
+    pub fn from_accumulator_instance(
+        profile: Symbt3AuthorityProfile,
+        accumulator_instance: &Symbt3AccumulatorInstance,
+    ) -> Self {
+        Self {
+            profile,
+            public_statement: accumulator_instance.to_public_statement(),
+        }
+    }
+}
+
+impl Symbt3AccumulationVerificationReport {
+    fn ok(semantic_completion: N8IntegratedSemanticCompletionFlagsV1) -> Self {
+        Self {
+            ok: true,
+            blocked: false,
+            blocker: None,
+            semantic_completion,
+        }
+    }
+
+    fn blocked(blocker: Symbt3N8IntegratedPrototypeBlocker) -> Self {
+        Self {
+            ok: false,
+            blocked: true,
+            blocker: Some(blocker),
+            semantic_completion: N8IntegratedSemanticCompletionFlagsV1::none_complete(),
+        }
+    }
+
+    fn from_gate_report(report: Symbt3N8IntegratedPrototypeGateReport) -> Self {
+        Self {
+            ok: report.ok,
+            blocked: report.blocked,
+            blocker: report.blocker,
+            semantic_completion: report.semantic_completion,
+        }
+    }
+}
+
+struct Symbt3N8AccumulationPublicContext {
+    relation: BatchedCpSymbt3RelationDescription,
+    accumulator_instance: Symbt3AccumulatorInstance,
+    new_accumulator: Symbt3AccumulatorObject,
+    public_statement_digest: Digest32,
+    accumulator_instance_digest: Digest32,
+}
+
+fn symbt3_n8_accumulation_public_context_from_relation(
+    relation: BatchedCpSymbt3RelationDescription,
+    batch: &Symbt3AccumulationBatch,
+    old_accumulator_public: &Symbt3AccumulatorPublicInstance,
+    new_accumulator_public: Option<&Symbt3AccumulatorPublicInstance>,
+) -> Result<Symbt3N8AccumulationPublicContext, Symbt3N8IntegratedPrototypeBlocker> {
+    let scheme = relation.shape.accumulator_shape.digest_scheme;
+    let profile_digest = batch.profile.digest(scheme);
+    let expected_old = Symbt3AccumulatorPublicInstance::from_old_public_statement(
+        profile_digest,
+        &batch.public_statement,
+    );
+    if old_accumulator_public != &expected_old {
+        return Err(
+            Symbt3N8IntegratedPrototypeBlocker::TransitionBindingSemanticConstraintViolation,
+        );
+    }
+    let expected_new = Symbt3AccumulatorPublicInstance::from_new_public_statement(
+        profile_digest,
+        &batch.public_statement,
+    );
+    if let Some(new_accumulator_public) = new_accumulator_public {
+        if new_accumulator_public != &expected_new {
+            return Err(
+                Symbt3N8IntegratedPrototypeBlocker::TransitionBindingSemanticConstraintViolation,
+            );
+        }
+    }
+    let accumulator_instance = Symbt3AccumulatorInstance::from_public_statement_with_scheme(
+        scheme,
+        profile_digest,
+        batch.public_statement.old_accumulator_digest,
+        batch.public_statement.new_accumulator_digest,
+        &batch.public_statement,
+    );
+    if !accumulator_instance.matches_profile_and_relation(&batch.profile, &relation) {
+        return Err(
+            Symbt3N8IntegratedPrototypeBlocker::TransitionBindingSemanticConstraintViolation,
+        );
+    }
+    let public_statement_digest =
+        derive_symbt3_public_statement_digest(&relation, &batch.public_statement);
+    let accumulator_instance_digest = accumulator_instance.digest(scheme);
+    Ok(Symbt3N8AccumulationPublicContext {
+        relation,
+        accumulator_instance,
+        new_accumulator: Symbt3AccumulatorObject::from_public_instance(expected_new),
+        public_statement_digest,
+        accumulator_instance_digest,
+    })
+}
+
+fn symbt3_n8_accumulation_public_context_from_pk(
+    pk: &WhirProvingKey,
+    batch: &Symbt3AccumulationBatch,
+    old_accumulator_public: &Symbt3AccumulatorPublicInstance,
+) -> Result<Symbt3N8AccumulationPublicContext, Symbt3N8IntegratedPrototypeBlocker> {
+    let relation = symbt3_k6a_relation_from_context(
+        pk.relation
+            .context
+            .as_ref()
+            .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?,
+    )
+    .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?;
+    symbt3_n8_accumulation_public_context_from_relation(
+        relation,
+        batch,
+        old_accumulator_public,
+        None,
+    )
+}
+
+fn symbt3_n8_accumulation_public_context_from_vk(
+    vk: &WhirVerifyingKey,
+    batch: &Symbt3AccumulationBatch,
+    old_accumulator_public: &Symbt3AccumulatorPublicInstance,
+    new_accumulator_public: &Symbt3AccumulatorPublicInstance,
+) -> Result<Symbt3N8AccumulationPublicContext, Symbt3N8IntegratedPrototypeBlocker> {
+    let relation = symbt3_k6a_relation_from_context(
+        vk.relation
+            .context
+            .as_ref()
+            .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?,
+    )
+    .ok_or(Symbt3N8IntegratedPrototypeBlocker::ShapeMismatch)?;
+    symbt3_n8_accumulation_public_context_from_relation(
+        relation,
+        batch,
+        old_accumulator_public,
+        Some(new_accumulator_public),
+    )
+}
+
+fn symbt3_n8_accumulation_proof_from_descriptor_output(
+    public_statement_digest: Digest32,
+    accumulator_instance_digest: Digest32,
+    descriptor: Symbt3IntegratedK6aNativeWhirRelationV1,
+    output: N8IntegratedWhirProverOutput,
+) -> Symbt3AccumulationProof {
+    let transition = &descriptor.transition_binding_semantic_constraints;
+    Symbt3AccumulationProof {
+        version: SYMBT3_N8_ACCUMULATION_PROOF_VERSION,
+        public_statement_digest,
+        accumulator_instance_digest,
+        old_accumulator_digest: transition.old_accumulator_digest,
+        new_accumulator_digest: transition.new_accumulator_digest,
+        batch_size: transition.batch_size,
+        active_count: transition.active_count,
+        k6a_relation_id: descriptor.main_symbt3_relation_id,
+        whir_param_digest: descriptor.whir_param_digest,
+        tuple_leaf_root: transition.tuple_leaf_root,
+        tuple_leaf_layout_digest: descriptor.tuple_leaf_layout_digest,
+        tuple_leaf_descriptor_digest: descriptor.tuple_leaf_descriptor_digest,
+        native_oracle_descriptor_digest: transition.native_oracle_descriptor_digest,
+        native_message_roots_digest: transition.native_message_roots_digest,
+        n8_transcript_binding_digest: descriptor.transcript_binding_digest,
+        n8_claim_plan_digest: descriptor.claim_plan.claim_plan_digest,
+        n8_committed_table_layout_digest: descriptor.committed_table.layout_digest,
+        n8_committed_table_digest: descriptor.committed_table.table_digest,
+        semantic_completion: descriptor.semantic_completion,
+        descriptor,
+        output,
+    }
+}
+
+fn symbt3_n8_accumulation_binding_blocker(
+    relation: &BatchedCpSymbt3RelationDescription,
+    context: &Symbt3N8AccumulationPublicContext,
+    proof: &Symbt3AccumulationProof,
+) -> Option<Symbt3N8IntegratedPrototypeBlocker> {
+    let transition = &proof.descriptor.transition_binding_semantic_constraints;
+    let relation_id = relation.relation_id();
+    let expected_batch_size = context.accumulator_instance.batch_capacity as u64;
+    let expected_active_count = context.accumulator_instance.active_count as u64;
+    if proof.version != SYMBT3_N8_ACCUMULATION_PROOF_VERSION {
+        return Some(Symbt3N8IntegratedPrototypeBlocker::WorkloadKindMismatch);
+    }
+    if proof.descriptor.workload_kind
+        != Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1
+        || proof.descriptor.main_symbt3_relation_id != relation_id
+        || proof.k6a_relation_id != relation_id
+    {
+        return Some(Symbt3N8IntegratedPrototypeBlocker::WorkloadKindMismatch);
+    }
+    if proof.public_statement_digest != context.public_statement_digest
+        || proof.accumulator_instance_digest != context.accumulator_instance_digest
+        || proof.old_accumulator_digest != context.accumulator_instance.old_accumulator_digest
+        || proof.new_accumulator_digest != context.accumulator_instance.new_accumulator_digest
+        || proof.batch_size != expected_batch_size
+        || proof.active_count != expected_active_count
+        || proof.descriptor.public_statement_digest != context.public_statement_digest
+        || proof.descriptor.claim_plan.k6a_public_statement_digest
+            != context.public_statement_digest
+        || transition.profile_digest != context.accumulator_instance.profile_digest
+        || transition.accumulator_instance_digest != context.accumulator_instance_digest
+        || transition.old_accumulator_digest != context.accumulator_instance.old_accumulator_digest
+        || transition.new_accumulator_digest != context.accumulator_instance.new_accumulator_digest
+        || transition.public_statement_digest != context.public_statement_digest
+        || transition.batch_size != expected_batch_size
+        || transition.active_count != expected_active_count
+        || transition.main_symbt3_relation_id != relation_id
+        || transition.whir_param_digest != proof.whir_param_digest
+        || transition.tuple_leaf_root != proof.tuple_leaf_root
+        || transition.tuple_leaf_layout_digest != proof.tuple_leaf_layout_digest
+        || transition.tuple_leaf_descriptor_digest != proof.tuple_leaf_descriptor_digest
+        || transition.native_oracle_descriptor_digest != proof.native_oracle_descriptor_digest
+        || transition.native_message_roots_digest != proof.native_message_roots_digest
+        || transition.n8_claim_plan_digest != proof.n8_claim_plan_digest
+        || transition.n8_committed_table_layout_digest != proof.n8_committed_table_layout_digest
+        || transition.n8_committed_table_digest != proof.n8_committed_table_digest
+        || proof.n8_transcript_binding_digest != proof.descriptor.transcript_binding_digest
+        || proof.n8_claim_plan_digest != proof.descriptor.claim_plan.claim_plan_digest
+        || proof.n8_committed_table_layout_digest != proof.descriptor.committed_table.layout_digest
+        || proof.n8_committed_table_digest != proof.descriptor.committed_table.table_digest
+        || proof.semantic_completion != proof.descriptor.semantic_completion
+        || !proof.semantic_completion.all_complete()
+    {
+        return Some(
+            Symbt3N8IntegratedPrototypeBlocker::TransitionBindingSemanticConstraintViolation,
+        );
+    }
+    None
+}
+
+pub fn accumulate_symbt3_n8_non_zk(
+    pk: &WhirProvingKey,
+    batch: &Symbt3AccumulationBatch,
+    old_accumulator: &Symbt3AccumulatorObject,
+    witness: &Symbt3AccumulatorWitness,
+) -> Result<(Symbt3AccumulatorObject, Symbt3AccumulationProof), Symbt3N8IntegratedPrototypeBlocker>
+{
+    let context =
+        symbt3_n8_accumulation_public_context_from_pk(pk, batch, &old_accumulator.public_instance)?;
+    let semantic_inputs = build_n8_semantic_inputs_from_k6a_witness(
+        pk,
+        &batch.profile,
+        &context.accumulator_instance,
+        witness,
+    )
+    .ok_or(Symbt3N8IntegratedPrototypeBlocker::K6aSemanticConstraintViolation)?;
+    let descriptor =
+        build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs(
+            &semantic_inputs,
+        )?;
+    let proof_plan = build_n8_integrated_whir_proof_plan(
+        &N8IntegratedWhirProofInputs::from_descriptor(&descriptor),
+    )?;
+    let output = prove_symbt3_integrated_whir_from_claim_plan(pk, &descriptor, &proof_plan)?;
+    let gate_report =
+        verify_symbt3_n8_integrated_prover_output_authority_gate(&descriptor, &output);
+    if gate_report.blocked {
+        return Err(gate_report
+            .blocker
+            .unwrap_or(Symbt3N8IntegratedPrototypeBlocker::IntegratedWhirProofRejected));
+    }
+    let proof = symbt3_n8_accumulation_proof_from_descriptor_output(
+        context.public_statement_digest,
+        context.accumulator_instance_digest,
+        descriptor,
+        output,
+    );
+    Ok((context.new_accumulator, proof))
+}
+
+#[must_use]
+pub fn verify_symbt3_n8_accumulation_non_zk(
+    vk: &WhirVerifyingKey,
+    public_batch: &Symbt3AccumulationBatch,
+    old_accumulator_public: &Symbt3AccumulatorPublicInstance,
+    new_accumulator_public: &Symbt3AccumulatorPublicInstance,
+    proof: &Symbt3AccumulationProof,
+) -> Symbt3AccumulationVerificationReport {
+    let context = match symbt3_n8_accumulation_public_context_from_vk(
+        vk,
+        public_batch,
+        old_accumulator_public,
+        new_accumulator_public,
+    ) {
+        Ok(context) => context,
+        Err(blocker) => return Symbt3AccumulationVerificationReport::blocked(blocker),
+    };
+    if let Some(blocker) =
+        symbt3_n8_accumulation_binding_blocker(&context.relation, &context, proof)
+    {
+        return Symbt3AccumulationVerificationReport::blocked(blocker);
+    }
+    let authority_report =
+        verify_symbt3_n8_integrated_prover_output_authority_gate(&proof.descriptor, &proof.output);
+    if authority_report.blocked {
+        return Symbt3AccumulationVerificationReport::from_gate_report(authority_report);
+    }
+    let verifier_input = proof.output.verifier_input(&proof.descriptor);
+    let backend_report =
+        verify_symbt3_integrated_whir_backend_from_verifier_input(vk, &verifier_input);
+    if backend_report.blocked {
+        return Symbt3AccumulationVerificationReport::from_gate_report(backend_report);
+    }
+    Symbt3AccumulationVerificationReport::ok(authority_report.semantic_completion)
 }
 
 #[must_use]
@@ -15986,6 +16418,13 @@ fn push_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
+fn push_i64_slice(out: &mut Vec<u8>, values: &[i64]) {
+    push_u64(out, values.len() as u64);
+    for value in values {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
 fn push_bool(out: &mut Vec<u8>, value: bool) {
     out.push(u8::from(value));
 }
@@ -16030,7 +16469,6 @@ fn push_babybear_vec(out: &mut Vec<u8>, values: &[BabyBear]) {
         push_babybear(out, value);
     }
 }
-
 
 #[cfg(test)]
 mod tests;

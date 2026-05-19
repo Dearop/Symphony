@@ -417,6 +417,48 @@ production authority proof: `IntegratedK6aNativeClaimPlanV1`,
 `N8IntegratedWhirProofPlan` add the typed bridge from that descriptor to one
 WHIR proof without accepting the route.
 
+N8 is now also exposed as a typed NonZK accumulation API:
+
+```text
+ACC.P(batch, old_accumulator, witness) -> (new_accumulator, proof)
+ACC.V(public_batch, old_accumulator_public, new_accumulator_public, proof)
+    -> accept/reject
+```
+
+The API separates `Symbt3AccumulatorObject`,
+`Symbt3AccumulatorPublicInstance`, `Symbt3AccumulatorWitness`,
+`Symbt3AccumulationBatch`, `Symbt3AccumulationProof`, and
+`Symbt3AccumulationVerificationReport`. `accumulate_symbt3_n8_non_zk` wraps the
+existing integrated N8 prover path, deriving the new accumulator object before
+returning it with the proof. `verify_symbt3_n8_accumulation_non_zk` recomputes
+the public context, applies the N8 authority-candidate gate, and verifies the
+single integrated WHIR backend proof. The proof binds old/new accumulator
+digests, batch size, active count, public statement digest, accumulator
+instance digest, K6a/N8 relation digests, tuple root/layout/native
+descriptor/message-root digests, table/claim-plan digests, and semantic
+completion flags.
+
+`Symbt3AccumulatorPublicInstance` is role-neutral accumulator state: its
+`accumulator_digest` is the Poseidon2/BabyBear `state` coordinate digest. The
+public statement and `Symbt3AccumulationProof` still bind the role-specific
+`old` and `new` coordinate digests used by each transition relation. This keeps
+transition binding explicit and allows the `new_accumulator` from one
+successful call to become the next call's `old_accumulator`.
+
+The audit tests cover `acc0 -> acc1 -> acc2`, independent transition
+verification, replay/swaps across batches and old/new accumulators, malformed
+public accumulators, proof old/new digest mutation, empty public-batch
+rejection, active-count and batch-size mismatch rejection, and honest
+`k = 1, 2, 4`. Empty prover batches are unsupported at batch-shape
+construction. The N8 accumulation verifier accepts only real integrated N8
+output: N7b proof material, synthetic N8 output, split delegation material, N7
+smoke proof material, and the default K6a product proof all reject.
+
+This remains NonZK research authority-candidate plumbing only: it is not
+production authority, does not add K5/ZK masking or privacy, does not accept
+N7b or split K6a+tuple delegation as N8, and does not change default
+`verify_public`.
+
 The planner computes `k6a_num_vars`, `tuple_packed_num_vars`, and
 `integrated_num_vars = max(k6a_num_vars, tuple_packed_num_vars)`. It records the
 deterministic K6a zero-extension padding policy, maps the tuple-leaf repetition
