@@ -1,0 +1,82 @@
+\contentsline {section}{\numberline {1}Introduction}{4}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Motivation}{4}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Problem Statement}{4}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Contributions}{5}{subsection.1.3}%
+\contentsline {section}{\numberline {2}Technical Overview}{5}{section.2}%
+\contentsline {subsection}{\numberline {2.1}High-Level Architecture}{5}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}What is Being Accumulated?}{6}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Public-Verifier Boundary}{6}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Implementation Routes}{6}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}Performance Direction}{7}{subsection.2.5}%
+\contentsline {section}{\numberline {3}Preliminaries}{7}{section.3}%
+\contentsline {paragraph}{Notation.}{7}{section*.2}%
+\contentsline {subsection}{\numberline {3.1}Interactive Oracle Proofs and SNARKs}{8}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}WHIR}{8}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Accumulation and Folding}{9}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Commit-and-Prove SNARKs}{9}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}Lattice Commitments}{9}{subsection.3.5}%
+\contentsline {section}{\numberline {4}WHIR Accumulation Through Lattice-Based Folding}{10}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Interface}{10}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}From WHIR Proofs to Verification Claims}{10}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Lattice-Based Folding of Claims}{11}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}CP-SNARK for the Folding Transition}{12}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}WHIR Backend for the CP Relation}{13}{subsection.4.5}%
+\contentsline {subsection}{\numberline {4.6}Verification Algorithm}{14}{subsection.4.6}%
+\contentsline {section}{\numberline {5}Formal Relation Definitions}{15}{section.5}%
+\contentsline {subsection}{\numberline {5.1}WHIR Verification Relation}{15}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Folding Relation}{15}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Commit-and-Prove Folding Relation}{16}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}WHIR Backend Relation}{17}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Faithfulness of the Encoded Relation}{17}{subsection.5.5}%
+\contentsline {subsection}{\numberline {5.6}Accumulator Validity and Concrete Route Faithfulness}{17}{subsection.5.6}%
+\contentsline {subsection}{\numberline {5.7}Row-Level Faithfulness Obligations}{18}{subsection.5.7}%
+\contentsline {paragraph}{The claim-representation gap.}{20}{section*.3}%
+\contentsline {section}{\numberline {6}Completeness}{20}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Local Completeness of the WHIR Claims}{21}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Completeness of Folding}{21}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Completeness of the CP Layer}{21}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Completeness of the WHIR Backend}{22}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}Full Completeness Theorem}{22}{subsection.6.5}%
+\contentsline {section}{\numberline {7}Soundness as a Reduction to Row-Level Faithfulness}{23}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Assumptions}{23}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Soundness Chain}{24}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Error Composition}{25}{subsection.7.3}%
+\contentsline {paragraph}{Long-chain accumulation.}{26}{section*.4}%
+\contentsline {section}{\numberline {8}Implementation}{26}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Repository Structure}{27}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Core Data Structures}{27}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}WHIR Proof Ingestion}{27}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Accumulator API}{28}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}Single-Oracle versus Multi-Oracle Organization}{28}{subsection.8.5}%
+\contentsline {subsection}{\numberline {8.6}Folding Transition}{28}{subsection.8.6}%
+\contentsline {subsection}{\numberline {8.7}CP Relation Encoding}{29}{subsection.8.7}%
+\contentsline {subsection}{\numberline {8.8}WHIR Backend Integration}{29}{subsection.8.8}%
+\contentsline {subsection}{\numberline {8.9}Tests and Guardrails}{29}{subsection.8.9}%
+\contentsline {section}{\numberline {9}Evaluation}{30}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Experimental Setup}{30}{subsection.9.1}%
+\contentsline {paragraph}{Measurement protocol.}{31}{section*.5}%
+\contentsline {subsection}{\numberline {9.2}Product Public-Verifier Baseline}{31}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}K6a Explicit Accumulator Route}{32}{subsection.9.3}%
+\contentsline {subsection}{\numberline {9.4}N8 Integrated Route and Native Multi-Oracle Evidence}{33}{subsection.9.4}%
+\contentsline {subsection}{\numberline {9.5}Bottleneck Analysis}{35}{subsection.9.5}%
+\contentsline {section}{\numberline {10}Challenges and Limitations}{36}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Relation Encoding}{36}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Commitment Compatibility}{36}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Transcript Binding}{37}{subsection.10.3}%
+\contentsline {subsection}{\numberline {10.4}Prototype Boundaries}{37}{subsection.10.4}%
+\contentsline {subsection}{\numberline {10.5}Remaining Gaps}{37}{subsection.10.5}%
+\contentsline {paragraph}{Zero-knowledge.}{37}{section*.6}%
+\contentsline {section}{\numberline {11}Related Work}{38}{section.11}%
+\contentsline {subsection}{\numberline {11.1}WHIR and Reed--Solomon Proximity Testing}{38}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}Symphony and Lattice-Based Folding}{38}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Commit-and-Prove SNARKs}{39}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Accumulation and Folding Schemes}{39}{subsection.11.4}%
+\contentsline {subsection}{\numberline {11.5}Transparent SNARKs and Spartan}{39}{subsection.11.5}%
+\contentsline {subsection}{\numberline {11.6}Positioning of This Work}{40}{subsection.11.6}%
+\contentsline {section}{\numberline {12}Future Work}{40}{section.12}%
+\contentsline {paragraph}{Faithfulness proof for typed rows.}{40}{section*.7}%
+\contentsline {paragraph}{Quasar-style partial evaluation.}{40}{section*.8}%
+\contentsline {paragraph}{Zero-knowledge.}{40}{section*.9}%
+\contentsline {paragraph}{Long-chain accumulation.}{41}{section*.10}%
+\contentsline {paragraph}{Broader comparisons.}{41}{section*.11}%
+\contentsline {section}{\numberline {13}Conclusion}{41}{section.13}%

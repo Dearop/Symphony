@@ -1,0 +1,20 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.55\linewidth,
+  grid=both,
+  xmode=log,
+  log basis x=2,
+  xtick=data,
+  xlabel={$k$},
+  ylabel={bytes},
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=2},
+  ymode=log,
+  log basis y=10
+]
+\addplot+[mark=*] coordinates {(1,307597) (2,345133) (4,340214) (8,372764) (16,421516) (32,645435) (64,682806)};
+\addlegendentry{K6a proof}
+\addplot+[mark=*] coordinates {(1,18715) (2,18715) (4,18715) (8,18715) (16,18715) (32,18715) (64,18715)};
+\addlegendentry{public statement}
+\end{axis}
+\end{tikzpicture}

@@ -1,0 +1,51 @@
+\newcommand{\etalchar}[1]{$^{#1}$}
+\begin{thebibliography}{BSBHR18}
+
+\bibitem[ACFY24a]{STIR}
+Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev.
+\newblock {STIR: Reed--Solomon Proximity Testing with Fewer Queries}.
+\newblock Cryptology {ePrint} Archive, Paper 2024/390, 2024.
+
+\bibitem[ACFY24b]{WHIR}
+Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev.
+\newblock {WHIR: Reed--Solomon Proximity Testing with Super-Fast Verification}.
+\newblock Cryptology {ePrint} Archive, Paper 2024/1586, 2024.
+
+\bibitem[BCFW25]{WARP}
+Benedikt Bünz, Alessandro Chiesa, Giacomo Fenzi, and William Wang.
+\newblock Linear-time accumulation schemes.
+\newblock Cryptology {ePrint} Archive, Paper 2025/753, 2025.
+
+\bibitem[BSBHR18]{FRI}
+Eli Ben-Sasson, Iddo Bentov, Yinon Horesh, and Michael Riabzev.
+\newblock {Fast Reed--Solomon Interactive Oracle Proofs of Proximity}.
+\newblock In {\em 45th International Colloquium on Automata, Languages, and
+  Programming ({ICALP} 2018)}, volume 107 of {\em Leibniz International
+  Proceedings in Informatics ({LIPIcs})}, pages 14:1--14:17. Schloss Dagstuhl
+  -- Leibniz-Zentrum f{\"u}r Informatik, 2018.
+
+\bibitem[Che25]{Symphony}
+Binyi Chen.
+\newblock {Symphony: Scalable SNARKs in the Random Oracle Model from
+  Lattice-Based High-Arity Folding}.
+\newblock Cryptology {ePrint} Archive, Paper 2025/1905, 2025.
+
+\bibitem[Set19]{Spartan}
+Srinath Setty.
+\newblock Spartan: Efficient and general-purpose {zkSNARKs} without trusted
+  setup.
+\newblock Cryptology {ePrint} Archive, Paper 2019/550, 2019.
+
+\bibitem[ZCF23]{BaseFold}
+Hadas Zeilberger, Binyi Chen, and Ben Fisch.
+\newblock {BaseFold: Efficient Field-Agnostic Polynomial Commitment Schemes
+  from Foldable Codes}.
+\newblock Cryptology {ePrint} Archive, Paper 2023/1705, 2023.
+
+\bibitem[ZGC{\etalchar{+}}25]{Quasar}
+Tianyu Zheng, Shang Gao, Sherman S.~M. Chow, Yu~Guo, and Bin Xiao.
+\newblock Quasar: Sublinear multi-cast commitment mixing in recursive
+  accumulation.
+\newblock Cryptology {ePrint} Archive, Paper 2025/1912, 2025.
+
+\end{thebibliography}

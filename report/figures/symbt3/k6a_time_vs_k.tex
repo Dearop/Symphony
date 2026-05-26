@@ -1,0 +1,18 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.55\linewidth,
+  grid=both,
+  xmode=log,
+  log basis x=2,
+  xtick=data,
+  xlabel={$k$},
+  ylabel={time (ms)},
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=2}
+]
+\addplot+[mark=*] coordinates {(1,16.5381) (2,19.4934) (4,24.2316) (8,34.8918) (16,54.3086) (32,95.2777) (64,174.264)};
+\addlegendentry{K6a prove}
+\addplot+[mark=*] coordinates {(1,16.1611) (2,18.9808) (4,22.1684) (8,29.3201) (16,43.9817) (32,72.2562) (64,125.655)};
+\addlegendentry{K6a verify}
+\end{axis}
+\end{tikzpicture}

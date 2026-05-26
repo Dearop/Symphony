@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+<rect width="100%" height="100%" fill="white"/>
+<text x="450.0" y="30" font-size="18" text-anchor="middle">message_coordinate_count vs k | log-log slope ~= 1.000</text>
+<line x1="80" y1="450" x2="870" y2="450" stroke="black"/>
+<line x1="80" y1="60" x2="80" y2="450" stroke="black"/>
+<text x="450.0" y="510" font-size="14" text-anchor="middle">k</text>
+<text x="18" y="260.0" font-size="14" text-anchor="middle" transform="rotate(-90 18 260.0)">message_coordinate_count</text>
+<text x="80.00" y="485" font-size="12" text-anchor="middle">1</text>
+<text x="211.67" y="485" font-size="12" text-anchor="middle">2</text>
+<text x="343.33" y="485" font-size="12" text-anchor="middle">4</text>
+<text x="475.00" y="485" font-size="12" text-anchor="middle">8</text>
+<text x="606.67" y="485" font-size="12" text-anchor="middle">16</text>
+<text x="738.33" y="485" font-size="12" text-anchor="middle">32</text>
+<text x="870.00" y="485" font-size="12" text-anchor="middle">64</text>
+<polyline points="80.00,450.00 211.67,443.81 343.33,431.43 475.00,406.67 606.67,357.14 738.33,258.10 870.00,60.00" fill="none" stroke="#1f77b4" stroke-width="2"/>
+<circle cx="80.00" cy="450.00" r="4" fill="#1f77b4" />
+<circle cx="211.67" cy="443.81" r="4" fill="#1f77b4" />
+<circle cx="343.33" cy="431.43" r="4" fill="#1f77b4" />
+<circle cx="475.00" cy="406.67" r="4" fill="#1f77b4" />
+<circle cx="606.67" cy="357.14" r="4" fill="#1f77b4" />
+<circle cx="738.33" cy="258.10" r="4" fill="#1f77b4" />
+<circle cx="870.00" cy="60.00" r="4" fill="#1f77b4" />
+</svg>
