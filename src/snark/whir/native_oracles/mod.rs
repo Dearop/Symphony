@@ -1,12 +1,28 @@
-//! Native multi-oracle WHIR evaluation envelope.
+//! Native-oracle and explicit accumulation routes for the WHIR backend.
 //!
-//! N1 is an infrastructure layer: it keeps one logical proof envelope while
-//! allowing multiple named WHIR/PCS oracles to be opened and checked under a
-//! shared descriptor transcript.
+//! This module is **not** the default product `verify_public` route. Instead, it
+//! contains the explicit native-oracle, wrapper, and integrated accumulation
+//! APIs that sit alongside the product WHIR public verifier.
 //!
-//! Implementation is split across `frag_*.rs` files that are `include!`d into this
-//! module (single namespace, no cross-fragment visibility issues). Regenerate with
-//! `scripts/split_native_oracles_v3.py` if you have a monolithic source snapshot.
+//! # Route map
+//!
+//! The main responsibilities here are:
+//!
+//! - native multi-oracle and message-oracle performance infrastructure;
+//! - supporting native accumulator plumbing used by the broader SYMBT3 roadmap;
+//! - **N8 integrated accumulation:** the explicit ACC.P / ACC.V / ACC.D route
+//!   for same-shape, nonempty NonZK accumulation transitions using one
+//!   integrated WHIR proof.
+//!
+//! These APIs are opt-in and have their own gates. They do **not** silently
+//! replace the product `verify_public` typed-CP route in the parent module.
+//!
+//! # Layout note
+//!
+//! Implementation is split across `frag_*.rs` files that are `include!`d into
+//! this module so the code can stay in one namespace without cross-fragment
+//! visibility issues. Regenerate with `scripts/split_native_oracles_v3.py` if
+//! you have a monolithic source snapshot.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -35,6 +51,7 @@ use super::{
     WhirProvingKey, WhirSnark, WhirVerifyingKey, EF, F,
 };
 
+// Shared constants, policies, core data, serialization, and digests.
 include!("frag_constants.rs");
 include!("frag_policies.rs");
 include!("frag_core_types.rs");
@@ -42,9 +59,14 @@ include!("frag_tuple_leaf.rs");
 include!("frag_serialization.rs");
 include!("frag_digests.rs");
 include!("frag_benchmark.rs");
+
+// Native manifest/source/message-oracle and broader performance infrastructure.
 include!("frag_manifest.rs");
 include!("frag_message.rs");
 include!("frag_folding_integrity.rs");
+include!("frag_prove.rs");
+
+// Accumulator route types and wrapper/integrated route definitions.
 include!("frag_accumulator_types.rs");
 include!("frag_n7b_types.rs");
 include!("frag_n8_types.rs");
@@ -55,8 +77,9 @@ include!("frag_n8_accumulation.rs");
 include!("frag_accumulator_digest.rs");
 include!("frag_n7b_prove.rs");
 include!("frag_n8_witness.rs");
+
+// Canonical encodings, route verifiers, and shared accumulator helpers.
 include!("frag_core_canonical.rs");
-include!("frag_prove.rs");
 include!("frag_verify.rs");
 include!("frag_accumulator_helpers.rs");
 include!("frag_encoding.rs");

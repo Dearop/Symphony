@@ -1,3 +1,9 @@
+/// ACC.P for the explicit N8 integrated accumulation route.
+///
+/// This prover derives a new accumulator object and one integrated WHIR proof
+/// for the opt-in same-shape, nonempty NonZK N8 boundary. It is separate from
+/// both the default product `verify_public` route and the K6a/N7b explicit
+/// routes.
 pub fn accumulate_symbt3_n8_non_zk(
     pk: &WhirProvingKey,
     batch: &Symbt3AccumulationBatch,
@@ -38,6 +44,12 @@ pub fn accumulate_symbt3_n8_non_zk(
     Ok((context.new_accumulator, proof))
 }
 
+/// ACC.V for the explicit N8 integrated accumulation route.
+///
+/// This verifies only the N8 public accumulation boundary: public batch,
+/// old/new public accumulators, the N8 authority gate, and one integrated WHIR
+/// backend proof. It does not dispatch to K6a, N7b, or the default product
+/// `verify_public` route.
 #[must_use]
 pub fn verify_symbt3_n8_accumulation_non_zk(
     vk: &WhirVerifyingKey,
@@ -74,6 +86,12 @@ pub fn verify_symbt3_n8_accumulation_non_zk(
     Symbt3AccumulationVerificationReport::ok(authority_report.semantic_completion)
 }
 
+/// ACC.D for the explicit N8 integrated accumulation route.
+///
+/// This is the route-selection decision entry point for
+/// `N8NonZkSameShapeV1`. It first checks the explicit N8 authority-profile
+/// version and then delegates to ACC.V. It does not alter or shadow the
+/// default product `verify_public` path.
 #[must_use]
 pub fn decide_symbt3_n8_accumulator_non_zk(
     authority_profile: Symbt3AccumulationAuthorityProfile,

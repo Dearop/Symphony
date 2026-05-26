@@ -2,7 +2,12 @@
 
 **Project:** Symphony / WHIR accumulator work  
 **Scope:** Improve the SYMBT3 K6a WHIR accumulator after the current single-oracle WHIR baseline.  
-**Status:** Milestone 0 implemented; later milestones remain roadmap work.
+**Status:** Milestone 0, M1a, and M1b are implemented as benchmark/development
+infrastructure. M1b is a same-domain RLC tuple-leaf path with one WHIR
+instance/root/query schedule/transcript for multiple logical oracles; it is not
+a product route and does not claim true vector-valued tuple leaves. Later
+multi-constraint, public-byte cleanup, partial-evaluation, sweep, and
+production hardening milestones remain roadmap work.
 **Primary goal:** Make the multi-oracle WHIR accumulator verify like one shared WHIR proof plus small batching overhead, rather than like many independent WHIR proofs.
 
 ---
@@ -19,6 +24,25 @@ Latest SYMBT3 K6a single-oracle WHIR benchmark table:
 | 8 | 51,182.449 | 30.702 | 1,667.09x | 43,438.693 | 67.128 | 647.10x | 1,613,175 | 387,417 | 0.240 | 15,283 | 18,715 | 1.225 |
 
 To avoid ambiguity, this document calls the table parameter `k_table`. WHIR's internal folding parameter should be called `kappa` or `whir_folding_k` in code and docs.
+
+Current repository ground truth:
+
+- `symbt3_accumulator_authority_vs_k` remains the explicit K6a NonZK integrity
+  route over the public-canonical full accumulator workload.
+- `symbt3_instrumented_multi_oracle` emits both M1a compatibility-envelope rows
+  and M1b same-domain RLC tuple-leaf rows to
+  `benchmarks/symbt3_instrumented_multi_oracle.jsonl`.
+- M1a compatibility rows report `native_multi_oracle = false`,
+  `logical_envelope = true`, and one internal PCS payload per logical oracle.
+- M1b tuple-leaf rows report `native_multi_oracle = true`,
+  `tuple_leaf_layout = "same_domain_rlc_tuple_leaf_v1"`, one WHIR instance,
+  one root, one query schedule, one transcript, and one PCS opening payload.
+- `product_verify_public_allowed = false` for these multi-oracle benchmark
+  rows. Default product `verify_public` remains the authoritative monolithic
+  WHIR typed-CP path.
+- N7/N7b and N8 build on the M1b RLC tuple-leaf machinery, but they remain
+  explicit NonZK/native accumulator routes rather than default public
+  verification.
 
 ---
 
@@ -295,9 +319,7 @@ The exact schema can differ, but it must be stable and diffable.
 ### Status
 
 Complete for the current single-oracle K6a SYMBT3 accumulator benchmark
-baseline branch. Multi-oracle WHIR implementation is intentionally out of scope
-for this branch and lives in a separate branch. `symbt3_accumulator_authority_vs_k`
-now emits the existing
+baseline. `symbt3_accumulator_authority_vs_k` emits the existing
 `SYMBT3_CSV` row plus a stable JSONL row with prefix
 `SYMBT3_INSTRUMENTED_BENCHMARK_JSON,` and writes the same JSON object to:
 
@@ -306,8 +328,8 @@ benchmarks/symbt3_instrumented_benchmark.jsonl
 ```
 
 The JSON schema is `symphony.symbt3.instrumented_benchmark.v1`. It is the
-comparison contract consumed by the separate multi-oracle branch. Required
-top-level fields are:
+single-oracle K6a comparison contract used alongside the multi-oracle JSONL
+contract. Required top-level fields are:
 
 ```text
 schema
@@ -346,6 +368,17 @@ flags, product `verify_public` routing, or the K6a NonZK integrity security
 boundary. Product `verify_public` remains on the authoritative monolithic WHIR
 typed-CP route and is expected to pass there; malformed SYMBT3/K6a profile or
 proof-kind inputs still fail closed in the explicit opt-in route.
+
+Follow-on M1a/M1b status: implemented in the current repository. The separate
+`symbt3_instrumented_multi_oracle` benchmark writes
+`SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON` rows to
+`benchmarks/symbt3_instrumented_multi_oracle.jsonl` with schema
+`symphony.symbt3.instrumented_multi_oracle.v1`. The M1b row shape is a
+development benchmark path only: it keeps product routing disabled, uses RLC
+packing over scalar WHIR oracles, and is covered by shape/replay/mutation tests
+for mixed domains, duplicate ids, schedule mix, stale public/WHIR digests,
+descriptor reordering, packed/logical value tampering, point/kind mutation, and
+counter inconsistencies.
 
 Use the helper below to summarize the frozen baseline JSONL:
 
@@ -508,6 +541,21 @@ Target table:
 | 2 | <= 30 ms | <= 1.25x single | shared queries should make this easy |
 | 4 | <= 36 ms | <= 1.50x single | tuple leaves should still win |
 | 8 | <= 45 ms | <= 2.00x single | may need partial-eval branch later |
+
+### Status
+
+Partially implemented as M1b. The implemented path is
+`same_domain_rlc_tuple_leaf_v1`, not a true vector-valued tuple leaf. It proves
+one packed scalar oracle built from repeated RLC combinations of same-domain
+logical oracles, exposes logical evaluation claims for verifier-side checks,
+and reports one WHIR instance, one root, one query schedule, one transcript, and
+one native PCS opening payload for `logical_oracle_count > 1`.
+
+The implemented M1b path is diagnostic/research infrastructure. It is used by
+the native N7/N7b work and the multi-oracle benchmark report, but it is not a
+product `verify_public` route, not K5/ZK, and not a claim that the WHIR backend
+now supports vector tuple leaves natively. Constraint batching remains separate
+roadmap work.
 
 ---
 
@@ -815,7 +863,7 @@ Make the implementation understandable enough that another reviewer or LLM can a
 ### Documents to update
 
 ```text
-docs/whir.md
+docs/protocols/whir.md
 docs/symbt3_accumulator_authoritative_roadmap.md
 docs/whir_public_performance_north_star_plan.md
 benchmark output README / report
@@ -910,14 +958,26 @@ single-oracle compatibility preserved
 
 ## 16. Open Questions
 
-1. Is `k_table` actually the accumulator arity, the number of folded instances, or another benchmark parameter? Rename it in reports.
-2. Is WHIR alternate-domain verifier encoding already enabled in the SYMBT3 path?
-3. Are public bytes constant because of fixed accumulator metadata, or because of duplicated fixed descriptors?
-4. Does `k_table = 8` proof size increase due to more openings, more roots, or larger serialized oracle messages?
-5. Can same-domain oracle tuple leaves be implemented without changing existing WHIR verifier internals too much?
-6. Do we need separate oracle batching and constraint batching challenge domains?
-7. At what oracle count does partial evaluation beat tuple leaves?
-8. Does the CP-SNARK relation need new typed semantic descriptors for multi-oracle constraints?
+1. Resolved naming: benchmark output should call the table axis `k_table` or
+   batch size, and WHIR's internal folding parameter should be `kappa` /
+   `whir_folding_k`.
+2. Still to audit: whether WHIR alternate-domain verifier encoding is enabled in
+   every SYMBT3 route that should use it.
+3. Partially answered: K4.6 compressed accumulator canonical bytes make the K6a
+   public boundary flat; remaining fixed overhead is now sectioned by benchmark
+   public-byte reports.
+4. Still to profile: the `k_table = 8` prover/proof jump should be traced using
+   proof section sizes and timer/counter output.
+5. Partially answered: same-domain multi-oracle was implemented without native
+   vector tuple leaves by using RLC scalar packing (`same_domain_rlc_tuple_leaf_v1`).
+6. Yes: oracle batching and constraint batching need separate transcript
+   challenge domains. M1b covers oracle RLC packing; multi-constraint batching
+   remains separate roadmap work.
+7. Still open: partial evaluation should be evaluated only after tuple-leaf
+   benchmarks miss a meaningful oracle-count regime.
+8. Partially answered by N8: integrated native descriptors and semantic rows now
+   exist for the explicit NonZK accumulation path, but production-reviewed
+   multi-constraint CP-SNARK descriptors remain future work.
 
 ---
 

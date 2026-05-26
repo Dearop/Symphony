@@ -1,3 +1,7 @@
+/// Verify the explicit N7 smoke native accumulator-authority route.
+///
+/// This is the smoke-profile native authority path, not the full K6a workload
+/// and not the default product `verify_public` boundary.
 #[must_use]
 pub fn verify_symbt3_native_accumulator_authority_non_zk(
     vk: &WhirVerifyingKey,
@@ -59,6 +63,11 @@ pub fn verify_symbt3_native_accumulator_authority_non_zk(
     <WhirSnark as BackendSnark>::verify(vk, &instance.main_instance, &proof.main_symbt3_whir_proof)
 }
 
+/// Build the explicit N7b full native wrapper proof.
+///
+/// N7b combines the real K6a workload with native tuple-leaf repeated-RLC
+/// evidence and a wrapper binding digest. It remains an opt-in NonZK route and
+/// does not replace the default product verifier.
 pub fn prove_symbt3_native_accumulator_authority_full_non_zk(
     pk: &WhirProvingKey,
     profile: &Symbt3AuthorityProfile,
@@ -94,6 +103,11 @@ pub fn prove_symbt3_native_accumulator_authority_full_non_zk(
     })
 }
 
+/// Verify the explicit N7b full native wrapper route and return a blocker report.
+///
+/// This is the full-workload native wrapper candidate around K6a plus native
+/// tuple-leaf evidence. It is route-specific and remains separate from the
+/// default product `verify_public` boundary.
 #[must_use]
 pub fn verify_symbt3_native_accumulator_authority_full_non_zk_report(
     vk: &WhirVerifyingKey,
@@ -122,6 +136,11 @@ pub fn verify_symbt3_native_accumulator_authority_full_non_zk_report(
     )
 }
 
+/// Verify the explicit N7b full native wrapper route.
+///
+/// This is the boolean convenience wrapper over
+/// [`verify_symbt3_native_accumulator_authority_full_non_zk_report`]. It does
+/// not dispatch to the default product verifier.
 #[must_use]
 pub fn verify_symbt3_native_accumulator_authority_full_non_zk(
     vk: &WhirVerifyingKey,

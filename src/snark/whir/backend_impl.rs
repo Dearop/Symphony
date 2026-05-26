@@ -1157,14 +1157,16 @@ impl WhirSnark {
         verify_symbt3_batched_cp_with_profile(vk, &statement, proof, None).unwrap_or(false)
     }
 
+    /// Build a K6a explicit accumulator proof.
+    ///
     /// NonZK: may reveal WHIR-queried private coordinates at query positions.
     ///
-    /// Not a zkSNARK. Explicit opt-in product-integrity SYMBT3 accumulator
-    /// route. This requires `routing_status=ProductAuthority`,
+    /// This is the explicit opt-in K6a product-integrity SYMBT3 accumulator
+    /// route. It requires `routing_status=ProductAuthority`,
     /// `product_eligible=true`, `zk_status=NonZkIntegrityOnly`, and the K6a
-    /// NonZK product policy. It does not alter the monolithic typed-CP
-    /// `verify_public` route and it must not be used as a privacy-preserving
-    /// proof.
+    /// NonZK product policy. It does **not** alter the default monolithic
+    /// typed-CP `verify_public` route and it must not be described as a
+    /// privacy-preserving proof.
     #[must_use]
     pub fn prove_public_symbt3_accumulator_non_zk_integrity(
         pk: &WhirProvingKey,
@@ -1187,12 +1189,15 @@ impl WhirSnark {
         )
     }
 
+    /// Verify a K6a explicit accumulator proof.
+    ///
     /// NonZK: may reveal WHIR-queried private coordinates at query positions.
     ///
-    /// Not a zkSNARK. Explicit opt-in product-integrity SYMBT3 accumulator
-    /// route. The proof-kind discriminator must be
+    /// This verifies only the explicit opt-in K6a product-integrity route. The
+    /// proof-kind discriminator must be
     /// `ProductProofKind::Symbt3AccumulatorNonZkIntegrity`; wrong or legacy
-    /// proof kinds fail closed with no monolithic fallback.
+    /// proof kinds fail closed with no monolithic fallback. This function does
+    /// **not** dispatch to the default product `verify_public` boundary.
     #[must_use]
     pub fn verify_public_symbt3_accumulator_non_zk_integrity(
         vk: &WhirVerifyingKey,

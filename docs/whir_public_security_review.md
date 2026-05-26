@@ -18,10 +18,17 @@ WHIR CP/output proofs. It must not read FS openings, FS messages, fold inputs,
 original witnesses, folding proof internals, folded witnesses, CP witness
 bundles, or other witness-side debug data.
 
-Compatibility/debug surfaces outside the product review boundary are legacy
-`prove` / `verify`, `prove_v2` / `verify_v2` aliases, raw typed CP context
-serializers, explicit soundness helpers, audit/profile helpers, backend payload
-codecs, and non-WHIR backends unless separately reviewed.
+`prove_v2` / `verify_v2` are compatibility names for the same public-only
+route. Other compatibility/debug surfaces outside the product review boundary
+are legacy `prove` / `verify`, raw typed CP context serializers, explicit
+soundness helpers, audit/profile helpers, backend payload codecs, compressed
+public-envelope v2 helpers, SYMBT3 research/non-ZK opt-in routes,
+native-oracle N6/N7 wrappers, the explicit N8 accumulation API, and non-WHIR
+backends unless separately reviewed. The default product `verify_public` route
+remains the monolithic authoritative WHIR typed-CP route; the N8
+`N8NonZkSameShapeV1` accumulation decider is a separate explicit NonZK
+same-shape route with its boundary documented in
+`docs/protocols/n8_accumulation_relation.md`.
 
 ## Soundness Claim Matrix
 
@@ -97,6 +104,11 @@ fall back to SHA-256.
 - The reviewed authoritative path is WHIR+WHIR public verification. Spartan,
   Sumcheck, Dummy, legacy full/private verification, and ignored long-running
   soundness tests are compatibility or test surfaces unless separately reviewed.
+- Explicit SYMBT3/K6a/N6b/N7b/N8 NonZK routes are not the default
+  `verify_public` route. N8 has an opt-in authoritative decider only for
+  same-shape, nonempty NonZK accumulation transitions selected by
+  `N8NonZkSameShapeV1`; it is not ZK, not privacy-preserving, and not covered
+  by this default public-verifier claim matrix.
 - The current typed CP relation supports setup-derived fixed shapes. Broader
   shape support must add malformed-input, replay, and splicing tests before it
   is considered reviewed.
@@ -143,4 +155,4 @@ git diff --check
 ```
 
 Before claiming production grade, also run the release gate documented in
-`docs/whir_typed_cp_authority_plan.md`.
+`docs/past_roadmaps/whir_typed_cp_authority_plan.md`.

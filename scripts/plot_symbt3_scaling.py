@@ -328,6 +328,190 @@ def write_summary_rows(rows, outdir, metrics):
     (outdir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _pgf_number(value):
+    if isinstance(value, int):
+        return str(value)
+    return f"{float(value):.6g}"
+
+
+def write_pgf_multi_series(rows, outdir, filename, series, ylabel, logy=False):
+    rows = sorted(rows, key=lambda row: row["k"])
+    valid_series = [
+        (metric, legend)
+        for metric, legend in series
+        if rows and metric in rows[0]
+    ]
+    if not valid_series:
+        return
+
+    axis_options = [
+        r"width=\linewidth",
+        r"height=0.55\linewidth",
+        r"grid=both",
+        r"xmode=log",
+        r"log basis x=2",
+        r"xtick=data",
+        r"xlabel={$k$}",
+        rf"ylabel={{{ylabel}}}",
+        r"legend style={at={(0.5,-0.22)},anchor=north,legend columns=2}",
+    ]
+    if logy:
+        axis_options.extend([r"ymode=log", r"log basis y=10"])
+
+    lines = [
+        r"\begin{tikzpicture}",
+        r"\begin{axis}[",
+        "  " + ",\n  ".join(axis_options),
+        r"]",
+    ]
+    for metric, legend in valid_series:
+        points = []
+        for row in rows:
+            value = row.get(metric)
+            if value is None or value != value:
+                continue
+            if logy and value <= 0:
+                continue
+            points.append(f"({_pgf_number(row['k'])},{_pgf_number(value)})")
+        if not points:
+            continue
+        lines.append(r"\addplot+[mark=*] coordinates {" + " ".join(points) + "};")
+        lines.append(rf"\addlegendentry{{{legend}}}")
+    lines.extend([r"\end{axis}", r"\end{tikzpicture}", ""])
+    (outdir / filename).write_text("\n".join(lines), encoding="utf-8")
+
+
+def _coordinates(rows, metric):
+    points = []
+    for row in sorted(rows, key=lambda candidate: candidate["k"]):
+        value = row.get(metric)
+        if value is None or value != value or value <= 0:
+            continue
+        points.append(f"({_pgf_number(row['k'])},{_pgf_number(value)})")
+    return " ".join(points)
+
+
+def write_combined_time_plot(product_csv, k6a_csv, n8_csv, outdir):
+    product_rows = sorted(load_rows(product_csv), key=lambda row: row["k"])
+    k6a_rows = sorted(load_rows(k6a_csv), key=lambda row: row["k"])
+    n8_rows = [
+        row
+        for row in sorted(load_rows(n8_csv), key=lambda row: row["k"])
+        if row.get("status") == "OK"
+    ]
+
+    series = [
+        (product_rows, "monolithic_verify_ms", "Product verify", "blue", "solid", "*"),
+        (product_rows, "monolithic_prove_ms", "Product prove", "blue", "dashed", "square*"),
+        (k6a_rows, "verify_ms", "K6a verify", "teal", "solid", "*"),
+        (k6a_rows, "prove_ms", "K6a prove", "teal", "dashed", "square*"),
+        (n8_rows, "verify_ms", "N8 verify", "orange", "solid", "*"),
+        (n8_rows, "prove_ms", "N8 prove", "orange", "dashed", "square*"),
+    ]
+
+    lines = [
+        r"\begin{tikzpicture}",
+        r"\begin{axis}[",
+        r"  width=\linewidth,",
+        r"  height=0.62\linewidth,",
+        r"  grid=both,",
+        r"  xmode=log,",
+        r"  log basis x=2,",
+        r"  ymode=log,",
+        r"  log basis y=10,",
+        r"  xtick={1,2,4,8,16,32,64},",
+        r"  xlabel={$k$},",
+        r"  ylabel={time (ms)},",
+        r"  legend style={at={(0.5,-0.22)},anchor=north,legend columns=3}",
+        r"]",
+    ]
+    for rows, metric, legend, color, style, marker in series:
+        coordinates = _coordinates(rows, metric)
+        if not coordinates:
+            continue
+        lines.append(
+            rf"\addplot+[mark={marker}, thick, color={color}, {style}] coordinates {{{coordinates}}};"
+        )
+        lines.append(rf"\addlegendentry{{{legend}}}")
+    lines.extend([r"\end{axis}", r"\end{tikzpicture}", ""])
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "all_route_times_vs_k.tex").write_text("\n".join(lines), encoding="utf-8")
+    print(f"Wrote combined route timing PGF plot to {outdir}")
+
+
+def fallback_product_route_main(csv_path, outdir):
+    rows = sorted(load_rows(csv_path), key=lambda row: row["k"])
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "verify_ms_comparison.tex",
+        [
+            ("monolithic_verify_ms", "Product verify"),
+            ("symbt3_verify_ms", "K6a verify"),
+        ],
+        "verifier time (ms)",
+        logy=True,
+    )
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "prove_ms_comparison.tex",
+        [
+            ("monolithic_prove_ms", "Product prove"),
+            ("symbt3_prove_ms", "K6a prove"),
+        ],
+        "prover time (ms)",
+        logy=True,
+    )
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "proof_bytes_comparison.tex",
+        [
+            ("monolithic_proof_bytes", "Product proof"),
+            ("symbt3_proof_bytes", "K6a proof"),
+        ],
+        "proof bytes",
+        logy=True,
+    )
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "speedup_vs_k.tex",
+        [
+            ("verify_speedup", "verify speedup"),
+            ("prove_speedup", "prove speedup"),
+        ],
+        "baseline / K6a",
+    )
+    print(f"Wrote product-route PGF plots to {outdir}")
+
+
+def fallback_n8_main(csv_path, outdir):
+    rows = [
+        row
+        for row in sorted(load_rows(csv_path), key=lambda row: row["k"])
+        if row.get("status") == "OK"
+    ]
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "n8_time_vs_k.tex",
+        [("prove_ms", "N8 prove"), ("verify_ms", "N8 verify")],
+        "time (ms)",
+    )
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "n8_proof_bytes_vs_k.tex",
+        [("proof_bytes", "N8 proof"), ("public_statement_bytes", "public statement")],
+        "bytes",
+        logy=True,
+    )
+    print(f"Wrote N8 PGF plots to {outdir}")
+
+
 def fallback_main(csv_path, outdir):
     rows = sorted(load_rows(csv_path), key=lambda row: row["k"])
     metrics = [
@@ -360,6 +544,32 @@ def fallback_main(csv_path, outdir):
     write_svg_verifier_breakdown(rows, outdir)
     write_svg_guardrails(rows, outdir)
     write_summary_rows(rows, outdir, metrics)
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "k6a_time_vs_k.tex",
+        [("prove_ms", "K6a prove"), ("verify_ms", "K6a verify")],
+        "time (ms)",
+    )
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "k6a_size_vs_k.tex",
+        [("proof_bytes", "K6a proof"), ("public_statement_bytes", "public statement")],
+        "bytes",
+        logy=True,
+    )
+    write_pgf_multi_series(
+        rows,
+        outdir,
+        "k6a_guardrails.tex",
+        [
+            ("top_level_whir_proof_count", "top-level WHIR proofs"),
+            ("family_columnar_subproof_count", "family subproofs"),
+            ("backend_table_count", "backend tables"),
+        ],
+        "count",
+    )
     print(f"Wrote dependency-free SVG plots to {outdir}")
 
 
@@ -551,12 +761,37 @@ def write_summary(df, outdir, metrics):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: plot_symbt3_scaling.py <symbt3_scaling.csv> [outdir]")
+        print(
+            "Usage: plot_symbt3_scaling.py <symbt3_scaling.csv> [outdir]\n"
+            "       plot_symbt3_scaling.py --combined-times <product.csv> <k6a.csv> <n8.csv> <outdir>"
+        )
         sys.exit(1)
+
+    if sys.argv[1] == "--combined-times":
+        if len(sys.argv) != 6:
+            print(
+                "Usage: plot_symbt3_scaling.py --combined-times <product.csv> <k6a.csv> <n8.csv> <outdir>"
+            )
+            sys.exit(1)
+        write_combined_time_plot(
+            Path(sys.argv[2]),
+            Path(sys.argv[3]),
+            Path(sys.argv[4]),
+            Path(sys.argv[5]),
+        )
+        return
 
     csv_path = Path(sys.argv[1])
     outdir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("plots/symbt3")
     outdir.mkdir(parents=True, exist_ok=True)
+
+    rows = load_rows(csv_path)
+    if rows and "monolithic_verify_ms" in rows[0] and "symbt3_verify_ms" in rows[0]:
+        fallback_product_route_main(csv_path, outdir)
+        return
+    if rows and "semantic_mode" in rows[0] and "whir_instance_count" in rows[0]:
+        fallback_n8_main(csv_path, outdir)
+        return
 
     if not HAVE_PLOT_LIBS:
         fallback_main(csv_path, outdir)

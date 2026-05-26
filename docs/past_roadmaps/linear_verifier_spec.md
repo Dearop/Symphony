@@ -2,6 +2,24 @@
 
 This document explains how to evolve a current **linear-in-$k$** verification path into a **sublinear / near-constant public verifier path** in a Symphony-style system.
 
+> **Current status (2026-05-20): historical sublinear-verifier plan.** The
+> repository now has an authoritative WHIR+WHIR public verifier over
+> `ProofBundleV2` / `PublicProofBundle`: WHIR typed CP is authoritative,
+> public digests are `Poseidon2BabyBear`, and `verify_public` / `verify_v2`
+> are expected to pass using public data only. This file remains useful as the
+> conceptual explanation of why public verification should not replay
+> per-instance folding work, but it is not the live implementation plan. The
+> current product verifier is authoritative but still a monolithic typed-CP
+> baseline; the active performance path is SYMBT3, with explicit K6a NonZK
+> integrity accumulation and N8 integrated one-WHIR NonZK accumulation routes.
+>
+> Current code paths differ from some names in this sketch. The reusable
+> pipeline lives under `src/modular/`; WHIR-specific typed CP, SYMBT3, K6a, and
+> N8 code lives under `src/snark/whir/`. Current public proof documentation is
+> in `docs/past_roadmaps/public_proof_v2.md`, WHIR protocol status is in
+> `docs/protocols/whir.md`, and the performance roadmap is
+> `docs/whir_public_performance_north_star_plan.md`.
+
 The target audience is an implementer who already has:
 
 - a working **folding primitive**,
@@ -385,11 +403,19 @@ $$\mathsf{FS}(\text{public\_metadata},\, \text{fs\_root},\, \text{round\_index},
 
 instead of raw per-round commitments. This is a larger design change, but it gives much better verifier compression.
 
-### Recommendation
+### Historical Recommendation
 
-Implement **Option 1** first, then move to **Option 2** if needed. This gives you a smooth path:
-- First remove per-instance fold replay from the verifier.
-- Then compress the FS public interface.
+The historical recommendation was to implement **Option 1** first, then move to
+**Option 2** if needed:
+- first remove per-instance fold replay from the verifier;
+- then compress the FS public interface.
+
+Current ground truth: WHIR product public verification already uses public
+`CpPublicStatement` data and authoritative WHIR typed CP/output proofs, with
+Poseidon2/BabyBear public digest binding. It is expected to pass without
+witness-side replay. The remaining performance work is not another generic
+linear-verifier cleanup pass; it is the SYMBT3 route family, especially the
+CP-aware oracle relation and explicit K6a/N8 accumulation boundaries.
 
 ---
 
@@ -401,7 +427,13 @@ For this compressed CP relation, the backend should be good at proving:
 - structured algebraic consistency,
 - digest consistency.
 
-This is why, given your IOR construction, **Spartan-like generic algebraic proving** is often the better engine for the CP relation.
+This is why, given the earlier IOR construction, **Spartan-like generic
+algebraic proving** was described as a possible engine for the CP relation.
+
+Current product routing does not follow that recommendation: WHIR typed CP and
+WHIR typed output are the authoritative public route. `SpartanSnark` remains a
+backend option, but public WHIR verification does not depend on Spartan. Keep
+the split below as historical architecture rationale.
 
 Keep **WHIR** for:
 - PCS,
@@ -598,11 +630,19 @@ That is how you move from linear verification toward sublinear verification.
 
 Implement this in two passes:
 
-**First pass:** Make verification stop replaying all fold inputs. This alone will likely give you the biggest improvement.
+**First pass:** Make verification stop replaying all fold inputs. This is now
+implemented for the authoritative WHIR public boundary: public verification
+uses public statement data and backend proofs, not witness-side fold replay.
 
-**Second pass:** Compress FS commitments and fold inputs into digests/roots. This gives you the stronger sublinear public interface.
+**Second pass:** Compress FS commitments and fold inputs into digests/roots.
+This is implemented for the WHIR typed-CP public boundary with
+Poseidon2/BabyBear digest semantics, but the monolithic typed-CP verifier is
+still not the performance north star.
 
-If you try to do both at once, debugging becomes much harder.
+The current next pass is SYMBT3: treat CP round messages as first-class
+committed proof-system oracles, keep Fiat-Shamir derivation outside the proven
+relation, and prove folding/GR1CS/Ajtai/folded-output algebra over field/ring
+columns without reintroducing byte transcript reconstruction.
 
 ---
 

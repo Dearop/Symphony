@@ -1,0 +1,8 @@
+k,round_count,status,blocked_reason,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,semantic_mode,k6a_semantics_complete,tuple_rlc_semantics_complete,transition_semantics_complete,whir_instance_count,root_count,query_schedule_count,transcript_count,tuple_pcs_proof_count,native_oracle_pcs_opening_count,rlc_repetition_count,effective_soundness_bits,family_columnar_subproof_count,fallback_used,split_delegation_used
+1,1,OK,,24.979,14.670,640702,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+2,1,OK,,32.787,17.446,686949,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+4,1,OK,,50.262,20.378,726636,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+8,1,OK,,81.866,29.977,956339,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+16,1,OK,,151.373,44.832,1001709,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+32,1,OK,,280.310,69.956,1044400,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+64,1,OK,,558.118,122.412,1091966,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false

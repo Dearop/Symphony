@@ -476,7 +476,7 @@ asymptotic story.
 
 **Implementation requirements**
 
-- Record clean `k = 1, 2` numbers in `docs/whir.md`.
+- Record clean `k = 1, 2` numbers in `docs/protocols/whir.md`.
 - Add an explicit "linear typed CP baseline" note next to
   `public_verify_v2_vs_k`.
 - Add a `public_verify_v2_vs_k` CI/dev command that can be run with
@@ -489,9 +489,9 @@ asymptotic story.
 - Docs state that current public verification is authoritative but linear.
 - No proof format or security-boundary changes.
 
-**Status.** implemented. `docs/whir.md` records the `k = 1, 2` public verifier
-baseline and explicitly labels the current cost model as an authoritative
-linear typed-CP baseline.
+**Status.** implemented. `docs/protocols/whir.md` records the `k = 1, 2`
+public verifier baseline and explicitly labels the current cost model as an
+authoritative linear typed-CP baseline.
 
 ---
 
@@ -1672,19 +1672,27 @@ is the future `SYMBT3` CP-aware WHIR oracle relation.
 
 ## Immediate Next Step
 
-Stop treating `SYMBT2F` table splitting as the production route. Keep it as a
-diagnostic and negative-test harness, but pivot implementation planning to
-`SYMBT3`: a CP-aware WHIR oracle relation.
+Keep `SYMBT2F` table splitting as a diagnostic and negative-test harness, not
+as the production route. The repository has now moved the production-oriented
+work into the SYMBT3 native-oracle line: K6a is the explicit public-canonical
+NonZK integrity route, N6/N7 add native-oracle wrappers, and N8 now exposes an
+explicit `N8NonZkSameShapeV1` NonZK accumulation decision route backed by one
+real integrated WHIR proof.
 
-The next concrete step is a design/implementation plan for `SYMBT3` with:
+The next concrete work is review and productionization of that native/SYMBT3
+line, not more byte-table splitting:
 
-- CP round messages `M_i(T, U_i)` as first-class committed WHIR/BCS oracles;
-- public `c_fs,i` roots bound directly to those message oracles;
-- Fiat-Shamir challenges derived outside the proven relation;
-- algebraic folding/Ajtai/GR1CS constraints over committed field/ring columns;
-- one WHIR-backed CP proof object per same-shape bucket;
-- no exact-byte transcript/hash/opening proof machinery inside `pi_cp`;
-- no product-route promotion until negative coverage and benchmarks are green.
+- keep default product `verify_public` on the authoritative monolithic WHIR
+  typed-CP route until a reviewed route promotion is explicitly made;
+- keep N8 opt-in and same-shape/nonempty, with ACC.D selected by
+  `Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1`;
+- complete the N8 relation/security review against
+  `docs/protocols/n8_accumulation_relation.md`;
+- expand negative coverage and benchmark reporting for N8 before any default
+  product-route claim;
+- preserve the core SYMBT3 rule: CP round messages are committed oracles and
+  Fiat-Shamir folding challenges are derived from input-side transcript data,
+  not from folded outputs or witness-side replay.
 
 The implementation must still avoid appended typed CP R1CS lowering and must
 not open private oracle bytes to run `CpFieldRelation::check` in the verifier.
@@ -1781,16 +1789,16 @@ batching is not a privacy claim or a true vector tuple-leaf claim.
 
 ## N7b Full Workload Candidate
 
-N7b is reserved for
+N7b is the full-workload native authority candidate for
 `Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1`. The repository
-now has a typed K6a native workload adapter that extracts the K6a product
-profile digest, accumulator instance digest, public statement digest, WHIR
-parameter digest, relation id, main proof digest, old/new accumulator digests,
-batch manifest root, manifest/message roots, and batch counters from verified
-K6a objects. The product-facing full helper now composes those adapter fields
-with M1b tuple-leaf proof parts, builds the N7b full authority binding digest,
-and verifies through the wrapper. It still fails closed unless every component
-is present and every gate passes. M1b repeated RLC tuple-leaf evidence is now
+has a typed K6a native workload adapter that extracts the K6a product profile
+digest, accumulator instance digest, public statement digest, WHIR parameter
+digest, relation id, main proof digest, old/new accumulator digests, batch
+manifest root, manifest/message roots, and batch counters from verified K6a
+objects. The product-facing full helper composes those adapter fields with M1b
+tuple-leaf proof parts, builds the N7b full authority binding digest, and
+verifies through the wrapper. It still fails closed unless every component is
+present and every gate passes. M1b repeated RLC tuple-leaf evidence is now
 implemented, so the wrapper can advance past
 `RepeatedRlcSoundnessMissingOrWeak` when the repeated evidence verifies. The
 full helper names are:
@@ -1843,14 +1851,14 @@ review before a production authority claim.
 
 ## N8 Integrated K6a Native WHIR Prototype
 
-N8 is the planned path to make the native authority route non-additive. Current
-N7b verifies:
+N8 is the implemented path to make the native authority route non-additive. N7b
+verifies:
 
 ```text
 K6a WHIR proof + repeated-RLC tuple-leaf WHIR/PCS proof + binding wrapper
 ```
 
-The N8 target is one WHIR proof over an integrated relation:
+The N8 relation is one WHIR proof over an integrated relation:
 
 ```text
 IntegratedK6aNativeWhirRelationV1 = K6a accumulator constraints
@@ -1893,6 +1901,8 @@ N8 is now also packaged as a first-class NonZK accumulation API:
 ACC.P(batch, old_accumulator, witness) -> (new_accumulator, proof)
 ACC.V(public_batch, old_accumulator_public, new_accumulator_public, proof)
     -> accept/reject
+ACC.D(N8NonZkSameShapeV1, public_batch, old_accumulator_public,
+      new_accumulator_public, proof) -> authoritative accept/reject
 ```
 
 The typed API separates `Symbt3AccumulatorObject`,
@@ -1902,12 +1912,15 @@ The typed API separates `Symbt3AccumulatorObject`,
 `accumulate_symbt3_n8_non_zk` derives the new accumulator object, builds the
 existing integrated N8 relation/proof, and returns the accumulator object plus
 proof. The verifier entry point `verify_symbt3_n8_accumulation_non_zk`
-recomputes the public accumulator context and then uses the N8
-authority-candidate gate plus the one-WHIR backend verifier. The proof binds
+recomputes the public accumulator context and then uses the N8 gate plus the
+one-WHIR backend verifier. The authoritative decision entry point is
+`decide_symbt3_n8_accumulator_non_zk(...)` under
+`Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1`. The proof binds
 old/new accumulator digests, batch size, active count, public statement digest,
 accumulator instance digest, K6a/N8 relation digests, tuple root/layout/native
-descriptor/message-root digests, table/claim-plan digests, and semantic
-completion flags.
+descriptor/message-root digests, table/claim-plan digests, semantic completion
+flags, and versioned canonical encodings for the public accumulator instance,
+batch, accumulator object, and proof.
 
 `Symbt3AccumulatorPublicInstance` is a role-neutral accumulator state object:
 its `accumulator_digest` is the Poseidon2/BabyBear `state` coordinate digest.
@@ -1918,20 +1931,23 @@ keeps per-transition old/new digest binding while making a returned
 
 The current audit coverage exercises `acc0 -> acc1 -> acc2`, independent
 verification of both transitions, replay/swaps across batches and old/new
-accumulators, malformed public accumulators, proof old/new digest mutation,
-empty public-batch rejection, active-count and batch-size mismatch rejection,
-and honest `k = 1, 2, 4`. Empty prover batches are explicitly unsupported at
-the batch-shape construction layer. The verifier accepts only real integrated
-N8 output: N7b proof material, synthetic N8 output, split delegation material,
-N7 smoke proof material, and the default K6a product proof reject through
-`verify_symbt3_n8_accumulation_non_zk`.
+accumulators, table-driven mutations over public/proof fields, malformed public
+accumulators, proof old/new digest mutation, empty public-batch rejection,
+active-count and batch-size mismatch rejection, wrong-version rejection, and
+honest `k = 1, 2, 4`. Empty prover batches are explicitly unsupported at the
+batch-shape construction layer. The verifier accepts only real integrated N8
+output: N7b proof material, synthetic N8 output, split delegation material,
+fallback/smoke proof material, and the default K6a product proof reject through
+`verify_symbt3_n8_accumulation_non_zk` / ACC.D.
 
-This API is only a research authority-candidate wrapper around the existing N8
-NonZK integrated path. It is not production authority, does not add K5/ZK
-masking or privacy, does not accept N7b/split delegation as N8, and leaves
-default `verify_public` unchanged.
+This API is now an explicit opt-in NonZK authoritative route for same-shape,
+nonempty accumulation transitions. It is not the default product
+`verify_public` route, not ZK, not privacy-preserving, not production-reviewed,
+does not add K5/ZK masking, does not accept N7b/split delegation as N8, and
+leaves default `verify_public` unchanged.
 
-The planner records the future shared WHIR shape without producing a proof:
+The N8 planner/prover pipeline records the shared WHIR shape used by the
+integrated proof:
 `integrated_num_vars = max(k6a_num_vars, tuple_packed_num_vars)`, deterministic
 K6a zero-extension padding, the tuple-leaf repetition axis appended after the
 logical tuple axes, and combined logical oracle, constraint, and claim
@@ -1957,15 +1973,16 @@ result is:
 - same WHIR root/security mode: yes, canonical WHIR root and unique-decoding
   WHIR configuration;
 - same rate/folding counters: yes for the current tuple-leaf proof counters;
-- one planned domain size: recorded by the planner only. The K6a table is
-  planned as zero-extended when `k6a_num_vars < integrated_num_vars`.
+- one integrated domain size: `integrated_num_vars` records the shared WHIR
+  domain, and the K6a table is zero-extended when
+  `k6a_num_vars < integrated_num_vars`.
 - one committed-table layout: recorded by `IntegratedK6aNativeCommittedTableV1`.
   K6a source rows, K6a zero-padding rows, and tuple-leaf repeated-RLC rows are
   mapped into the same integrated domain with deterministic row and axis
   ownership metadata. The builder emits `layout_digest`, `table_digest`,
   `integrated_num_vars`, `integrated_oracle_len`, `k6a_padded_rows`,
   `tuple_rows`, and `combined_constraint_count`, but no WHIR root or proof.
-- one planned representation: `N8IntegratedWhirProofPlan` currently selects
+- one integrated representation: `N8IntegratedWhirProofPlan` currently selects
   same-domain multiple logical columns. The current row/axis ownership overlaps
   by design across the K6a and tuple-leaf logical columns, so interpreting the
   same layout as one scalar oracle with selector-gated regions is ambiguous and
@@ -1979,18 +1996,19 @@ result is:
   repeated-RLC claim rows, representative padding rows, and transition/binding
   semantic rows are packed as same-domain logical columns and opened by one
   WHIR PCS proof. This is now real K6a verifier-facing semantics, real tuple
-  repeated-RLC semantics, and real transition/binding semantics for a NonZK
-  research authority-candidate route, not production authority.
+  repeated-RLC semantics, and real transition/binding semantics for the explicit
+  NonZK N8 accumulation authority profile, not default public verification.
 
-N8 still remains prototype only. The product gate is strict and N8 has no
-production authority or performance claim. The low-level prover entry point now
-validates descriptor, plan, table, layout representation, claim bridge, K6a
-semantic descriptor/row consistency, tuple-RLC semantic descriptor/row
-consistency, and transition/binding semantic descriptor/row consistency,
-rejects split K6a+tuple delegation attempts, and emits one real WHIR PCS
-proof/root/query schedule over the real integrated evaluator with mode
-`RealIntegratedK6aNativeEvaluatorV1`. The semantic gate state is explicit for
-the semantic builder: `k6a_semantics_complete=true`,
+N8 still remains not production-reviewed and has no production performance
+claim. ACC.D is authoritative only for explicit same-shape, nonempty NonZK
+accumulation transitions. The low-level prover entry point now validates
+descriptor, plan, table, layout representation, claim bridge, K6a semantic
+descriptor/row consistency, tuple-RLC semantic descriptor/row consistency, and
+transition/binding semantic descriptor/row consistency, rejects split K6a+tuple
+delegation attempts, and emits one real WHIR PCS proof/root/query schedule over
+the real integrated evaluator with mode `RealIntegratedK6aNativeEvaluatorV1`.
+The semantic gate state is explicit for the semantic builder:
+`k6a_semantics_complete=true`,
 `tuple_rlc_semantics_complete=true`, and
 `transition_semantics_complete=true`. Any missing flag, synthetic backend
 proof, N7b proof-as-N8 shape, fallback smoke proof, family subproof, or split
@@ -2006,9 +2024,9 @@ root/proof, and one `N8IntegratedWhirQueryScheduleV1`. It reuses
 integrated proof material, proof num-var mismatches, root mismatches, extra
 roots/proofs, split delegation, and schedule/descriptor mutations. Real-mode
 backend verification recomputes the expected query schedule from the descriptor
-evaluator rows before checking the single WHIR opening. This reaches a NonZK
-research authority-candidate path for the one-WHIR integrated relation, pending
-review, audit, and productionization.
+evaluator rows before checking the single WHIR opening. This reaches the
+explicit NonZK N8 accumulation authority path for the one-WHIR integrated
+relation, pending production review and audit.
 
 The smallest explicit API extension reserved by the feasibility slice is
 `prove_symbt3_integrated_whir_from_claim_plan`,
@@ -2020,14 +2038,14 @@ derive the N8 semantic rows. It does so with a materialized N8 plan, one real
 integrated evaluator table, one set of combined bridge query claims, one root,
 one WHIR proof, one query schedule, and one transcript. The future
 implementation must audit/finalize the complete integrated K6a, tuple-RLC, and
-transition/binding semantic rows before any production authority claim.
+transition/binding semantic rows before any default product-route claim.
 
 The benchmark target `symbt3_n8_integrated_authority_vs_k` compares the N8
-one-WHIR NonZK research authority-candidate path against the K6a and N7b
+one-WHIR NonZK explicit accumulation-authority path against the K6a and N7b
 routes. It emits `N8_INTEGRATED_AUTHORITY_CSV` rows for `k = 1, 2, 4` by
 default, uses actual serialized N8 output bytes, emits `BLOCKED` rows with a
-reason if the audited N8 authority-candidate gate rejects, and leaves default
-`verify_public` unchanged. N8 now uses `N8SemanticBatchingV1` for the
+reason if the N8 gate rejects, and leaves default `verify_public` unchanged.
+N8 now uses `N8SemanticBatchingV1` for the
 integrated query schedule. `N8K6aSourceRowBatchingV1` binds the 52 K6a source
 row descriptors before deriving a domain-separated source-row batching point,
 reducing those rows from 52 direct openings to one batched opening. The 52

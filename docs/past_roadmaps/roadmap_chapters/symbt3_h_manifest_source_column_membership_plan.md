@@ -6,7 +6,30 @@ Add the next non-authoritative SYMBT3 semantic block: prove that the source
 columns used by the SYMBT3 algebraic checks are bound to the batch manifest /
 product-boundary source data.
 
-SYMBT3-H should preserve:
+> **Current status (2026-05-20): implemented historical milestone, now part of
+> the cumulative SYMBT3 relation.** The manifest/source layout and families
+> exist under `src/modular/batched_cp/` as `Symbt3BatchManifestLayout`,
+> `Symbt3ManifestComponentLayout`, `Symbt3SourceColumnLayout`,
+> `BatchedCpSymbt3ConstraintFamily::BatchManifestRootBinding`, and
+> `BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership`.
+> The current `has_symbt3_h_families()` gate also requires
+> `ManifestEvaluationClaim`, `SourceAssignmentRootManifestBinding`, and
+> `SourceMessageRootManifestBinding`.
+>
+> Later K1/K1e.2 work compressed the manifest/source public boundary further:
+> the verifier no longer reconstructs full manifest rows as public data, and
+> manifest/source membership is handled through root/layout/public-boundary
+> evaluator checks rather than dense manifest/source backend columns. The live
+> benchmark target `symbt3_h_vs_k` still exists, but current reportable
+> performance status should prefer the later cumulative `symbt3_i2_vs_k`,
+> `symbt3_j_vs_k`, K6a, and N8 route benchmarks where appropriate.
+>
+> Product `verify_public` remains the authoritative monolithic WHIR typed-CP
+> route and does not route through H directly. H/SYMBT3 development profiles
+> remain `NonAuthoritativeDevelopment` / `NonZkDevelopment` unless selected by
+> explicit NonZK accumulator routes.
+
+The original SYMBT3-H plan preserved:
 
 - `NonAuthoritativeDevelopment`
 - `NonZkDevelopment`
@@ -92,7 +115,7 @@ layout digests, not expose the values.
 
 ## 2. New Constraint Families
 
-Add:
+Historical suggested names:
 
 - `Symbt3ConstraintFamily::BatchManifestRootBinding`
 - `Symbt3ConstraintFamily::SourcePublicInputManifestMembership`
@@ -103,19 +126,25 @@ Add:
 - `Symbt3ConstraintFamily::SourceAssignmentRootManifestBinding`
 - `Symbt3ConstraintFamily::SourceMessageRootManifestBinding`
 
-For the first implementation, combine the coordinate equalities under one
-generalized family:
+Current code uses the `BatchedCpSymbt3ConstraintFamily` namespace. It did not
+create one membership family per component kind; it uses
+`SourceManifestColumnMembership` plus root/claim binding families.
+
+For the first implementation, this plan combined the coordinate equalities
+under one generalized family:
 
 ```rust
-Symbt3ConstraintFamily::SourceManifestColumnMembership
+BatchedCpSymbt3ConstraintFamily::SourceManifestColumnMembership
 ```
 
-with a typed component-kind axis. Keep the root/digest binding checks as
-separate metadata checks:
+with a typed component-kind axis. Current code keeps root/digest binding checks
+as separate families and additionally requires the K1 manifest-evaluation
+claim:
 
 - `BatchManifestRootBinding`
 - `SourceAssignmentRootManifestBinding`
 - `SourceMessageRootManifestBinding`
+- `ManifestEvaluationClaim`
 
 This avoids creating one proof family per source component.
 

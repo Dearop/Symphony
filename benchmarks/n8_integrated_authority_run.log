@@ -1,0 +1,113 @@
+    Finished `bench` profile [optimized] target(s) in 0.22s
+     Running benches/whir_scaling.rs (target/release/deps/whir_scaling-9c5c2f56536bb054)
+Gnuplot not found, using plotters backend
+N8_INTEGRATED_AUTHORITY_CSV,k,round_count,status,blocked_reason,prove_ms,verify_ms,proof_bytes,public_statement_bytes,full_accumulator_workload,smoke_profile,semantic_mode,k6a_semantics_complete,tuple_rlc_semantics_complete,transition_semantics_complete,whir_instance_count,root_count,query_schedule_count,transcript_count,tuple_pcs_proof_count,native_oracle_pcs_opening_count,rlc_repetition_count,effective_soundness_bits,family_columnar_subproof_count,fallback_used,split_delegation_used
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,k,k6a_source_rows,k6a_semantic_rows,tuple_rlc_semantic_rows,transition_binding_rows,padding_metadata_link_rows,unbatched_opening_count,batched_opening_count,k6a_source_unbatched_opening_count,k6a_source_batched_opening_count,semantic_unbatched_opening_count,semantic_batched_opening_count,batching_soundness_bits
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,k,verifier_opening_rows,commitment_opening_rows,folded_opening_rows,ajtai_opening_rows,residual_opening_rows,range_projection_opening_rows,final_residual_rows,z_eval_rows,product_sumcheck_coefficient_rows,padding_rows,total_source_rows
+N8_INTEGRATED_TIMER_CSV,k,status,direct_relation_statement_ms,direct_k6a_relation_construction_ms,direct_k6a_public_statement_construction_ms,direct_k6a_witness_conversion_ms,direct_claim_extraction_ms,direct_adapter_construction_ms,direct_digest_canonical_serialization_ms,direct_tuple_rlc_input_ms,direct_tuple_rlc_raw_values_ms,direct_tuple_rlc_descriptor_ms,direct_tuple_rlc_claims_ms,direct_tuple_rlc_packed_root_ms,direct_semantic_input_total_ms,descriptor_total_ms,descriptor_digest_construction_ms,integrated_table_construction_ms,semantic_row_construction_ms,k6a_semantic_descriptor_ms,k6a_semantic_rows_ms,tuple_rlc_semantic_rows_ms,transition_binding_semantic_rows_ms,real_evaluator_ms,proof_plan_ms,proof_plan_semantic_batching_ms,proof_plan_bridge_descriptor_ms,proof_plan_transcript_digest_ms,proof_plan_validation_ms,whir_prove_ms,query_claim_construction_ms,integrated_table_values_ms,query_schedule_ms,serialization_ms,whir_verify_ms,query_opening_verify_ms,authority_gate_ms
+N8_INTEGRATED_AUTHORITY_CSV,1,1,OK,,24.979,14.670,640702,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,1,52,22,20,8,9,102,4,52,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,1,15,3,4,1,4,3,3,1,32,1,52
+N8_INTEGRATED_TIMER_CSV,1,OK,5.394,0.049,5.339,0.006,7.013,0.002,2.472,2.020,0.015,0.014,0.454,1.531,14.430,0.671,0.084,0.020,0.112,0.004,0.029,0.056,0.027,0.411,0.641,0.062,0.006,0.005,0.645,8.120,0.439,0.003,0.007,0.419,7.303,6.252,1.115
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/1
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/1: Warming up for 3.0000 s
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/1: Collecting 10 samples in estimated 5.3253 s (165 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/1: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/1
+                        time:   [31.968 ms 32.094 ms 32.296 ms]
+                        thrpt:  [30.963  elem/s 31.158  elem/s 31.282  elem/s]
+                 change:
+                        time:   [+2.2121% +2.5271% +2.9254%] (p = 0.00 < 0.05)
+                        thrpt:  [−2.8423% −2.4648% −2.1642%]
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+N8_INTEGRATED_AUTHORITY_CSV,2,1,OK,,32.787,17.446,686949,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,2,52,22,20,8,9,102,4,52,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,2,15,3,4,1,4,3,3,1,32,1,52
+N8_INTEGRATED_TIMER_CSV,2,OK,6.397,0.049,6.336,0.011,7.947,0.000,3.063,3.033,0.023,0.009,0.909,2.087,17.378,0.905,0.081,0.019,0.109,0.003,0.029,0.054,0.027,0.665,0.897,0.064,0.006,0.005,0.970,11.687,0.918,0.004,0.007,0.495,8.792,6.851,1.803
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/2
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/2: Warming up for 3.0000 s
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/2: Collecting 10 samples in estimated 7.0440 s (165 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/2: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/2
+                        time:   [42.067 ms 42.335 ms 42.571 ms]
+                        thrpt:  [46.980  elem/s 47.242  elem/s 47.543  elem/s]
+                 change:
+                        time:   [+1.5540% +2.2576% +2.9238%] (p = 0.00 < 0.05)
+                        thrpt:  [−2.8408% −2.2077% −1.5302%]
+                        Performance has regressed.
+N8_INTEGRATED_AUTHORITY_CSV,4,1,OK,,50.262,20.378,726636,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,4,52,22,20,8,9,102,4,52,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,4,15,3,4,1,4,3,3,1,32,1,52
+N8_INTEGRATED_TIMER_CSV,4,OK,8.309,0.057,8.231,0.021,10.455,0.000,4.207,5.881,0.042,0.009,1.765,4.059,24.646,1.751,0.086,0.019,0.117,0.004,0.029,0.060,0.029,1.497,1.493,0.065,0.007,0.006,1.486,19.101,1.746,0.007,0.007,0.459,10.223,7.033,3.122
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/4
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/4: Warming up for 3.0000 s
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/4: Collecting 10 samples in estimated 6.8207 s (110 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/4: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/4
+                        time:   [61.007 ms 61.216 ms 61.581 ms]
+                        thrpt:  [64.955  elem/s 65.342  elem/s 65.566  elem/s]
+                 change:
+                        time:   [+1.8596% +2.5036% +3.1509%] (p = 0.00 < 0.05)
+                        thrpt:  [−3.0547% −2.4425% −1.8257%]
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+N8_INTEGRATED_AUTHORITY_CSV,8,1,OK,,81.866,29.977,956339,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,8,56,22,20,8,9,106,4,56,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,8,15,3,4,1,4,3,3,1,36,1,56
+N8_INTEGRATED_TIMER_CSV,8,OK,11.531,0.051,11.439,0.041,14.337,0.000,6.307,10.115,0.077,0.009,3.391,6.630,35.984,2.483,0.083,0.019,0.109,0.005,0.030,0.053,0.026,2.239,2.413,0.063,0.006,0.005,2.692,34.722,3.529,0.011,0.007,0.611,14.984,8.923,6.069
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/8
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/8: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 5.8s or enable flat sampling.
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/8: Collecting 10 samples in estimated 5.8389 s (55 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/8: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/8
+                        time:   [105.84 ms 107.00 ms 108.58 ms]
+                        thrpt:  [73.681  elem/s 74.768  elem/s 75.583  elem/s]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+N8_INTEGRATED_AUTHORITY_CSV,16,1,OK,,151.373,44.832,1001709,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,16,60,22,20,8,9,110,4,60,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,16,15,3,4,1,4,3,3,1,40,1,60
+N8_INTEGRATED_TIMER_CSV,16,OK,18.591,0.052,18.451,0.088,23.409,0.000,10.797,19.824,0.153,0.009,7.157,12.497,61.824,4.996,0.083,0.019,0.110,0.005,0.030,0.055,0.025,4.751,5.649,0.067,0.006,0.005,5.840,65.809,7.202,0.021,0.008,0.652,22.414,9.590,12.827
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/16
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/16: Warming up for 3.0000 s
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/16: Collecting 10 samples in estimated 5.5600 s (30 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/16: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/16
+                        time:   [184.34 ms 184.63 ms 184.98 ms]
+                        thrpt:  [86.498  elem/s 86.659  elem/s 86.794  elem/s]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+N8_INTEGRATED_AUTHORITY_CSV,32,1,OK,,280.310,69.956,1044400,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,32,64,22,20,8,9,114,4,64,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,32,15,3,4,1,4,3,3,1,44,1,64
+N8_INTEGRATED_TIMER_CSV,32,OK,32.067,0.053,31.848,0.165,41.213,0.000,19.254,38.711,0.330,0.010,13.425,24.938,111.992,10.575,0.086,0.019,0.118,0.006,0.030,0.062,0.026,10.318,10.720,0.079,0.006,0.005,11.255,121.716,13.968,0.050,0.007,0.692,34.510,10.306,25.140
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/32
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/32: Warming up for 3.0000 s
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/32: Collecting 10 samples in estimated 6.8648 s (20 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/32: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/32
+                        time:   [343.03 ms 344.78 ms 346.92 ms]
+                        thrpt:  [92.239  elem/s 92.813  elem/s 93.285  elem/s]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+N8_INTEGRATED_AUTHORITY_CSV,64,1,OK,,558.118,122.412,1091966,18715,true,false,n8_integrated_all_semantics_complete,true,true,true,1,1,1,1,0,4,4,124,0,false,false
+N8_INTEGRATED_OPENING_BREAKDOWN_CSV,64,68,22,20,8,9,118,4,68,1,50,3,31
+N8_K6A_SOURCE_ROW_BREAKDOWN_CSV,64,15,3,4,1,4,3,3,1,48,1,68
+N8_INTEGRATED_TIMER_CSV,64,OK,60.355,0.056,59.968,0.330,77.453,0.000,36.934,83.165,1.230,0.010,27.837,54.077,220.974,20.262,0.092,0.020,0.111,0.006,0.031,0.055,0.025,20.005,22.203,0.080,0.008,0.007,22.915,243.587,28.024,0.099,0.007,0.920,60.386,10.459,51.567
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/64
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/64: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 6.6s.
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/64: Collecting 10 samples in estimated 6.6366 s (10 iterations)
+Benchmarking whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/64: Analyzing
+whir_scaling/symbt3_n8_integrated_authority_vs_k/prove_verify/64
+                        time:   [653.51 ms 654.88 ms 656.34 ms]
+                        thrpt:  [97.511  elem/s 97.727  elem/s 97.933  elem/s]
+

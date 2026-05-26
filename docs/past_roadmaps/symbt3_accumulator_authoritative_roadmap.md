@@ -1,5 +1,11 @@
 # SYMBT3 Accumulator Authoritative Roadmap
 
+This file is a past roadmap updated to current repository ground truth. The
+default product `verify_public()` route is still the authoritative monolithic
+WHIR typed-CP public verifier. SYMBT3 K6a, N6b, N7/N7b, and N8 are explicit
+opt-in NonZK accumulator/native routes; they do not implement K5 masking, do
+not provide a privacy claim, and do not replace default `verify_public()`.
+
 ## N1 Native Multi-Oracle WHIR Evaluation Layer
 
 N1 is an additive WHIR evaluation layer for future SYMBT3 accumulator work. It
@@ -16,7 +22,7 @@ The milestone adds:
   tampering;
 - separate native-oracle counters.
 
-The current layer is intended to support later milestones:
+The current layer supports the later native milestones:
 
 - N2: `NativeManifestOracleOpeningV1` native manifest/source membership;
 - N3: committed-private NonZK manifest membership;
@@ -24,7 +30,9 @@ The current layer is intended to support later milestones:
 - N5: `Symbt3NativeOracleProfile::NonZkFoldingIntegrityV1` gate;
 - N6a: integrated native folding-integrity proof wrapper;
 - N6b: explicit opt-in native NonZK public route;
-- later: versioned native product route, if explicitly promoted.
+- N7: native accumulator authority smoke route using M1b RLC tuple leaves;
+- N7b: full K6a-workload native accumulator authority helper;
+- N8: integrated one-WHIR K6a native NonZK accumulation API and benchmark.
 
 For manifest/source equality, future code should use
 `WhirNativeEvalClaimKind::EqualitySide` for both sides and
@@ -69,8 +77,8 @@ layer. The report is emitted by `symbt3_instrumented_multi_oracle` as
 `SYMBT3_INSTRUMENTED_MULTI_ORACLE_JSON` rows in
 `benchmarks/symbt3_instrumented_multi_oracle.jsonl`.
 
-The current mode is a logical multi-oracle compatibility envelope, not true
-tuple-leaf native WHIR. Rows must therefore say:
+M1a rows are logical multi-oracle compatibility-envelope rows, not true
+tuple-leaf native WHIR. Those rows must therefore say:
 
 - `native_multi_oracle = false`;
 - `logical_envelope = true`;
@@ -79,9 +87,8 @@ tuple-leaf native WHIR. Rows must therefore say:
 - `tuple_leaf_layout = "none"`;
 - `product_verify_public_allowed = false`.
 
-The reserved future tuple-leaf shape is
-`same_domain_tuple_leaf_v1`, with one WHIR instance, one schedule, one
-transcript, and one root. M1a is a measurement/reporting milestone only and
+M1b, below, implements the first same-domain tuple-leaf-style comparison shape
+as RLC scalar packing. M1a remains a measurement/reporting milestone only and
 does not change product routing, K6a/K6b/N6b semantics, K5/ZK status, or
 `family_columnar_subproof_count`.
 
@@ -376,8 +383,8 @@ mapping table below is the canonical reference.
 | `FoldedAjtaiMapConsistency` | `FoldedAjtaiMapConsistency` ✓ |
 | `ProductionNormRange` | `FoldedAjtaiProjectionConsistency` + `FoldedAjtaiProjectedRangeBound` + `FoldedAjtaiMonomialEmbeddingConsistency` + `ProjectedOpeningRepresentativeValidity` ✓ |
 | `MessageOracleSemanticViews` | `NativeMessageOracleViews` (I2 native-view family) ✓ |
-| `CompressedManifestSourceMembership` | `ManifestEvaluationClaim` — **new K1 family** |
-| `AccumulatorTransitionConsistency` | `AccumulatorTransitionConsistency` — **new K2 family** |
+| `CompressedManifestSourceMembership` | `ManifestEvaluationClaim` — implemented K1 family |
+| `AccumulatorTransitionConsistency` | `AccumulatorTransitionConsistency` — implemented K2 family |
 
 Special notes:
 - `RingModuleAlgebraLaw` is a layout/profile requirement, not a single constraint
@@ -386,7 +393,7 @@ Special notes:
 - `FoldedOutputVectorIdentity` is a bundle over typed component kinds (public
   inputs, commitments, evaluations, accumulator coordinates).
 - `CompressedManifestSourceMembership` and `AccumulatorTransitionConsistency` are
-  new authority requirements added by K1 and K2 respectively.
+  authority requirements added by K1 and K2 respectively.
 
 ---
 
@@ -412,30 +419,44 @@ module-root facades plus focused section files:
   `MonomialEmbeddingRangeV1`
 - WHIR backend integration with Poseidon2/BabyBear
 
-**Current soundness gaps:**
+**Historical soundness gaps closed by K1-K3:**
 
-1. `SourceManifestColumnMembership` is root-binding only. No polynomial
-   evaluation proof links source columns to `batch_manifest_root`. (Fixed by K1.)
+1. `SourceManifestColumnMembership` was root-binding only. K1 added manifest
+   evaluation/source membership binding.
 
-2. `AccumulatorTransitionConsistency` does not exist. Old/new accumulator values
-   are raw `Vec<i64>` with no formal transition constraint. (Fixed by K2.)
+2. `AccumulatorTransitionConsistency` did not exist. K2 added typed accumulator
+   structs, old/new accumulator digests, and the transition relation.
 
-3. No `Symbt3AccumulatorInstance` / `Symbt3AccumulatorWitness` typed structs.
-   (Fixed by K2.)
+3. `Symbt3AccumulatorInstance` / `Symbt3AccumulatorWitness` typed structs were
+   missing. K2 implemented them.
 
-4. Higher authority profiles do not yet require `ManifestEvaluationClaim` or
-   `AccumulatorTransitionConsistency`. (Fixed by K3.)
+4. Higher authority profiles did not require `ManifestEvaluationClaim` or
+   `AccumulatorTransitionConsistency`. K3 hardened the authority profile gate.
 
-5. `Symbt3AuthorityProfile` is missing policy digest fields and soundness
-   accounting fields. (Fixed by K3.)
+5. `Symbt3AuthorityProfile` lacked policy digest fields and soundness
+   accounting fields. K3 added them.
+
+**Remaining limits:**
+
+- K5 ZK/masking is deferred; all SYMBT3 accumulator/native routes are NonZK.
+- K6a/K6b are explicit opt-in NonZK product/reporting routes, not default
+  `verify_public`.
+- N6b and N7 are native smoke/development routes, not full accumulator
+  replacements.
+- N7b is a full K6a-workload native helper, but remains NonZK and not default
+  product routing.
+- N8 is an explicit same-shape NonZK accumulation route and integrated one-WHIR
+  benchmark path; it is not production-reviewed and does not implement K5.
 
 ---
 
 ## Milestone Order
 
-```
-K1 → K2 → K3 → K4 → K4.5/K3b → K4.6 → K6
+```text
+K1 → K2 → K3 → K4 → K4.5/K3b → K4.6 → K6a → K6b
               (K5 ZK: deferred)
+N1/N1bench → M1a → M1b → N2 → N3 → N4/N4b → N5 → N6a → N6b
+                                                → N7 → N7b → N8
 ```
 
 M0/M1/M2 from the product integration design are merged into K4 (M0, M1) and
@@ -1261,7 +1282,7 @@ delegating to the SYMBT3 verifier. This is not K6 product routing and does not
 change the product public verifier.
 
 **Files**: `src/modular/batched_cp/`, `tests/batched_cp.rs`,
-`benches/whir_scaling.rs`, `docs/whir.md`,
+`benches/whir_scaling.rs`, `docs/protocols/whir.md`,
 `docs/whir_public_performance_north_star_plan.md`
 
 ---
@@ -1459,13 +1480,20 @@ deferred.
 6. Shape counters remain fixed at one top-level WHIR proof, zero family
    subproofs, and one backend table.
 
-**Files**: `benches/whir_scaling.rs`, `tests/batched_cp.rs`, `docs/whir.md`,
+**Files**: `benches/whir_scaling.rs`, `tests/batched_cp.rs`, `docs/protocols/whir.md`,
 `docs/whir_public_performance_north_star_plan.md`,
 `docs/symbt3_accumulator_authoritative_roadmap.md`
 
 ---
 
 ## Full Negative Test Checklist
+
+Current note: this checklist is retained as historical granular tracking. The
+route sections above reflect current implemented status; newer native route
+negative matrices live primarily in `src/snark/whir/native_oracles/tests.rs`
+and are not exhaustively mirrored by these older checkboxes. Treat unchecked
+items here as "not confirmed by this historical checklist", not as proof that
+the current repository lacks all related tests.
 
 **Convention:** "prover fails" is an honest-prover sanity check, not a soundness
 criterion. For each such item, the authority-relevant test is verifier rejection.
@@ -1601,7 +1629,8 @@ Tests are marked:
 - Do not restore: full manifest in public statement, full manifest in backend
   table, per-coordinate manifest equality rows, byte sections, Poseidon
   digest-body reconstruction, witness-side verifier checks.
-- `product_verify_public` interface is unchanged until K6.
+- Default product `verify_public()` remains the monolithic WHIR typed-CP route;
+  explicit SYMBT3 product/native routes must stay opt-in and fail closed.
 - Manifest oracle is part of the top-level SYMBT3 proof object (no new WHIR
   proof or subproof introduced).
 
@@ -1621,6 +1650,11 @@ Tests are marked:
 | `SYMBT3-K5` | ZK/masking. Deferred. Required for full CP-SNARK claim. |
 | `SYMBT3-K6a` | Implemented explicit opt-in ProductAuthority NonZK integrity route. Default `verify_public()` unchanged. |
 | `SYMBT3-K6b` | Implemented side-by-side product route benchmark/report. No protocol or routing change. |
+| `SYMBT3-N6a` | Implemented native folding-integrity wrapper. NonZK smoke/development route, not product. |
+| `SYMBT3-N6b` | Implemented explicit native NonZK folding-integrity public route. Not full accumulator replacement. |
+| `SYMBT3-N7` | Implemented native accumulator authority smoke route. Shape-correct, not full K6a workload. |
+| `SYMBT3-N7b` | Implemented full K6a-workload native accumulator authority helper. NonZK, not default product routing. |
+| `SYMBT3-N8` | Implemented explicit N8 NonZK same-shape accumulation route and integrated one-WHIR benchmark. Not K5/ZK or default `verify_public()`. |
 | `SYMBT3-ACC` | Accumulator transition proof `old_acc → new_acc` (alias for K2 work). |
 | `SYMBT3-SoundAuthority` | Non-ZK accumulator integrity proof, K1+K2+K3+K4+K6a opt-in, K6b reported. |
 | `SYMBT3-ZkAuthority` | Full ZK/CP-SNARK product-eligible proof. Requires K5+K6. |
@@ -1649,12 +1683,18 @@ Tests are marked:
 | Typed output proof helpers | `src/snark/whir/output.rs` |
 | SYMBT3 algebraic columns and claims | `src/snark/whir/symbt3_columns.rs` |
 | SYMBT3 verifier profile and accumulator route checks | `src/snark/whir/symbt3_verify.rs` |
+| Native multi-oracle facade | `src/snark/whir/native_oracles/mod.rs` |
+| Native tuple-leaf implementation | `src/snark/whir/native_oracles/frag_tuple_leaf.rs` |
+| Native folding-integrity and public route | `src/snark/whir/native_oracles/frag_folding_integrity.rs`, `src/snark/whir/native_oracles/frag_prove.rs` |
+| N7b full authority helpers | `src/snark/whir/native_oracles/frag_n7b_types.rs`, `src/snark/whir/native_oracles/frag_n7b_prove.rs` |
+| N8 integrated accumulation route | `src/snark/whir/native_oracles/frag_n8_types.rs`, `src/snark/whir/native_oracles/frag_n8_impl.rs`, `src/snark/whir/native_oracles/frag_n8_accumulation.rs`, `src/snark/whir/native_oracles/frag_n8_witness.rs` |
 | Test suite | `tests/batched_cp.rs` |
+| Native oracle test suite | `src/snark/whir/native_oracles/tests.rs` |
 | Scaling benchmarks | `benches/whir_scaling.rs` |
 
 ---
 
-reconstruct byte transcripts.
+The N6/N7/N8 native routes must not reconstruct byte transcripts.
 
 ## N6a Integrated Native Folding-Integrity Proof
 
@@ -1775,9 +1815,9 @@ prints "N7 smoke profile, not full accumulator workload". Counters include
 `full_accumulator_workload = false`, `smoke_profile = true`,
 `main_whir_num_vars`, and `main_oracle_len`.
 
-N7b is reserved for
-`Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1`. The
-fail-closed helper names are:
+N7b is implemented for
+`Symbt3NativeAccumulatorAuthorityWorkload::FullK6aAccumulatorV1`. The helper
+names are:
 
 - `prove_symbt3_native_accumulator_authority_full_non_zk`;
 - `verify_symbt3_native_accumulator_authority_full_non_zk`;
@@ -1785,5 +1825,50 @@ fail-closed helper names are:
 
 The full gate rejects smoke proofs and requires at least four RLC repetitions
 with sufficient total/effective soundness before any full native authority claim
-can be reported. External cryptographic review remains required before
-production.
+can be reported. `symbt3_native_accumulator_authority_full_vs_k` emits
+`NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV` plus overhead rows for this helper.
+N7b remains NonZK and not default product routing. External cryptographic
+review remains required before production.
+
+## SYMBT3-N8: Integrated K6a Native WHIR Accumulation Route
+
+N8 is implemented as an explicit opt-in NonZK same-shape accumulation route. It
+is the non-additive successor to N7b: instead of binding a K6a proof plus a
+separate tuple-leaf proof as split proof material, N8 builds one integrated
+native WHIR relation and one integrated WHIR proof over K6a semantic rows,
+tuple-RLC semantic rows, and accumulator-transition binding rows.
+
+The public API is:
+
+- `accumulate_symbt3_n8_non_zk`;
+- `verify_symbt3_n8_accumulation_non_zk`;
+- `decide_symbt3_n8_accumulator_non_zk`.
+
+The lower-level integrated proof API includes:
+
+- `build_n8_semantic_inputs_from_k6a_witness`;
+- `build_symbt3_n8_integrated_k6a_native_whir_relation_descriptor_from_semantic_inputs`;
+- `build_n8_integrated_whir_proof_plan`;
+- `prove_symbt3_n8_integrated_whir_non_zk`;
+- `verify_symbt3_n8_integrated_whir_non_zk`;
+- `verify_symbt3_n8_integrated_prover_output_authority_gate`.
+
+N8 is authoritative only for the explicit
+`Symbt3AccumulationAuthorityProfile::N8NonZkSameShapeV1` decision route over
+same-shape, nonempty NonZK accumulation transitions. It is not default
+`verify_public`, not K5/ZK, not production-reviewed, and not a privacy claim.
+
+Implemented fail-closed behavior includes rejection of wrong profile versions,
+empty or mismatched public batches, old/new accumulator mutations, proof replay
+across batches or accumulation steps, wrong top-level proof fields, stale K6a/N8
+digests, N7b proof material presented as N8, split delegation attempts,
+synthetic N8 outputs, smoke proofs, default product proofs, and incomplete
+semantic flags. The tests also cover honest `k = 1, 2, 4` N8 accumulation and
+multi-step `acc0 -> acc1 -> acc2` replay rejection.
+
+The benchmark target `symbt3_n8_integrated_authority_vs_k` emits
+`N8_INTEGRATED_AUTHORITY_CSV`, `N8_INTEGRATED_OPENING_BREAKDOWN_CSV`,
+`N8_K6A_SOURCE_ROW_BREAKDOWN_CSV`, and `N8_INTEGRATED_TIMER_CSV` rows. Rows are
+emitted only after the integrated authority gate accepts; `blocked` rows report
+the blocker instead of silently falling back to K6a, N7b, or monolithic typed
+CP.

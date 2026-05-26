@@ -1,0 +1,8 @@
+k,verifier_opening_rows,commitment_opening_rows,folded_opening_rows,ajtai_opening_rows,residual_opening_rows,range_projection_opening_rows,final_residual_rows,z_eval_rows,product_sumcheck_coefficient_rows,padding_rows,total_source_rows
+1,15,3,4,1,4,3,3,1,32,1,52
+2,15,3,4,1,4,3,3,1,32,1,52
+4,15,3,4,1,4,3,3,1,32,1,52
+8,15,3,4,1,4,3,3,1,36,1,56
+16,15,3,4,1,4,3,3,1,40,1,60
+32,15,3,4,1,4,3,3,1,44,1,64
+64,15,3,4,1,4,3,3,1,48,1,68

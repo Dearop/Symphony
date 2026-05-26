@@ -5,8 +5,29 @@
 Add the next cumulative non-authoritative SYMBT3 profile: prove that the
 committed CP round-message oracles actually feed the algebraic folding relation.
 
-SYMBT3-H anchored the source columns to the batch manifest. SYMBT3-I should
-anchor the message oracles to the algebraic transcript and folding checks.
+> **Current status (2026-05-20): implemented and refined by I2.** The message
+> semantic layout exists as `Symbt3MessageSemanticLayout` under
+> `src/modular/batched_cp/`. Current cumulative relation descriptions require
+> `BatchedCpSymbt3ConstraintFamily::RoundMessageLayoutValidity`,
+> `RoundChallengePrefixBinding`, `NativeMessageOracleViews`,
+> `SumcheckRoundClaimTransition`, `SumcheckFinalLocalClaimBinding`, and
+> `FoldingMessageBoundaryConsistency` through `has_symbt3_i_families()`.
+>
+> The original I profile's dense `MessageToTraceColumnBinding` copy path exists
+> as historical/baseline machinery, but the live default was refined by
+> `SYMBT3-I2`: trace values that are typed coordinates of `M_r(T,U)` are
+> consumed as native message-oracle views instead of duplicate trace columns
+> with per-coordinate copy constraints. Current benchmark and report language
+> should prefer `symbt3_i2_vs_k` for the live message-semantic profile.
+>
+> Product `verify_public` remains the authoritative monolithic WHIR typed-CP
+> route and does not route through I/I2 directly. I/I2/SYMBT3 development
+> profiles remain `NonAuthoritativeDevelopment` / `NonZkDevelopment` unless
+> selected by explicit NonZK accumulator routes such as K6a or N8.
+
+SYMBT3-H anchored the source columns to the batch manifest. The original
+SYMBT3-I plan anchored the message oracles to the algebraic transcript and
+folding checks.
 
 The goal is to move from:
 
@@ -23,7 +44,7 @@ the committed message oracles are the semantic folding messages consumed by
 the SYMBT3 algebraic checks.
 ```
 
-This should still preserve:
+The original I/I2 line preserved:
 
 - `NonAuthoritativeDevelopment`
 - `NonZkDevelopment`
@@ -95,12 +116,12 @@ prove semantic equations over the committed oracle values.
 Add a versioned family set such as:
 
 ```rust
-Symbt3ConstraintFamily::RoundMessageLayoutValidity
-Symbt3ConstraintFamily::RoundChallengePrefixBinding
-Symbt3ConstraintFamily::MessageToTraceColumnBinding
-Symbt3ConstraintFamily::SumcheckRoundClaimTransition
-Symbt3ConstraintFamily::SumcheckFinalLocalClaimBinding
-Symbt3ConstraintFamily::FoldingMessageBoundaryConsistency
+BatchedCpSymbt3ConstraintFamily::RoundMessageLayoutValidity
+BatchedCpSymbt3ConstraintFamily::RoundChallengePrefixBinding
+BatchedCpSymbt3ConstraintFamily::NativeMessageOracleViews
+BatchedCpSymbt3ConstraintFamily::SumcheckRoundClaimTransition
+BatchedCpSymbt3ConstraintFamily::SumcheckFinalLocalClaimBinding
+BatchedCpSymbt3ConstraintFamily::FoldingMessageBoundaryConsistency
 ```
 
 Keep these under one generalized WHIR relation, not as separate backend proofs.
@@ -112,8 +133,9 @@ Family meanings:
 - `RoundChallengePrefixBinding`: challenge `r_r` is the verifier-derived
   challenge from the correct prefix transcript. This checks challenge values as
   public constants, not hash bytes.
-- `MessageToTraceColumnBinding`: algebra columns used by SYMBT3 are equal to
-  typed coordinates read from `M_r`.
+- `NativeMessageOracleViews`: algebra columns used by SYMBT3 are sourced from
+  typed coordinates read from `M_r` without materializing duplicate copy
+  columns in the default I2 profile.
 - `SumcheckRoundClaimTransition`: round message polynomials/evaluations satisfy
   the normal sumcheck transition equations.
 - `SumcheckFinalLocalClaimBinding`: final claim from message transcript agrees
@@ -122,13 +144,16 @@ Family meanings:
   coordinates exposed in the public statement match the committed message
   transcript semantics.
 
-If that is too broad for one PR, implement the first default I profile as:
+The first I profile used the denser `MessageToTraceColumnBinding` copy path.
+The current I2 profile keeps the same semantic boundary while replacing that
+copy path with native message-oracle views:
 
 - `RoundMessageLayoutValidity`
 - `RoundChallengePrefixBinding`
-- `MessageToTraceColumnBinding`
-
-and add the sumcheck-transition families as SYMBT3-I2.
+- `NativeMessageOracleViews`
+- `SumcheckRoundClaimTransition`
+- `SumcheckFinalLocalClaimBinding`
+- `FoldingMessageBoundaryConsistency`
 
 Conceptually, I is the message-semantics gate.
 
@@ -634,6 +659,17 @@ Add:
 ```text
 symbt3_i_vs_k
 ```
+
+Current live code also registers:
+
+```text
+symbt3_i2_vs_k
+```
+
+Use `symbt3_i_vs_k` only when intentionally measuring the historical dense
+message-to-trace copy baseline. Use `symbt3_i2_vs_k` for the current native
+message-oracle-view profile, where `message_to_trace_binding_count = 0` and
+message coordinates are consumed as typed oracle views.
 
 Run:
 

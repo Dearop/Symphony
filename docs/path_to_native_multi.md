@@ -1,15 +1,16 @@
-# SYMBT3 Native Accumulator Authority Plan
+# SYMBT3 Native Accumulator Authority Status and Roadmap
 
-Status: design + implementation plan  
-Target: full NonZK native accumulator authority route  
-Scope: integrity only, no privacy claim  
-Deferred: K5 ZK/masking, true vector tuple leaves, default product routing  
+Status: implementation status plus remaining roadmap
+Current full native route: N7b full K6a-workload NonZK authority candidate
+Current integrated route: N8 explicit opt-in NonZK same-shape accumulation route
+Scope: integrity only, no privacy claim
+Deferred: K5 ZK/masking, true vector tuple leaves, default product routing
 
 ---
 
 ## 0. Current State
 
-The implementation currently has two major lines of work.
+The implementation currently has three relevant lines of work.
 
 ### K-series: full public-canonical accumulator route
 
@@ -52,19 +53,63 @@ Implemented:
 - N6b explicit native NonZK folding-integrity public route
 - N6c route matrix/reporting layer
 - M1a instrumented compatibility multi-oracle benchmark
-- M1b same-domain RLC tuple-leaf multi-oracle benchmark
+- M1b same-domain RLC tuple-leaf multi-oracle benchmark with repeated
+  BabyBear RLC evidence
 
-This route currently proves native-oracle plumbing and smoke/infrastructure claims, but it is not yet the full accumulator authority route.
+This route proves native-oracle plumbing and the tuple-leaf proof used by the
+full N7b wrapper. It also retains N7 smoke/profile paths for infrastructure
+testing.
+
+### N7b/N8: current native accumulator routes
+
+Implemented:
+
+- N7 smoke profile:
+  `prove_symbt3_native_accumulator_authority_non_zk(...)` /
+  `verify_symbt3_native_accumulator_authority_non_zk(...)`. This remains a
+  smoke/infrastructure route and is not the full workload authority candidate.
+- N7b full route:
+  `prove_symbt3_native_accumulator_authority_full_non_zk(...)` /
+  `verify_symbt3_native_accumulator_authority_full_non_zk_report(...)`. This
+  composes the K6a product proof, a same-domain RLC tuple-leaf native proof,
+  repeated RLC evidence, a K6a adapter, and an N7b binding digest.
+- N8 accumulation route:
+  `accumulate_symbt3_n8_non_zk(...)`,
+  `verify_symbt3_n8_accumulation_non_zk(...)`, and
+  `decide_symbt3_n8_accumulator_non_zk(...)`. This uses one real integrated
+  WHIR proof over K6a semantic rows, tuple-RLC semantic rows, and
+  transition/binding semantic rows.
+
+All three are NonZK integrity routes. N7b and N8 are explicit opt-in paths; they
+do not change default product `verify_public`.
 
 ---
 
 ## 1. Target Claim
 
-The target claim is:
+The N7 smoke claim is:
 
 ```text
 verify_symbt3_native_accumulator_authority_non_zk(profile, instance, proof) = true
-````
+```
+
+The implemented full N7b claim is:
+
+```text
+verify_symbt3_native_accumulator_authority_full_non_zk(profile, instance, proof) = true
+```
+
+The implemented N8 accumulation decision claim is:
+
+```text
+decide_symbt3_n8_accumulator_non_zk(
+    N8NonZkSameShapeV1,
+    public_batch,
+    old_accumulator_public,
+    new_accumulator_public,
+    proof
+) = ok
+```
 
 implies that there exist committed source columns, manifest oracle values, CP round message oracles, folded witness data, Ajtai openings, and accumulator witness data such that:
 
@@ -81,7 +126,8 @@ implies that there exist committed source columns, manifest oracle values, CP ro
 11. RLC tuple-leaf soundness is included in the authority profile.
 12. The proof satisfies the declared WHIR, sumcheck, RLC, and Fiat-Shamir soundness profile.
 
-This is **not** a ZK claim.
+These are **not** ZK claims and do not imply privacy for witness-bearing
+columns.
 
 ---
 
@@ -123,13 +169,28 @@ N6b/M1b = native oracle infrastructure + RLC tuple-leaf smoke/benchmark path
 
 It is not yet the full accumulator route.
 
-### N7 Target
+### N7b Full Route
 
-N7 must combine both:
+N7b combines both:
 
 ```text
-N7 = K6a full accumulator workload + N/M native oracle infrastructure
+N7b = K6a full accumulator workload + N/M native oracle infrastructure
 ```
+
+It is implemented as an additive wrapper: one K6a WHIR proof plus one
+same-domain RLC tuple-leaf native WHIR/PCS proof, bound by an N7b wrapper
+digest.
+
+### N8 Integrated Route
+
+N8 is implemented as the current non-additive research direction:
+
+```text
+N8 = one integrated WHIR proof for K6a rows + tuple-RLC rows + transition rows
+```
+
+N8 is exposed only through the explicit `N8NonZkSameShapeV1` accumulation
+decision profile. It remains NonZK and not production-reviewed.
 
 ---
 
@@ -237,6 +298,8 @@ Future work may replace repeated BabyBear RLC with:
 
 ## 6. Milestone N7-0: Soundness Metadata and Gates
 
+Status: implemented, with concrete names adjusted during implementation.
+
 ### Goal
 
 Add the native accumulator authority profile and fail-closed gate.
@@ -244,9 +307,9 @@ Add the native accumulator authority profile and fail-closed gate.
 ### Add
 
 ```rust
-Symbt3NativeAccumulatorAuthorityProfile
+Symbt3NativeAccumulatorAuthorityProfileMetadata
 Symbt3NativeAccumulatorAuthorityCounters
-Symbt3NativeAccumulatorAuthorityReport
+Symbt3NativeAccumulatorAuthorityProfileReport
 Symbt3NativeAccumulatorAuthorityWorkload
 ```
 
@@ -259,11 +322,16 @@ pub enum Symbt3NativeAccumulatorAuthorityWorkload {
 }
 ```
 
-Gate:
+Gates:
 
 ```rust
-profile_meets_native_accumulator_authority(profile, metadata) -> bool
+profile_meets_native_accumulator_authority(metadata) -> bool
+profile_meets_native_accumulator_authority_full(metadata) -> bool
 ```
+
+The first gate is used by the smoke route; the second is the full N7b workload
+gate and additionally requires `FullK6aAccumulatorV1`, repeated RLC soundness,
+and the full semantic profile version.
 
 ### Gate must require
 
@@ -304,6 +372,8 @@ Negative:
 
 ## 7. Milestone N7-1: Full Workload Proof Wrapper
 
+Status: implemented as N7b.
+
 ### Goal
 
 Add a native accumulator authority proof wrapper around:
@@ -315,9 +385,9 @@ Add a native accumulator authority proof wrapper around:
 ### Add
 
 ```rust
-Symbt3NativeAccumulatorAuthorityProof
-Symbt3NativeAccumulatorAuthorityWitness
-Symbt3NativeAccumulatorAuthorityInstance
+Symbt3N7bFullAuthorityProof
+Symbt3N7bFullAuthorityWrapperProof
+Symbt3N7bNativeTupleLeafProofParts
 Symbt3NativeAccumulatorAuthorityCounters
 ```
 
@@ -326,9 +396,10 @@ Symbt3NativeAccumulatorAuthorityCounters
 Add:
 
 ```text
-native_accumulator_authority_binding_digest =
+N7b full wrapper binding digest =
 H(
-  "SYMBT3_NATIVE_ACCUMULATOR_AUTHORITY_BINDING_V1",
+  "SYMBT3_N7B_FULL_NATIVE_ACCUMULATOR_AUTHORITY_BINDING_V1",
+  workload_kind,
   profile_digest,
   accumulator_instance_digest,
   public_statement_digest,
@@ -580,12 +651,14 @@ Negative:
 
 ## 8. Milestone N7-2: Full Workload Prover
 
+Status: implemented for N7b.
+
 ### Goal
 
 Implement:
 
 ```rust
-prove_symbt3_native_accumulator_authority_non_zk(...)
+prove_symbt3_native_accumulator_authority_full_non_zk(...)
 ```
 
 It must:
@@ -600,7 +673,7 @@ It must:
 4. Pack them with same-domain RLC tuple-leaf mode.
 5. Repeat RLC packing independently `rlc_repetition_count` times.
 6. Bind all roots/proofs/descriptors with the binding digest.
-7. Return `Symbt3NativeAccumulatorAuthorityProof`.
+7. Return `Symbt3N7bFullAuthorityProof`.
 
 ### Requirements
 
@@ -616,12 +689,14 @@ It must:
 
 ## 9. Milestone N7-3: Full Workload Verifier
 
+Status: implemented for N7b.
+
 ### Goal
 
 Implement:
 
 ```rust
-verify_symbt3_native_accumulator_authority_non_zk(...)
+verify_symbt3_native_accumulator_authority_full_non_zk_report(...)
 ```
 
 It must:
@@ -664,6 +739,8 @@ Negative:
 ---
 
 ## 10. Milestone N7-4: RLC Repetition Support
+
+Status: implemented for the tuple-leaf route and enforced by the N7b wrapper.
 
 ### Goal
 
@@ -725,10 +802,14 @@ root_count = rlc_repetition_count
 
 ## 11. Milestone N7-5: Benchmark
 
+Status: implemented for N7 smoke and N7b full routes. Use the full target for
+full-workload claims.
+
 Add:
 
 ```text
 symbt3_native_accumulator_authority_vs_k
+symbt3_native_accumulator_authority_full_vs_k
 ```
 
 Run:
@@ -743,6 +824,7 @@ Emit:
 
 ```text
 NATIVE_ACCUMULATOR_AUTHORITY_CSV
+NATIVE_ACCUMULATOR_AUTHORITY_FULL_CSV
 ```
 
 Fields:
@@ -798,11 +880,15 @@ fallback_used = false
 
 ## 12. Milestone N7-6: Documentation
 
+Status: partially implemented across current protocol docs; keep this document
+as the native-route status/roadmap and keep WHIR product docs authoritative for
+default public verifier behavior.
+
 Update:
 
-* `docs/whir.md`
+* `docs/protocols/whir.md`
 * `docs/whir_public_performance_north_star_plan.md`
-* `docs/symbt3_accumulator_authoritative_roadmap.md`
+* `docs/past_roadmaps/symbt3_accumulator_authoritative_roadmap.md`
 * optional: `docs/symbt3_soundness_profile.md`
 
 Must state:
@@ -819,6 +905,10 @@ Must state:
 ---
 
 ## 13. Milestone N7-7: Final Negative Matrix
+
+Status: broad negative coverage exists for N7b and substantially broader N8
+coverage now exists. Treat this list as the minimum regression matrix for any
+future promotion or format broadening.
 
 Required negative tests:
 
@@ -896,14 +986,17 @@ Benchmark:
 
 ```bash
 SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 \
-cargo bench --bench whir_scaling --features whir -- "symbt3_native_accumulator_authority_vs_k"
+cargo bench --bench whir_scaling --features whir -- "symbt3_native_accumulator_authority_full_vs_k"
+
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,4 \
+cargo bench --bench whir_scaling --features whir -- "symbt3_n8_integrated_authority_vs_k"
 ```
 
 ---
 
 ## 15. Stop Conditions
 
-Do not claim N7 authority unless all are true:
+Do not claim N7b full authority unless all are true:
 
 ```text
 full_accumulator_workload = true
@@ -922,8 +1015,8 @@ If any are false, the route must fail closed.
 
 ## 16. Final Claim If Successful
 
-If successful, the honest claim is:
+Current honest claim:
 
 ```text
-We implement a NonZK native accumulator authority route for SYMBT3, using the full accumulator workload and same-domain RLC tuple-leaf native multi-oracle WHIR. The route uses one WHIR instance/root/query schedule for the native oracle batch, repeated RLC checks for soundness, and fail-closed authority gates. It is not zero-knowledge and does not claim privacy.
+We implement NonZK native accumulator authority-candidate routes for SYMBT3. N7b uses the full K6a accumulator workload plus same-domain RLC tuple-leaf native multi-oracle WHIR, repeated RLC checks for soundness, and fail-closed wrapper gates. N8 is an explicit opt-in same-shape accumulation route with one integrated WHIR proof over K6a, tuple-RLC, and transition/binding semantic rows. These routes are not zero-knowledge, do not claim privacy, are not default verify_public routing, and require further production review before any production-grade claim.
 ```

@@ -3,6 +3,11 @@
 `ProofBundleV2` and `SymphonyProofV2` are the canonical public verifier
 boundary for Symphony.
 
+The product API still passes typed Rust proof bundles to `verify_public`; the
+byte envelopes below are canonical fixture/review/wire helpers. A byte envelope
+version becoming implemented does not by itself make that envelope the active
+product verifier route.
+
 The product-facing API names are:
 
 - `ModularProver::prove_public`
@@ -99,7 +104,8 @@ by `canonical_whir_proof_bytes`, decoded by
 the public envelope's `cp_proof_bytes` and `output_proof_bytes` fields for
 WHIR.
 
-The golden version-2 WHIR public envelope fixture is:
+The golden fixture for the version-1 public envelope carrying version-2 WHIR
+payloads is:
 
 ```text
 tests/fixtures/public_proof_v2_whir_minimal.hex
@@ -108,6 +114,42 @@ tests/fixtures/public_proof_v2_whir_minimal.hex
 It is a deterministic wire-format fixture with canonical WHIR CP/output payloads.
 Live WHIR public proofs are tested separately because public proving includes
 randomized Fiat-Shamir openings.
+
+## Compressed Envelope
+
+`COMPRESSED_PUBLIC_PROOF_ENVELOPE_VERSION = 2` is implemented as
+`CompressedPublicProofEnvelope`. It uses the same `SYMPUB2\0` magic and digest
+scheme ids as version 1, but intentionally omits the linear `fs_commitments`
+vector. Its serialized order is:
+
+```text
+magic[8]
+version: u16                 # 2
+digest_scheme: u8             # 0 = Sha256, 1 = Poseidon2BabyBear
+num_public_input_vectors: u64
+  repeated:
+    public_input_len: u64
+    public_input_values: i64[public_input_len]
+r1cs_num_constraints: u64
+r1cs_num_variables: u64
+r1cs_num_public: u64
+fs_root: bytes[32]
+fold_root: bytes[32]
+challenge_digest: bytes[32]
+transcript_seed_digest: bytes[32]
+folded_output_len: u64
+folded_output_bytes
+cp_proof_len: u64
+cp_proof_bytes
+output_proof_len: u64
+output_proof_bytes
+```
+
+The compressed envelope round-trips and rejects under the version-1 decoder.
+It is a measured performance-roadmap wire shape, not the current product
+`verify_public` route. `ProofBundleV2` / `PublicProofBundle` still carry
+`fs_commitments` because the active WHIR typed CP public instance still needs
+those public commitments.
 
 ## Explicit Non-Inputs
 
@@ -210,15 +252,20 @@ counts:
 SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
 ```
 
+The SYMBT3 K6a, N6b, N7/N7b, and N8 routes are explicit opt-in NonZK
+accumulator/native routes. They do not replace this default product
+`verify_public` boundary, and malformed SYMBT3 proof-kind/profile inputs are
+expected to fail closed inside their explicit route gates.
+
 ## Performance Roadmap Envelope
 
-The current product envelope is version 1 and includes the public
-`fs_commitments` vector. The performance roadmap introduces a version 2
-compressed envelope that omits that linear vector and keeps only `fs_root`,
-`fold_root`, `challenge_digest`, `transcript_seed_digest`, folded output bytes,
-and backend proof bytes.
+The current active product proof boundary is still `ProofBundleV2` /
+`PublicProofBundle`, and its canonical version-1 envelope includes the public
+`fs_commitments` vector. The version-2 compressed envelope is implemented and
+tested as a wire-shape helper that omits that vector and keeps the public
+roots/digests, folded output bytes, and backend proof bytes.
 
-Version 2 is currently a measured wire-shape target, not the active product
-verifier route. `verify_public` still consumes `ProofBundleV2` until the typed
-CP relation moves FS commitment digest outputs from public instance slots into
-private witness data.
+Version 2 is therefore implemented but non-authoritative for product routing.
+`verify_public` still consumes `ProofBundleV2` until the typed CP relation moves
+FS commitment digest outputs from public instance slots into private witness
+data.

@@ -1139,6 +1139,11 @@ pub fn verify_symbt3_native_folding_integrity_non_zk(
     )
 }
 
+/// Build the explicit N6b native NonZK folding-integrity proof.
+///
+/// This is an opt-in native-oracle public route. It is separate from both the
+/// default product `verify_public` route and the K6a explicit accumulator
+/// route.
 #[must_use]
 pub fn prove_public_symbt3_native_folding_integrity_non_zk(
     pk: &WhirProvingKey,
@@ -1154,6 +1159,11 @@ pub fn prove_public_symbt3_native_folding_integrity_non_zk(
     Some(proof)
 }
 
+/// Verify the explicit N6b native NonZK folding-integrity proof.
+///
+/// This verifier is route-specific: it checks only the explicit N6b native
+/// public boundary and does not fall back to K6a or to the default product
+/// `verify_public` route.
 #[must_use]
 pub fn verify_public_symbt3_native_folding_integrity_non_zk(
     vk: &WhirVerifyingKey,
