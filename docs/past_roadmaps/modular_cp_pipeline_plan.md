@@ -1,4 +1,4 @@
-# `docs/modular_cp_pipeline_plan.md` — Modular Plan for Full CP Pipeline, Full Transcript Handling, Full Verification
+# `docs/past_roadmaps/modular_cp_pipeline_plan.md` — Modular Plan for Full CP Pipeline, Full Transcript Handling, Full Verification
 
 ## Summary
 
@@ -9,21 +9,41 @@ Target outcomes:
 2. Full transcript handling (canonical encoding, parsing, challenge derivation, commitment binding).
 3. Full top-level verification (all public digests enforced, no public O(k) replay).
 
+> **Current status (2026-05-20): historical module-extraction plan.** The
+> reusable architecture from this plan was implemented as modules under
+> `src/modular/`, not as separate Cargo workspace crates. The product
+> WHIR+WHIR public route is now authoritative over `ProofBundleV2` /
+> `PublicProofBundle` with `Poseidon2BabyBear` public digests, and
+> `verify_public` / `verify_v2` are expected to pass using public data only.
+> This does not mean the product verifier has reached the sublinear performance
+> north star: the current authoritative route is still the monolithic typed-CP
+> baseline. Performance work moved to the explicit SYMBT3 route family, with
+> K6a as the opt-in NonZK integrity accumulator route and N8 as the explicit
+> integrated one-WHIR NonZK accumulation route.
+>
+> Use current paths when citing this plan: `docs/protocols/whir.md`,
+> `docs/past_roadmaps/public_proof_v2.md`,
+> `docs/past_roadmaps/whir_typed_cp_authority_plan.md`,
+> `docs/whir_public_performance_north_star_plan.md`, and
+> `docs/protocols/n8_accumulation_relation.md`.
+
 ## Crate Architecture (Independent, Reusable)
 
-Use a Cargo workspace with the following crates.
+The original target was a Cargo workspace with the following crates. In the
+current repository these map to `src/modular/*` modules plus WHIR-specific
+code under `src/snark/whir/`.
 
 
 | Crate                                                       | Responsibility                                                                                                | Public Interfaces                                                                         |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `folding_core`                                              | Folding domain types + fold semantics (no backend assumptions).                                               | `Statement`, `FoldInput`, `FoldedInstance`, `FoldSemantics` trait                         |
-| `transcript_core`                                           | Transcript schema, canonical encode/decode, domain separation, challenge derivation hooks.                    | `TranscriptEvent`, `TranscriptCodec`, `ChallengeDeriver` traits                           |
-| `digest_core`                                               | Deterministic digests/roots for transcript seed, FS commitments, fold inputs, challenges.                     | `digest_transcript_seed`, `digest_fs_root`, `digest_fold_root`, `digest_challenge_digest` |
-| `cp_relation_core`                                          | CP public/witness model + relation checks (transcript consistency + fold replay + folded output consistency). | `CpPublicInstance`, `CpWitnessBundle`, `CpRelation::check`                                |
-| `cp_backend_api`                                            | Backend-agnostic CP proving API.                                                                              | `CpBackend` trait (`setup/prove/verify`)                                                  |
-| `output_backend_api`                                        | Backend-agnostic folded-statement proving API.                                                                | `OutputBackend` trait (`setup/prove/verify`)                                              |
-| `proof_orchestrator`                                        | End-to-end proving/verifying flow combining all crates above.                                                 | `Prover`, `Verifier`, `ProofBundle`                                                       |
-| `adapter_symphony`                                          | Mapping between Symphony current structs and generic crate types.                                             | `From/Into` converters + wiring helpers                                                   |
+| `src/modular/folding_core`                                  | Folding domain types + fold semantics (no backend assumptions).                                               | `Statement`, `FoldInput`, `FoldedInstance`, `FoldSemantics` trait                         |
+| `src/modular/transcript_core`                               | Transcript schema, canonical encode/decode, domain separation, challenge derivation hooks.                    | `TranscriptEvent`, `TranscriptCodec`, `ChallengeDeriver` traits                           |
+| `src/modular/digest_core`                                   | Deterministic digests/roots for transcript seed, FS commitments, fold inputs, challenges. WHIR public routing uses `Poseidon2BabyBear`; SHA is compatibility-only. | `digest_transcript_seed`, `digest_fs_root`, `digest_fold_root`, `digest_challenge_digest` |
+| `src/modular/cp_relation_core`                              | CP public/witness model + relation checks (transcript consistency + fold replay + folded output consistency). | `CpPublicStatement`, `CpPublicInstance`, `CpWitnessBundle`, `CpRelation::check`           |
+| `src/modular/cp_backend_api`                                | Backend-agnostic CP proving API.                                                                              | `CpBackend` trait (`setup/prove/verify`)                                                  |
+| `src/modular/output_backend_api`                            | Backend-agnostic folded-statement proving API.                                                                | `OutputBackend` trait (`setup/prove/verify`)                                              |
+| `src/modular/proof_orchestrator`                            | End-to-end proving/verifying flow combining all crates above.                                                 | `Prover`, `Verifier`, `ProofBundle`, `ProofBundleV2`, `PublicProofBundle`                 |
+| `src/modular/adapter_symphony`                              | Mapping between Symphony current structs and generic crate types.                                             | `From/Into` converters + wiring helpers                                                   |
 | `cp_backend_whir` / `cp_backend_spartan` (optional)         | CP backend implementations.                                                                                   | `CpBackend` impls                                                                         |
 | `output_backend_whir` / `output_backend_spartan` (optional) | Output backend implementations.                                                                               | `OutputBackend` impls                                                                     |
 
@@ -96,9 +116,12 @@ Use a Cargo workspace with the following crates.
 
 ## Assumptions and Defaults
 
-1. Hash default: SHA-256 in `digest_core`; hash abstraction can be added later.
+1. Historical hash default: this plan originally assumed SHA-256 in
+   `digest_core`. Current WHIR public proof authority uses
+   `Poseidon2BabyBear`; SHA remains a compatibility path and must not be
+   proved inside WHIR.
 2. Transcript canonical binary format is workspace-owned and stable by version.
 3. Migration is staged:
   first extract crates without behavior change, then enforce full digest checks in verifier.
-4. Initial target path for this document: `docs/modular_cp_pipeline_plan.md`.
-
+4. Initial target path for this document was `docs/modular_cp_pipeline_plan.md`;
+   it now lives at `docs/past_roadmaps/modular_cp_pipeline_plan.md`.

@@ -2,13 +2,53 @@
 
 > Context document for implementing a Rust crate based on *"Symphony: Scalable SNARKs in the Random Oracle Model from Lattice-Based High-Arity Folding"* by Binyi Chen (Stanford, October 2025). This crate is intended to replace hash-based Merkle tree constructions in ZK repositories.
 
+This document mixes the paper-level crate design with the implementation state
+in this repository. When a section describes the paper target rather than
+current code, it is marked as design or roadmap.
+
+## Current Implementation Status
+
+Implemented and directly exercised by code/tests:
+
+- Cyclotomic ring arithmetic over fixed `D = 64`, including schoolbook and
+  NTT-backed multiplication, tensor/extension-field helpers, and parameter
+  validation in `src/ring/` and `src/params.rs`.
+- Module-Ajtai commitments with random setup and deterministic setup for typed
+  CP/range subrelations in `src/commitment/`.
+- Standard-to-generalized R1CS conversion, generalized R1CS Hadamard checking,
+  GR1CS reductions, monomial/range proofs, and high-arity folding in
+  `src/r1cs/`, `src/rok/`, and `src/folding/`.
+- The commit-and-prove orchestration APIs, including public-only
+  `ProofBundleV2` / `PublicProofBundle` and product-facing
+  `prove_public` / `verify_public` in `src/modular/proof_orchestrator/`.
+- `WhirSnark` as the product-authoritative public verification backend when the
+  `whir` feature is enabled. WHIR public proofs use Poseidon2/BabyBear public
+  digests, and `verify_public` verifies public data only.
+- `SpartanSnark` as a classical compatibility/testing backend. It is not
+  post-quantum and does not advertise authoritative typed CP or typed output, so
+  public-only verification fails closed with Spartan.
+- Explicit accumulation routes beyond the default public verifier, especially
+  the K6a NonZK accumulator route and the SYMBT3-N8 NonZK accumulation route.
+  These routes are opt-in and do not change default `verify_public`. Broader
+  native WHIR oracle work remains supporting performance infrastructure.
+
+Still roadmap or not production-reviewed:
+
+- A production ZK native accumulator route with K5 masking/privacy.
+- Promotion of K6a or N8 accumulation routes into default product
+  `verify_public`.
+- True vector-valued tuple leaves or extension-field tuple packing replacing
+  repeated BabyBear RLC tuple leaves.
+- Claims in the paper about final proof-size/security targets until backed by
+  the repository's release-gate tests, benchmarks, and security review package.
+
 ---
 
 ## 1. What Symphony Is and Why It Replaces Merkle Trees
 
 Symphony is a **folding-based SNARK** that avoids embedding hash functions (random oracles) into SNARK circuits. Existing ZK systems that use Merkle trees pay a heavy price: each hash gadget costs thousands of R1CS constraints, and SNARK-friendly hashes still cost hundreds. Symphony eliminates this by using **lattice-based commitments (Ajtai)** combined with a **high-arity folding scheme** and a **commit-and-prove compiler** that never places Fiat-Shamir hashes inside the proven statement.
 
-**Key properties of the resulting system:**
+**Paper/design target properties of the resulting system:**
 
 - Memory-efficient, parallelizable, streaming-friendly prover
 - Plausibly post-quantum secure
@@ -241,7 +281,13 @@ Checks that each entry of committed vectors lies in the monomial set M.
 
 **Output:** Evaluation point r, commitments with evaluation values
 
-**Protocol:** Single degree-3 sumcheck over K of size n. Prover cost: O(n·k_g) K-additions.
+**Paper protocol:** single degree-3 sumcheck over K of size n. Prover cost:
+O(n·k_g) K-additions.
+
+**Current code:** `src/rok/monomial.rs` uses one degree-4 sumcheck batching
+per-coefficient `c(c-1)(c+1)=0` checks with an at-most-one-nonzero
+sum-of-squares check. This accepts signed monomial representatives used by the
+implemented `Exp` map.
 
 ### 5.3 Approximate Range Proof (Πrg, Figure 2)
 
@@ -269,6 +315,13 @@ k_g = min k such that (d'/2)·(1 + d' + ... + d'^{k-1}) ≥ 9.5·B
 ```
 
 **Relaxation:** Extracted witness may have norm up to `B' = 16·B_{d,k_g}/√30` instead of B. This is acceptable because folding depth is a small constant (1 or 2).
+
+**Current code note:** the standalone `RangeProof` object still carries
+`monomial_vectors` and `projected_values` so the verifier/test path can check
+consistency directly. That is a NonZK implementation artifact. The
+authoritative WHIR typed CP public route enforces its field-native relation
+through backend proofs instead of exposing a CP witness bundle at the public
+boundary.
 
 ---
 
@@ -427,9 +480,8 @@ symphony/
 │   │   ├── extension.rs      // K = Fq^2 extension field
 │   │   └── tensor.rs         // E = K ⊗ Rq tensor ring
 │   ├── commitment/
-│   │   ├── mod.rs            // Ajtai commitment trait + impl
-│   │   ├── params.rs         // Parameter generation, MSIS matrix sampling
-│   │   └── opening.rs        // Strict, relaxed, fine-grained verification
+│   │   ├── mod.rs            // Ajtai params, commit, deterministic setup
+│   │   └── opening.rs        // Opening helpers and strict verification
 │   ├── decomposition/
 │   │   ├── mod.rs            // Gadget decomposition
 │   │   └── monomial.rs       // Monomial embedding, Exp(), table polynomial
@@ -467,12 +519,17 @@ symphony/
 │   │       │   batched_cp_context.rs, core_protocol.rs, output.rs
 │   │       ├── symbt3_columns.rs, symbt3_verify.rs
 │   │       ├── field.rs, serialize.rs
+│   │       └── native_oracles/ // Native WHIR oracle infrastructure and explicit N8 accumulation route
 │   ├── r1cs/
 │   │   ├── mod.rs            // R1CS relation definition
 │   │   ├── generalized.rs    // Generalized committed R1CS (Eq. 38)
 │   │   └── conversion.rs     // Standard → generalized R1CS conversion
 │   ├── modular/
-│   │   └── batched_cp/        // Structured batched CP and SYMBT3 split sections
+│   │   ├── proof_orchestrator/ // ProofBundle, prove_public, verify_public
+│   │   ├── public_proof.rs     // Versioned public proof envelopes
+│   │   ├── digest_core/        // SHA-256 and Poseidon2/BabyBear public digests
+│   │   ├── cp_* / output_*     // Backend and relation APIs
+│   │   └── batched_cp/         // Structured batched CP and SYMBT3 split sections
 │   └── params.rs             // Global parameter struct (Table 1)
 └── benches/
     └── folding.rs            // Benchmarks for commitment + folding
@@ -570,12 +627,24 @@ pub trait BackendSnark {
 }
 ```
 
-Implemented backends:
+Implemented backends and current authority status:
 
-- **`WhirSnark`** *(feature = `whir`)*: Post-quantum, Merkle-based WHIR PCS from whir-p3 over BabyBear. Succinct proofs.
-- **`SpartanSnark`**: R1CS-to-sumcheck + Pedersen + IPA over Ristretto. Not post-quantum.
-- **`SumcheckSnark`**: Demo backend with transcript binding checks.
-- **`DummySnark`**: Trivial backend for API testing.
+- **`WhirSnark`** *(feature = `whir`)*: post-quantum, Merkle-based WHIR PCS
+  over BabyBear with Poseidon2 public digest semantics. It advertises
+  authoritative typed CP and typed output for public verification.
+- **`SpartanSnark`**: R1CS-to-sumcheck + Pedersen + IPA over Ristretto. Not
+  post-quantum. It has typed CP/output hooks for compatibility and tests but
+  does not advertise public authority.
+- **`SumcheckSnark`**: testing/demo backend with transcript binding checks; not
+  a product public verifier backend.
+- **`DummySnark`**: trivial backend for API wiring tests only.
+
+The trait has grown beyond the minimal sketch above. Current code also includes
+backend-selected public digest schemes, typed CP relation descriptions,
+authority flags, typed CP/output proving and verification hooks, structured
+batched-CP hooks, and SYMBT3 development hooks. Product public verification
+fails closed unless the selected CP and output backends advertise the required
+authoritative typed paths.
 
 Possible external backends:
 
@@ -613,11 +682,17 @@ The dominant prover cost is `κ·n·ℓ_np` multiplications between arbitrary Rq
 
 ### 11.3 Streaming Prover
 
-The prover must support streaming to be memory-efficient:
+Paper target:
 
 - **Commitment phase:** Process witnesses one at a time, accumulate A·f_ℓ
 - **Sumcheck phase:** Use the multi-pass streaming algorithm (2 + log log(n) passes)
 - **Folding phase:** Stream witnesses again, accumulate β_ℓ · f_ℓ
+
+Current code has `src/folding/streaming.rs` infrastructure, but the main
+`generate_proof` / modular proof orchestrator path still materializes the
+statement list, folding proof, witness bundle, and typed folded-output witness.
+Do not cite the production path as fully streaming without separate benchmark
+and memory evidence.
 
 ### 11.4 Random Projection Matrix
 
@@ -675,16 +750,23 @@ MSIS parameters are set for 117-bit security using the lattice estimator. Both |
 
 ## 13. Open Problems and Caveats
 
-1. **Production hardening remains open.** The crate includes end-to-end implementations with two concrete backends (Spartan, WHIR); deploying in production still requires security audits and backend-specific benchmarks.
+1. **Production hardening remains open.** The crate includes end-to-end implementations with two concrete backends (Spartan, WHIR); deploying in production still requires the release-gate tests, security review package, and backend-specific benchmarks.
 2. **Approximate range proofs** mean extracted witnesses have slightly larger norms (B' vs B). This is fine for depth ≤ 2 but requires care if extending to deeper folding.
 3. **Concrete probability analysis for folded witness norms** is left to future work (Remark 4.2). The worst-case bound (Eq. 50) is conservative.
 4. **Two-layer folding** requires the structured MSIS matrix assumption (Eq. 56), which is slightly stronger than standard MSIS.
 5. **One-pass streaming** for the non-recursive setting remains an open problem. Current algorithm requires 2 + log log(n) passes.
-6. **WHIR output binding is implemented for the R1CS backend path.** The output verifier now checks that the claimed `Az(r*)`, `Bz(r*)`, and `Cz(r*)` values are derived from the same WHIR-committed assignment polynomial `z` using three sparse linear-binding sumchecks plus a constant number of WHIR openings. This keeps the verifier on the intended verifier-centric path from the WHIR/Symphony cost model, while pushing witness-sized work to the prover.
-7. **Public proof v2 is the canonical verifier boundary.** `PublicProofBundle` / `PublicSymphonyProof` contain only public inputs supplied out-of-band, public FS commitments/digests, the typed folded output instance, and backend CP/output proofs. The product APIs are `prove_public` / `verify_public`; `prove_v2` / `verify_v2` remain compatibility aliases. The public-boundary digest scheme is backend-selected: SHA-256 remains the compatibility default, and WHIR public proofs use Poseidon2/BabyBear. See `docs/public_proof_v2.md`.
+6. **WHIR output binding is implemented for the R1CS backend path.** The output verifier checks that the claimed `Az(r*)`, `Bz(r*)`, and `Cz(r*)` values are derived from the same WHIR-committed assignment polynomial `z` using sparse linear-binding checks plus WHIR openings. This keeps the verifier on the intended verifier-centric path from the WHIR/Symphony cost model, while pushing witness-sized work to the prover.
+7. **Public proof v2 is the canonical verifier boundary.** `PublicProofBundle` / `PublicSymphonyProof` contain only public inputs supplied out-of-band, public FS commitments/digests, the typed folded output instance, and backend CP/output proofs. The product APIs are `prove_public` / `verify_public`; `prove_v2` / `verify_v2` remain compatibility aliases. The public-boundary digest scheme is backend-selected: SHA-256 remains the compatibility default, and WHIR public proofs use Poseidon2/BabyBear. See `docs/past_roadmaps/public_proof_v2.md`.
 8. **WHIR typed CP is authoritative for public verification.** WHIR public verification succeeds through `verify_public` without witness-side data. The typed CP proof enforces commitment-opening consistency, fold replay, challenge digest and beta binding, folded-output consistency, original Ajtai openings, and original R1CS witness algebra. Legacy/full `verify` remains available as a compatibility/debug path.
 9. **CP-R1CS q-wrap status.** Phase-A folded commitment/public-input q-wraps are range-constrained in the WHIR CP-R1CS encoding so they cannot be used as free BabyBear slack for forged folded outputs. Phase-B embedded Hadamard rows remain part of the legacy CP-R1CS core, while authoritative public CP verification is provided by the full typed CP R1CS.
 10. **WHIR security level** defaults to 100 bits. Tests that need faster parameters should opt into explicit test-only settings rather than weakening the default backend configuration.
+11. **Accumulation-route status.** K6a is the current explicit full-workload
+    NonZK accumulation route, and N8 is the explicit opt-in integrated NonZK
+    accumulation route that uses one WHIR proof over K6a semantic rows,
+    tuple-RLC semantic rows, and transition/binding semantic rows. Both remain
+    outside default `verify_public`, and neither is a ZK/privacy route. Broader
+    native-oracle work remains supporting performance infrastructure rather than
+    part of the primary report-facing route evolution.
 
 ---
 

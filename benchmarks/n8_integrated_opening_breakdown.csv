@@ -1,0 +1,8 @@
+k,k6a_source_rows,k6a_semantic_rows,tuple_rlc_semantic_rows,transition_binding_rows,padding_metadata_link_rows,unbatched_opening_count,batched_opening_count,k6a_source_unbatched_opening_count,k6a_source_batched_opening_count,semantic_unbatched_opening_count,semantic_batched_opening_count,batching_soundness_bits
+1,52,22,20,8,9,102,4,52,1,50,3,31
+2,52,22,20,8,9,102,4,52,1,50,3,31
+4,52,22,20,8,9,102,4,52,1,50,3,31
+8,56,22,20,8,9,106,4,56,1,50,3,31
+16,60,22,20,8,9,110,4,60,1,50,3,31
+32,64,22,20,8,9,114,4,64,1,50,3,31
+64,68,22,20,8,9,118,4,68,1,50,3,31

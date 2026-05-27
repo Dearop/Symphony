@@ -1,0 +1,18 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.55\linewidth,
+  grid=both,
+  xmode=log,
+  log basis x=2,
+  xtick=data,
+  xlabel={$k$},
+  ylabel={time (ms)},
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=2}
+]
+\addplot+[mark=*] coordinates {(1,24.979) (2,32.787) (4,50.262) (8,81.866) (16,151.373) (32,280.31) (64,558.118)};
+\addlegendentry{N8 prove}
+\addplot+[mark=*] coordinates {(1,14.67) (2,17.446) (4,20.378) (8,29.977) (16,44.832) (32,69.956) (64,122.412)};
+\addlegendentry{N8 verify}
+\end{axis}
+\end{tikzpicture}

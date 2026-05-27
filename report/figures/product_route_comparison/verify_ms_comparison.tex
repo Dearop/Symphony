@@ -1,0 +1,20 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.55\linewidth,
+  grid=both,
+  xmode=log,
+  log basis x=2,
+  xtick=data,
+  xlabel={$k$},
+  ylabel={verifier time (ms)},
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=2},
+  ymode=log,
+  log basis y=10
+]
+\addplot+[mark=*] coordinates {(1,1896.28) (2,4024.32) (4,9658.13) (8,30894)};
+\addlegendentry{Product verify}
+\addplot+[mark=*] coordinates {(1,17.2998) (2,19.1014) (4,21.9878) (8,29.5177)};
+\addlegendentry{K6a verify}
+\end{axis}
+\end{tikzpicture}

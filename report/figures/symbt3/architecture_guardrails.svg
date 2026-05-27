@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+<rect width="100%" height="100%" fill="white"/>
+<text x="450.0" y="30" font-size="18" text-anchor="middle">Architecture guardrails</text>
+<line x1="80" y1="450" x2="720" y2="450" stroke="black"/>
+<line x1="80" y1="60" x2="80" y2="450" stroke="black"/>
+<polyline points="80.00,60.00 186.67,60.00 293.33,60.00 400.00,60.00 506.67,60.00 613.33,60.00 720.00,60.00" fill="none" stroke="#1f77b4" stroke-width="2"/>
+<text x="730" y="60" font-size="12" fill="#1f77b4">top_level_whir_proof_count</text>
+<polyline points="80.00,450.00 186.67,450.00 293.33,450.00 400.00,450.00 506.67,450.00 613.33,450.00 720.00,450.00" fill="none" stroke="#d62728" stroke-width="2"/>
+<text x="730" y="80" font-size="12" fill="#d62728">family_columnar_subproof_count</text>
+<polyline points="80.00,60.00 186.67,60.00 293.33,60.00 400.00,60.00 506.67,60.00 613.33,60.00 720.00,60.00" fill="none" stroke="#2ca02c" stroke-width="2"/>
+<text x="730" y="100" font-size="12" fill="#2ca02c">backend_table_count</text>
+<polyline points="80.00,450.00 186.67,450.00 293.33,450.00 400.00,450.00 506.67,450.00 613.33,450.00 720.00,450.00" fill="none" stroke="#9467bd" stroke-width="2"/>
+<text x="730" y="120" font-size="12" fill="#9467bd">message_to_trace_binding_count</text>
+</svg>

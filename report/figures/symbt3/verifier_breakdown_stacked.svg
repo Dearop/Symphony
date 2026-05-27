@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+<rect width="100%" height="100%" fill="white"/>
+<text x="500.0" y="30" font-size="18" text-anchor="middle">Verifier time breakdown</text>
+<line x1="80" y1="490" x2="740" y2="490" stroke="black"/>
+<line x1="80" y1="60" x2="80" y2="490" stroke="black"/>
+<rect x="101.21" y="461.97" width="51.86" height="28.03" fill="#1f77b4"/>
+<rect x="101.21" y="461.97" width="51.86" height="0.00" fill="#ff7f0e"/>
+<rect x="101.21" y="461.93" width="51.86" height="0.03" fill="#2ca02c"/>
+<rect x="101.21" y="397.36" width="51.86" height="64.57" fill="#d62728"/>
+<rect x="101.21" y="397.36" width="51.86" height="0.00" fill="#9467bd"/>
+<rect x="101.21" y="397.36" width="51.86" height="0.00" fill="#8c564b"/>
+<rect x="101.21" y="397.36" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="101.21" y="397.35" width="51.86" height="0.01" fill="#7f7f7f"/>
+<rect x="101.21" y="397.35" width="51.86" height="0.00" fill="#17becf"/>
+<text x="127.14" y="525" font-size="12" text-anchor="middle">1</text>
+<rect x="195.50" y="456.75" width="51.86" height="33.25" fill="#1f77b4"/>
+<rect x="195.50" y="456.71" width="51.86" height="0.04" fill="#2ca02c"/>
+<rect x="195.50" y="382.28" width="51.86" height="74.43" fill="#d62728"/>
+<rect x="195.50" y="382.28" width="51.86" height="0.00" fill="#9467bd"/>
+<rect x="195.50" y="382.28" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="195.50" y="382.27" width="51.86" height="0.01" fill="#7f7f7f"/>
+<rect x="195.50" y="382.27" width="51.86" height="0.00" fill="#bcbd22"/>
+<rect x="195.50" y="382.27" width="51.86" height="0.00" fill="#17becf"/>
+<text x="221.43" y="525" font-size="12" text-anchor="middle">2</text>
+<rect x="289.79" y="457.33" width="51.86" height="32.67" fill="#1f77b4"/>
+<rect x="289.79" y="457.30" width="51.86" height="0.04" fill="#2ca02c"/>
+<rect x="289.79" y="374.96" width="51.86" height="82.33" fill="#d62728"/>
+<rect x="289.79" y="374.96" width="51.86" height="0.00" fill="#9467bd"/>
+<rect x="289.79" y="374.96" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="289.79" y="374.95" width="51.86" height="0.01" fill="#7f7f7f"/>
+<rect x="289.79" y="374.95" width="51.86" height="0.00" fill="#bcbd22"/>
+<rect x="289.79" y="374.95" width="51.86" height="0.00" fill="#17becf"/>
+<text x="315.71" y="525" font-size="12" text-anchor="middle">4</text>
+<rect x="384.07" y="452.36" width="51.86" height="37.64" fill="#1f77b4"/>
+<rect x="384.07" y="452.36" width="51.86" height="0.00" fill="#ff7f0e"/>
+<rect x="384.07" y="452.32" width="51.86" height="0.04" fill="#2ca02c"/>
+<rect x="384.07" y="351.66" width="51.86" height="100.66" fill="#d62728"/>
+<rect x="384.07" y="351.66" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="384.07" y="351.65" width="51.86" height="0.01" fill="#7f7f7f"/>
+<rect x="384.07" y="351.65" width="51.86" height="0.00" fill="#bcbd22"/>
+<rect x="384.07" y="351.65" width="51.86" height="0.00" fill="#17becf"/>
+<text x="410.00" y="525" font-size="12" text-anchor="middle">8</text>
+<rect x="478.36" y="446.49" width="51.86" height="43.51" fill="#1f77b4"/>
+<rect x="478.36" y="446.45" width="51.86" height="0.05" fill="#2ca02c"/>
+<rect x="478.36" y="308.28" width="51.86" height="138.17" fill="#d62728"/>
+<rect x="478.36" y="308.28" width="51.86" height="0.00" fill="#9467bd"/>
+<rect x="478.36" y="308.28" width="51.86" height="0.00" fill="#8c564b"/>
+<rect x="478.36" y="308.28" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="478.36" y="308.25" width="51.86" height="0.02" fill="#7f7f7f"/>
+<rect x="478.36" y="308.25" width="51.86" height="0.00" fill="#bcbd22"/>
+<rect x="478.36" y="308.25" width="51.86" height="0.00" fill="#17becf"/>
+<text x="504.29" y="525" font-size="12" text-anchor="middle">16</text>
+<rect x="572.64" y="427.37" width="51.86" height="62.63" fill="#1f77b4"/>
+<rect x="572.64" y="427.32" width="51.86" height="0.05" fill="#2ca02c"/>
+<rect x="572.64" y="214.13" width="51.86" height="213.19" fill="#d62728"/>
+<rect x="572.64" y="214.13" width="51.86" height="0.00" fill="#9467bd"/>
+<rect x="572.64" y="214.13" width="51.86" height="0.00" fill="#8c564b"/>
+<rect x="572.64" y="214.13" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="572.64" y="214.09" width="51.86" height="0.04" fill="#7f7f7f"/>
+<rect x="572.64" y="214.09" width="51.86" height="0.00" fill="#bcbd22"/>
+<rect x="572.64" y="214.08" width="51.86" height="0.00" fill="#17becf"/>
+<text x="598.57" y="525" font-size="12" text-anchor="middle">32</text>
+<rect x="666.93" y="422.51" width="51.86" height="67.49" fill="#1f77b4"/>
+<rect x="666.93" y="422.46" width="51.86" height="0.05" fill="#2ca02c"/>
+<rect x="666.93" y="60.08" width="51.86" height="362.38" fill="#d62728"/>
+<rect x="666.93" y="60.08" width="51.86" height="0.00" fill="#9467bd"/>
+<rect x="666.93" y="60.08" width="51.86" height="0.00" fill="#e377c2"/>
+<rect x="666.93" y="60.00" width="51.86" height="0.08" fill="#7f7f7f"/>
+<rect x="666.93" y="60.00" width="51.86" height="0.00" fill="#bcbd22"/>
+<rect x="666.93" y="60.00" width="51.86" height="0.00" fill="#17becf"/>
+<text x="692.86" y="525" font-size="12" text-anchor="middle">64</text>
+<text x="750" y="60" font-size="11" fill="#1f77b4">verify_whir_pcs_ms</text>
+<text x="750" y="78" font-size="11" fill="#ff7f0e">verify_transcript_ms</text>
+<text x="750" y="96" font-size="11" fill="#2ca02c">verify_sumcheck_rounds_ms</text>
+<text x="750" y="114" font-size="11" fill="#d62728">verify_final_constraint_eval_ms</text>
+<text x="750" y="132" font-size="11" fill="#9467bd">verify_final_eval_manifest_ms</text>
+<text x="750" y="150" font-size="11" fill="#8c564b">verify_final_eval_source_r1cs_ms</text>
+<text x="750" y="168" font-size="11" fill="#e377c2">verify_final_eval_folded_boundary_ms</text>
+<text x="750" y="186" font-size="11" fill="#7f7f7f">verify_final_eval_product_residual_ms</text>
+<text x="750" y="204" font-size="11" fill="#bcbd22">verify_final_eval_ajtai_ms</text>
+<text x="750" y="222" font-size="11" fill="#17becf">verify_final_eval_range_ms</text>
+<text x="750" y="240" font-size="11" fill="#393b79">verify_final_eval_message_view_ms</text>
+</svg>

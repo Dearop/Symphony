@@ -34,7 +34,7 @@
 //!   whir_scaling/folding_only_vs_k          – backend-independent high-arity folding only
 //!   whir_scaling/pipeline_whir_vs_k         – full pipeline prove+verify with WHIR vs k
 //!   whir_scaling/modular_pipeline_whir_vs_k – split CP/output WHIR backends vs k
-//!   whir_scaling/public_verify_v2_vs_k      – public-only WHIR+WHIR verification vs k
+//!   whir_scaling/public_verify_v2_vs_k      – authoritative product public verifier vs k
 //!   whir_scaling/typed_cp_prove_only_vs_k   – typed CP backend proving only
 //!   whir_scaling/typed_cp_verify_only_vs_k  – typed CP backend verification only
 //!   whir_scaling/typed_output_verify_only_vs_k – typed output backend verification only
@@ -48,13 +48,13 @@
 //!   whir_scaling/batched_cp_semantic_family_columnar_v2_vs_k – SYMBT2F family-local residual skeleton
 //!   whir_scaling/batched_cp_semantic_family_columnar_poseidon_v2_vs_k – SYMBT2F Poseidon/BabyBear family-local skeleton
 //!   whir_scaling/public_proof_batched_cp_size_vs_k – structured batched CP public-boundary size only
-//!   whir_scaling/symbt3_research_vs_product_verify_vs_k – opt-in side-by-side product verify_public vs SYMBT3 research-authority-candidate verify
+//!   whir_scaling/symbt3_research_vs_product_verify_vs_k – opt-in side-by-side product `verify_public` vs SYMBT3 research-authority-candidate verify
 //!   whir_scaling/symbt3_accumulator_research_vs_k – K4 NonZK research public accumulator API vs k
-//!   whir_scaling/symbt3_accumulator_authority_vs_k – K6a opt-in NonZK integrity product route vs k
-//!   whir_scaling/product_route_comparison_vs_k – K6b side-by-side monolithic product vs K6a NonZK integrity product route
+//!   whir_scaling/symbt3_accumulator_authority_vs_k – K6a explicit opt-in NonZK integrity route vs k
+//!   whir_scaling/product_route_comparison_vs_k – K6b side-by-side authoritative product baseline vs K6a explicit route
 //!   whir_scaling/symbt3_native_accumulator_authority_vs_k – N7 smoke profile, not full accumulator workload
-//!   whir_scaling/symbt3_native_accumulator_authority_full_vs_k – N7b full K6a workload native NonZK authority candidate
-//!   whir_scaling/symbt3_n8_integrated_authority_vs_k – N8 integrated one-WHIR NonZK research authority candidate
+//!   whir_scaling/symbt3_native_accumulator_authority_full_vs_k – N7b full K6a workload native NonZK wrapper route
+//!   whir_scaling/symbt3_n8_integrated_authority_vs_k – N8 explicit integrated same-shape NonZK accumulation route
 
 use std::collections::BTreeMap;
 use std::fs::{create_dir_all, File};
@@ -4218,15 +4218,16 @@ fn bench_symbt3_accumulator_authority_vs_k(c: &mut Criterion) {
     let ks = public_verify_ks();
     let base_fixture = public_whir_fixture(1);
     eprintln!(
-        "[symbt3_accumulator_authority_vs_k] k_values={ks:?} non_zk_integrity_product_opt_in=true monolithic_fallback_used=false"
+        "[symbt3_accumulator_authority_vs_k] route=K6a_explicit_opt_in_non_zk_integrity k_values={ks:?} product_route_selected=true default_verify_public_route=false monolithic_fallback_used=false"
     );
 
     for &k in &ks {
         let measurement = symbt3_authority_route_measurement(&base_fixture, k);
         let row = &measurement.csv;
         eprintln!(
-            "[symbt3_accumulator_authority_vs_k k={k}] verify={} profile=K6a_NonZK_integrity_product \
-             route_kind=Symbt3AccumulatorNonZkIntegrity product_route_selected=true \
+            "[symbt3_accumulator_authority_vs_k k={k}] verify={} route=K6a_explicit_opt_in_non_zk_integrity \
+             profile=K6a_NonZK_integrity_product route_kind=Symbt3AccumulatorNonZkIntegrity \
+             product_route_selected=true default_verify_public_route=false \
              monolithic_fallback_used=false proof_bytes={} public_statement_bytes={} \
              prove_ms={:.3} verify_ms={:.3} whir_num_vars={} oracle_len={} \
              opened_field_elements={} sumcheck_rounds={} transcript_squeezes={} \
@@ -4320,7 +4321,7 @@ fn bench_product_route_comparison_vs_k(c: &mut Criterion) {
     let ks = product_route_comparison_ks();
     let symbt3_base_fixture = public_whir_fixture(1);
     eprintln!(
-        "[product_route_comparison_vs_k] k_values={ks:?} monolithic=current_product_authoritative_typed_cp symbt3=explicit_opt_in_non_zk_integrity not_default_product_route=true"
+        "[product_route_comparison_vs_k] k_values={ks:?} baseline=authoritative_product_public_verifier symbt3=K6a_explicit_opt_in_non_zk_integrity default_verify_public_route_vs_explicit_route=true"
     );
 
     for &k in &ks {
@@ -4350,7 +4351,8 @@ fn bench_product_route_comparison_vs_k(c: &mut Criterion) {
             symbt3_monolithic_fallback_used: symbt3.csv.monolithic_fallback_used,
         };
         eprintln!(
-            "[product_route_comparison_vs_k k={k}] monolithic_verify_ms={:.3} \
+            "[product_route_comparison_vs_k k={k}] baseline_route=authoritative_product_public_verifier \
+             explicit_route=K6a_explicit_opt_in_non_zk_integrity monolithic_verify_ms={:.3} \
              symbt3_verify_ms={:.3} verify_speedup={:.3} monolithic_proof_bytes={} \
              symbt3_proof_bytes={} proof_size_ratio={:.3} \
              monolithic_public_statement_bytes={} symbt3_public_statement_bytes={} \

@@ -1,28 +1,34 @@
 # Symphony
 
-**Scalable lattice-based SNARKs via high-arity folding — no hash-in-circuit overhead.**
+**Scalable lattice-based SNARKs via high-arity folding, with public verifier
+work currently centered on authoritative WHIR typed CP.**
 
 Symphony is a Rust implementation of the folding-based SNARK construction from
 [*"Symphony: Scalable SNARKs in the Random Oracle Model from Lattice-Based High-Arity Folding"*](https://eprint.iacr.org/2025/) (Binyi Chen, Stanford, 2025).
 
-It replaces Merkle-tree commitments and hash-in-circuit gadgets with **module-Ajtai lattice commitments** and a **commit-and-prove compiler** that never embeds Fiat-Shamir hashes into the proven statement.
+It replaces witness Merkle-tree commitments with **module-Ajtai lattice
+commitments** and a **commit-and-prove compiler**. The current WHIR public
+verifier does not prove SHA-256 in circuit; its public path uses
+field-native Poseidon2/BabyBear digest binding inside the authoritative typed
+CP relation.
 
 ## Current status
 
 - Core Symphony pipeline is implemented end-to-end in Rust.
 - Standalone CP-SNARK module is implemented (`src/cp_snark/mod.rs`).
 - Backend SNARK is pluggable through `BackendSnark` (demo backends: `DummySnark`, `SumcheckSnark`; concrete backends: `SpartanSnark`, `WhirSnark`).
-- **WHIR backend** (feature-gated `whir`): post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from [whir-p3](https://github.com/tcoratger/whir-p3) / Plonky3 over BabyBear. Succinct proofs via Poseidon2-based Merkle commitment + opening — no witness table in proof.
+- **WHIR backend** (feature-gated `whir`): post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from [whir-p3](https://github.com/tcoratger/whir-p3) / Plonky3 over BabyBear. Succinct proofs via Poseidon2-based Merkle commitment + opening, with no witness table in the proof.
 - **Spartan backend**: R1CS-to-sumcheck reduction with Pedersen commitments and IPA over Ristretto (curve25519-dalek).
-- **Privacy-preserving v2 proof boundary**: `SymphonyProofV2` carries only backend proofs, public Fiat-Shamir commitments/digests, and the folded output instance. Public-only verification fails closed unless a backend advertises authoritative typed CP and output support. WHIR typed output is authoritative for the final folded R1CS statement; WHIR typed CP remains the open security milestone.
-- **Field-native typed CP specification**: `CpFieldRelation` defines the Poseidon2/BabyBear-friendly CP checks that WHIR must eventually prove, without proving SHA-256 inside WHIR.
-- **Modular CP pipeline** (`src/modular/`): backend-agnostic, split-backend prover/verifier architecture with `ModularProver`/`ModularVerifier` and `ProofBundle` / `ProofBundleV2`, decoupling transcript, digest, folding, and backend concerns into reusable components.
+- **Public verifier boundary**: `prove_public` / `verify_public` over `SymphonyProofV2` / `PublicSymphonyProof` and `ProofBundleV2` / `PublicProofBundle` is the product public-only route. `prove_v2` / `verify_v2` are compatibility aliases; legacy `prove` / `verify` remain full/private compatibility paths.
+- **WHIR typed CP authority**: WHIR public proofs use `Poseidon2BabyBear` public digests, `WhirSnark::has_authoritative_typed_cp()` is true, and WHIR+WHIR `verify_public` succeeds using public inputs, public FS commitments, public roots/digests, the folded output, and backend proofs only.
+- **Typed CP audit and performance status**: the authoritative WHIR typed CP relation has row-block audit reporting and negative coverage. Public verification is currently an authoritative linear typed-CP baseline; K6a is the current explicit accumulation route, and N8 is the integrated next-step accumulation route, neither of which replaces the default `verify_public` route.
+- **Modular CP pipeline** (`src/modular/`): backend-agnostic, split-backend prover/verifier architecture with `ModularProver`/`ModularVerifier`, public proof envelopes, structured batched CP/SYMBT development contexts, and decoupled transcript, digest, folding, CP, output, and backend APIs.
 - Audit-driven robustness fixes are integrated across ring/FS/folding/ROK/sumcheck layers.
 - Integration test suite is split into focused files for maintainability and debugging.
 
 ## Key properties
 
-- **No hash-in-circuit** — the SNARK statement is free of random-oracle evaluations, eliminating the dominant cost in existing folding schemes.
+- **No SHA-256-in-WHIR typed CP** — SHA remains compatibility-only for non-WHIR and legacy/full verifier paths; WHIR public verification uses Poseidon2/BabyBear digest semantics.
 - **Plausibly post-quantum core** — the folding and commitment layers rely on Module-SIS over cyclotomic rings; the WHIR backend uses hash-based polynomial commitments.
 - **Streaming prover** — memory-efficient, multi-pass prover architecture.
 - **High-arity folding** — folds an arbitrary number of R1CS statements in a single shot (not binary).
@@ -52,7 +58,7 @@ symphony/
 │   │   ├── challenge.rs   #   Folding challenge set S ⊂ Rq
 │   │   └── digest.rs      #   Fold-root digest computation
 │   ├── r1cs/              # Sparse R1CS matrices, generalized committed R1CS, Kronecker expansion
-│   ├── fiat_shamir/       # SHA-256 transcript + HashCommitment FS commitment scheme
+│   ├── fiat_shamir/       # SHA-256 transcript + legacy HashCommitment FS commitment scheme
 │   ├── snark/             # Top-level SNARK pipeline
 │   │   ├── mod.rs         #   BackendSnark trait, SymphonyProver/Verifier, SymphonyProof/V2, DummySnark
 │   │   ├── prover.rs      #   Full proof generation orchestration
@@ -77,11 +83,13 @@ symphony/
 │   │       ├── output.rs   #     Typed output proof helpers
 │   │       ├── symbt3_columns.rs # SYMBT3 algebraic columns and claims
 │   │       ├── symbt3_verify.rs # SYMBT3 verifier profile checks
+│   │       ├── native_oracles/ # Native multi-oracle, accumulator, and N8 NonZK routes
 │   │       ├── field.rs   #     BabyBear byte packing and i64 field conversions
 │   │       └── serialize.rs #   WhirContext serialization
 │   ├── cp_snark/          # Standalone commit-and-prove SNARK API (generic over backend + FS commitment)
 │   ├── modular/           # Reusable modular CP pipeline components
-│   │   ├── batched_cp/        # Structured batched CP and SYMBT3 split sections
+│   │   ├── batched_cp.rs      # Structured batched CP, SYMBTC/SYMBT2*, and SYMBT3 facade
+│   │   ├── batched_cp/        # Batched CP layouts, contexts, evaluators, and serialization
 │   │   ├── transcript_core/   # Canonical transcript schema/codec and challenge derivation
 │   │   ├── digest_core/       # Digest/root helpers for transcript and fold bindings
 │   │   ├── folding_core/      # Folding-domain traits and adapters
@@ -89,6 +97,7 @@ symphony/
 │   │   ├── cp_backend_api/    # CP backend trait abstraction
 │   │   ├── output_backend_api/# Output backend trait abstraction
 │   │   ├── proof_orchestrator/# End-to-end split-backend prover/verifier (ModularProver/Verifier)
+│   │   ├── public_proof.rs    # Versioned public and compressed proof envelopes
 │   │   └── adapter_symphony/  # Compatibility mapping with legacy SymphonyProof
 │   ├── params.rs          # Global parameters (Table 1 of the paper)
 │   └── lib.rs             # Crate root and public exports
@@ -114,12 +123,17 @@ symphony/
 │   └── whir_scaling.rs    # WHIR backend scaling benchmark (requires feature = "whir")
 └── docs/
     ├── symphony_crate_spec.md    # Full implementation specification
-    ├── spartan.md                # Spartan backend documentation
-    ├── whir.md                   # WHIR backend documentation
-    ├── public_proof_v2.md        # Canonical public verifier proof boundary
-    ├── linear_verifier_spec.md   # Linear verifier specification
-    ├── lin_verif_design.md       # Linear verifier design notes
-    └── modular_cp_pipeline_plan.md # Modular pipeline planning document
+    ├── protocols/
+    │   ├── spartan.md            # Spartan backend documentation
+    │   ├── whir.md               # WHIR backend, typed CP, SYMBT3/N8 status
+    │   └── n8_accumulation_relation.md # N8 explicit NonZK accumulation boundary
+    ├── whir_public_security_review.md  # Public verifier claim matrix
+    ├── whir_public_performance_north_star_plan.md # Public verifier performance roadmap
+    ├── symbt3_multi_oracle_whir_accumulator_roadmap.md
+    └── past_roadmaps/
+        ├── public_proof_v2.md    # Public proof envelope/boundary spec
+        ├── whir_typed_cp_authority_plan.md
+        └── modular_cp_pipeline_plan.md
 ```
 
 ## Quick start
@@ -192,8 +206,8 @@ let (prover, verifier) = SymphonyProver::<MySnark>::setup(params);
 ```
 
 Included backends:
-- **`WhirSnark`** *(feature = `whir`)* — Post-quantum Merkle-based polynomial commitment using [whir-p3](https://github.com/tcoratger/whir-p3) and Plonky3 over BabyBear (p = 2^31 − 2^27 + 1). Uses Poseidon2 for Merkle hashing/compression and WHIR's polynomial commitment scheme. Poseidon2 parameters are derived deterministically from the full 32-byte SHA-256 setup seed via `ChaCha20Rng`. See [`docs/whir.md`](docs/whir.md).
-- **`SpartanSnark`** — R1CS-to-sumcheck reduction with Pedersen commitments and Bulletproofs-style IPA over Ristretto (curve25519-dalek). See [`docs/spartan.md`](docs/spartan.md).
+- **`WhirSnark`** *(feature = `whir`)* — Post-quantum Merkle-based polynomial commitment using [whir-p3](https://github.com/tcoratger/whir-p3) and Plonky3 over BabyBear (p = 2^31 − 2^27 + 1). Uses Poseidon2 for Merkle hashing/compression and WHIR's polynomial commitment scheme. Poseidon2 parameters are derived deterministically from the full 32-byte SHA-256 setup seed via `ChaCha20Rng`. WHIR is the authoritative typed CP and typed output backend for the product public verifier. See [`docs/protocols/whir.md`](docs/protocols/whir.md).
+- **`SpartanSnark`** — R1CS-to-sumcheck reduction with Pedersen commitments and Bulletproofs-style IPA over Ristretto (curve25519-dalek). See [`docs/protocols/spartan.md`](docs/protocols/spartan.md).
 - **`SumcheckSnark`** — Demo backend with transcript binding and tamper-detection checks.
 - **`DummySnark`** — Trivial backend for API testing (no soundness).
 
@@ -239,12 +253,14 @@ use symphony::{ModularProver, ModularVerifier, ProofBundle, PublicProofBundle};
 
 Key components:
 - **`ModularProver` / `ModularVerifier`** — end-to-end prover and verifier that orchestrate the full pipeline using separate CP and output backends.
-- **`ProofBundle` / `PublicProofBundle`** — unified proof containers produced by the modular pipeline. `PublicProofBundle` is the canonical public-only verifier boundary; `ProofBundleV2` remains as a compatibility name. See [`docs/public_proof_v2.md`](docs/public_proof_v2.md).
+- **`ProofBundle` / `ProofBundleV2` / `PublicProofBundle`** — proof containers produced by the modular pipeline. `ProofBundleV2` is the underlying public-boundary type; `PublicProofBundle` is the product public-only alias. See [`docs/past_roadmaps/public_proof_v2.md`](docs/past_roadmaps/public_proof_v2.md).
+- **`public_proof`** — versioned `PublicProofEnvelope` plus the compressed-envelope roadmap wire shape.
 - **`transcript_core`** — canonical transcript schema, codec, and challenge derivation.
 - **`digest_core`** — digest and root helpers for transcript and fold bindings.
 - **`folding_core`** — folding-domain traits and adapters.
 - **`cp_relation_core`** — CP public/witness model and relation checks.
 - **`cp_backend_api` / `output_backend_api`** — trait abstractions for pluggable CP and output backends.
+- **`batched_cp`** — structured same-shape batched CP foundation, SYMBTC1/SYMBTC2/SYMBT2C/SYMBT2F development contexts, and SYMBT3 public/layout types. These routes do not replace product `verify_public` unless explicitly selected by their opt-in NonZK APIs.
 - **`adapter_symphony`** — compatibility mapping with the legacy `SymphonyProof` format.
 
 ## Feature flags
@@ -258,12 +274,40 @@ cargo build                     # default (Spartan, DummySnark, SumcheckSnark)
 cargo build --features whir     # also builds the WHIR backend
 ```
 
+## WHIR public verifier benchmarks
+
+The headline public verifier benchmark measures `verify_public` only. Proof
+construction, relation profiling, proof serialization, and envelope sizing are
+outside the timed loop.
+
+```bash
+cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
+SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
+```
+
+The default point is the conservative `k=1`. Use
+`SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2,...` only when you explicitly want a wider
+curve. Related focused groups include `typed_cp_prove_only_vs_k`,
+`typed_cp_verify_only_vs_k`, `typed_output_verify_only_vs_k`, and
+`public_proof_size_vs_k`. Development-only batched/SYMBT groups are documented
+in [`benches/whir_scaling.rs`](benches/whir_scaling.rs) and
+[`docs/protocols/whir.md`](docs/protocols/whir.md).
+
 ## Testing
 
 ```bash
 cargo test                       # default backends
 cargo test --features whir       # include WHIR backend tests
 cargo test -- -q                 # quiet output
+```
+
+Focused WHIR public-verifier checks used by the current docs:
+
+```bash
+cargo test --features whir typed_cp_digest
+cargo test --features whir typed_cp
+cargo test --features whir poseidon
+cargo test --features whir verify_public
 ```
 
 The test suite covers every protocol layer:
@@ -280,11 +324,12 @@ The test suite covers every protocol layer:
 | R1CS + generalized R1CS | Sparse matrix operations, conversion, generalized committed R1CS |
 | Folding + streaming + two-layer | Consistency, transcript binding, projection seed derivation, cross-layer checks |
 | SNARK pipeline | End-to-end flow, CP encoding consistency, transcript/public-input binding, tamper checks |
-| WHIR backend | CP roundtrip, output SNARK roundtrip, wrong/short-instance rejection, proof succinctness (Merkle commitment present), WHIR PCS opening verification, linear binding checks |
+| WHIR backend | CP/output roundtrips, authoritative typed CP/output public verification, Poseidon2/BabyBear digest binding, proof envelope decoding, negative tamper/replay/splice coverage, WHIR PCS opening verification |
 | Spartan backend | CP roundtrip, witness-table hash binding, wrong-instance rejection, IPA correctness |
 | Standalone CP-SNARK | `HashCommitment`, `Identity`/`Preimage`/`Transcript`/`FnRelation`, builder API, soundness-oriented checks |
-| Modular CP pipeline | Modular prover/verifier orchestration, split-backend component tests, public-only v2 proof checks |
-| Security & soundness | Tamper attacks, replay attacks, splice attacks, wrong-key checks, folded-instance rebinding checks |
+| Modular CP pipeline | Modular prover/verifier orchestration, split-backend component tests, public-only proof checks, compressed-envelope wire-shape checks |
+| Batched/SYMBT development paths | Same-shape batched CP evaluator, SYMBTC/SYMBT2C/SYMBT2F profiles, SYMBT3 native-oracle/accumulator/N8 route guards |
+| Security & soundness | Tamper attacks, replay attacks, splice attacks, wrong-key checks, folded-instance rebinding checks, non-authoritative backend fail-closed checks |
 
 ## Notes on cryptographic backends
 
@@ -292,7 +337,8 @@ The test suite covers every protocol layer:
 - `SumcheckSnark` provides stronger tamper-detection and transcript binding checks, but is not a production succinct SNARK backend.
 - `SpartanSnark` implements a full R1CS-to-sumcheck reduction with Pedersen vector commitments and a Bulletproofs-style Inner Product Argument (IPA) over the Ristretto group (`curve25519-dalek`). It provides real cryptographic guarantees and is suitable for CP-SNARK integration testing. Not post-quantum.
 - `WhirSnark` *(feature-gated)* implements a post-quantum SNARK using WHIR PCS (Merkle-based polynomial commitments) from whir-p3 over BabyBear. Uses Poseidon2 hashing/compression in Plonky3's `MerkleTreeMmcs`; Poseidon2 parameters are deterministically derived from a full SHA-256 relation seed using `ChaCha20Rng`. Proofs are succinct (Merkle root + logarithmic opening proof). Plausibly post-quantum since it relies only on hash function security.
-- Backends can optionally provide typed CP and typed output proving/verification. Public-only v2 verification requires these typed paths to be authoritative; otherwise it rejects instead of falling back to witness-side checks. WHIR currently has authoritative typed output, a non-authoritative typed CP hook over the existing CP-R1CS core, and a software `CpFieldRelation` spec for typed CP. Public WHIR verification still fails closed because the full typed CP relation is not yet proved inside WHIR.
+- Backends can optionally provide typed CP and typed output proving/verification. Product public verification requires those typed paths to be authoritative; otherwise it rejects instead of falling back to witness-side checks. WHIR currently has authoritative typed CP and typed output, and WHIR+WHIR `verify_public` is expected to pass using public data only.
+- K6a and N8 APIs are explicit NonZK accumulation routes unless documented otherwise. They do not replace default product `verify_public`, do not provide privacy, and still need separate production review before any default-route promotion. Broader SYMBT3/native-oracle work remains supporting performance infrastructure rather than the main report-facing route taxonomy.
 - The architecture is ready for plugging in additional backends via `BackendSnark`.
 - For production deployment, run backend-specific security review/benchmarks.
 

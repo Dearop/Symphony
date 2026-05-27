@@ -2,6 +2,9 @@
 
 ## Current State
 
+This file is a past roadmap, but the status statements below have been updated
+to match the current repository ground truth.
+
 WHIR typed CP is authoritative for the public verifier boundary. WHIR public
 proofs use `Poseidon2BabyBear` public digests, and
 `WhirSnark::has_authoritative_typed_cp()` is true. Public verification now
@@ -54,6 +57,12 @@ The typed CP arithmetization currently includes:
 
 The remaining engineering work is performance and coverage hardening, not a
 fail-closed authority blocker.
+
+The default product `verify_public` route remains the monolithic WHIR typed-CP
+plus typed-output route over `ProofBundleV2` / `PublicProofBundle`. SYMBT3 K6a,
+native N6b/N7/N7b, and N8 are explicit opt-in NonZK accumulator/native routes;
+they do not replace default `verify_public`, and malformed SYMBT3 profile or
+proof-kind inputs are expected to fail closed inside those explicit route gates.
 
 ## Milestone 1 - GR1CS Message Semantic Reconstruction
 
@@ -274,9 +283,16 @@ truncation, and trailing bytes. WHIR defines `WHIR_PROOF_PAYLOAD_VERSION = 2`,
 `canonical_whir_proof_bytes`, and `whir_proof_from_canonical_bytes` for the
 backend-owned CP/output proof payloads placed inside the public envelope.
 
+The repository also defines `COMPRESSED_PUBLIC_PROOF_ENVELOPE_VERSION = 2` and
+`CompressedPublicProofEnvelope`. That envelope omits the linear
+`fs_commitments` vector and round-trips as an implemented wire-shape helper,
+but it is not the active product verifier route. `verify_public` still consumes
+`ProofBundleV2` with public FS commitments.
+
 The reviewed golden fixture is
-`tests/fixtures/public_proof_v2_whir_minimal.hex`. It freezes the version-2
-WHIR+WHIR public envelope wire format with canonical WHIR CP/output payloads.
+`tests/fixtures/public_proof_v2_whir_minimal.hex`. It freezes the version-1
+public envelope wire format carrying version-2 canonical WHIR CP/output
+payloads.
 The fixture is deterministic and intentionally synthetic; live public WHIR
 proving still uses randomized FS openings. The live WHIR+WHIR integration test
 therefore separately proves/verifies a real public proof, decodes its public
@@ -404,7 +420,7 @@ typed output verification, and public proof envelope serialization. The default
 public verifier curve remains `k = [1]`, with broader curves selected by
 `SYMPHONY_WHIR_PUBLIC_VERIFY_KS`.
 
-Initial baseline recorded in `docs/whir.md` from:
+Initial baseline recorded in `docs/protocols/whir.md` from:
 
 ```text
 cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
@@ -596,9 +612,13 @@ cargo bench --bench whir_scaling --features whir -- "public_verify_v2_vs_k"
 git diff --check
 ```
 
+Milestone H status: planned release gate, not claimed by this document update.
+Milestones A-G are implemented, but a fresh full release-gate run is still
+required before calling the public WHIR verifier production grade.
+
 ## Required Verification Commands
 
-Run before flipping authority:
+Historical pre-authority command set:
 
 ```text
 cargo test --features whir typed_cp_digest
@@ -608,7 +628,7 @@ cargo test --features whir verify_public
 cargo test --features whir
 ```
 
-Run after flipping authority:
+Current release-gate command set after authority is flipped:
 
 ```text
 cargo test

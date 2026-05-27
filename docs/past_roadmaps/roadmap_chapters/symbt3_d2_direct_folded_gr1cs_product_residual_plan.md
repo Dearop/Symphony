@@ -5,15 +5,38 @@
 Add the missing direct folded GR1CS product-residual check to the SYMBT3
 development path.
 
-SYMBT3-D currently proves source R1CS residual validity and beta-linear folded
-GR1CS boundary consistency, but the folded GR1CS side does not yet directly
-expose/check the multiplicative product-triple residual:
+> **Current status (2026-05-20): implemented historical milestone, superseded
+> by later cumulative profiles.** The D2 family exists in code as
+> `BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck`, with
+> product columns
+> `BatchedCpSymbt3AlgebraicColumnKind::{FoldedGr1csProductLeft,
+> FoldedGr1csProductRight,FoldedGr1csProductOutput}` and layout
+> `Symbt3FoldedGr1csProductResidualLayout` under `src/modular/batched_cp/`.
+> The WHIR side derives the D2 product sumcheck transcript in
+> `src/snark/whir/symbt3_columns.rs`.
+>
+> The current default SYMBT3 development relation is cumulative and already
+> includes later H/I/J/K2-family work. The product-residual check is no longer
+> a standalone implementation target, and the current live Criterion targets
+> start at `symbt3_e_vs_k` / `symbt3_f_vs_k` and continue through
+> `symbt3_h_vs_k`, `symbt3_i_vs_k`, `symbt3_i2_vs_k`, and `symbt3_j_vs_k`.
+> Historical docs record a first `symbt3_d2_vs_k` run, but that target is not
+> currently registered in `benches/whir_scaling.rs`.
+>
+> Product `verify_public` remains the authoritative monolithic WHIR typed-CP
+> route and does not route through D2. D2/SYMBT3 development proofs remain
+> `NonAuthoritativeDevelopment` / `NonZkDevelopment` unless selected by the
+> explicit K6a or N8 NonZK accumulator APIs.
+
+In the original D2 plan, SYMBT3-D proved source R1CS residual validity and
+beta-linear folded GR1CS boundary consistency, but the folded GR1CS side did
+not yet directly expose/check the multiplicative product-triple residual:
 
 ```text
 L_fold * R_fold - O_fold = 0
 ```
 
-SYMBT3-D2 adds this as a structured algebraic WHIR block, still under the same
+SYMBT3-D2 added this as a structured algebraic WHIR block, still under the same
 safety posture:
 
 - `NonAuthoritativeDevelopment`
@@ -56,10 +79,10 @@ SYMBT3-D2 adds the direct product check.
 
 ## New Constraint Family
 
-Add:
+Historical plan item, now implemented under the `BatchedCp*` names:
 
 ```rust
-Symbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck
+BatchedCpSymbt3ConstraintFamily::FoldedGr1csProductResidualZeroCheck
 ```
 
 This family proves that the committed folded GR1CS triple columns satisfy the
@@ -156,13 +179,16 @@ pub enum Symbt3ProductLawId {
 }
 ```
 
-For the first implementation, it is acceptable to use:
+For the first implementation, this document allowed:
 
 ```rust
 FieldCoordinateMulV1
 ```
 
-provided the docs say:
+Current code carries both `FieldCoordinateMulV1` and
+`RqNegacyclicConvolutionV1`, and the default algebra law uses
+`RqNegacyclicConvolutionV1` with `RingCoefficientActionV1`. The older D2
+field-coordinate phrasing should therefore be read as the initial scaffold:
 
 ```text
 SYMBT3-D2 currently checks field-coordinate product residuals.
@@ -682,12 +708,18 @@ Reject if proof contains:
 
 ## Benchmarks
 
-Add:
+Historical target:
 
 ```text
 SYMPHONY_WHIR_PUBLIC_VERIFY_KS=1,2 cargo bench \
   --bench whir_scaling --features whir -- "symbt3_d2_vs_k"
 ```
+
+Current `benches/whir_scaling.rs` no longer registers `symbt3_d2_vs_k`.
+Measure the live cumulative code with the registered SYMBT3 targets:
+`symbt3_f_vs_k`, `symbt3_h_vs_k`, `symbt3_i2_vs_k`, `symbt3_j_vs_k`, and the
+explicit accumulator routes such as `symbt3_accumulator_authority_vs_k` or
+`symbt3_n8_integrated_authority_vs_k`.
 
 Report:
 

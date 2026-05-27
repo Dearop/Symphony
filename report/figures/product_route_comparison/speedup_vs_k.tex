@@ -1,0 +1,18 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.55\linewidth,
+  grid=both,
+  xmode=log,
+  log basis x=2,
+  xtick=data,
+  xlabel={$k$},
+  ylabel={baseline / K6a},
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=2}
+]
+\addplot+[mark=*] coordinates {(1,109.612) (2,210.682) (4,439.249) (8,1046.63)};
+\addlegendentry{verify speedup}
+\addplot+[mark=*] coordinates {(1,191.248) (2,333.949) (4,567.712) (8,947.456)};
+\addlegendentry{prove speedup}
+\end{axis}
+\end{tikzpicture}

@@ -1,0 +1,28 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.62\linewidth,
+  grid=both,
+  xmode=log,
+  log basis x=2,
+  ymode=log,
+  log basis y=10,
+  xtick={1,2,4,8,16,32,64},
+  xlabel={$k$},
+  ylabel={time (ms)},
+  legend style={at={(0.5,-0.22)},anchor=north,legend columns=3}
+]
+\addplot+[mark=*, thick, color=blue, solid] coordinates {(1,1896.28) (2,4024.32) (4,9658.13) (8,30894)};
+\addlegendentry{Product verify}
+\addplot+[mark=square*, thick, color=blue, dashed] coordinates {(1,3317.38) (2,6587.36) (4,13561.8) (8,34612.7)};
+\addlegendentry{Product prove}
+\addplot+[mark=*, thick, color=teal, solid] coordinates {(1,16.1611) (2,18.9808) (4,22.1684) (8,29.3201) (16,43.9817) (32,72.2562) (64,125.655)};
+\addlegendentry{K6a verify}
+\addplot+[mark=square*, thick, color=teal, dashed] coordinates {(1,16.5381) (2,19.4934) (4,24.2316) (8,34.8918) (16,54.3086) (32,95.2777) (64,174.264)};
+\addlegendentry{K6a prove}
+\addplot+[mark=*, thick, color=orange, solid] coordinates {(1,14.67) (2,17.446) (4,20.378) (8,29.977) (16,44.832) (32,69.956) (64,122.412)};
+\addlegendentry{N8 verify}
+\addplot+[mark=square*, thick, color=orange, dashed] coordinates {(1,24.979) (2,32.787) (4,50.262) (8,81.866) (16,151.373) (32,280.31) (64,558.118)};
+\addlegendentry{N8 prove}
+\end{axis}
+\end{tikzpicture}

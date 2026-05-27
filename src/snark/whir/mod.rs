@@ -1,25 +1,49 @@
-//! WHIR backend SNARK: **post-quantum** proof system using Merkle-based polynomial commitments.
+//! WHIR backend SNARK and route hub for Symphony's public-verification work.
 //!
-//! This is the **recommended production backend** for Symphony when post-quantum
-//! security is required. It relies only on hash functions (Poseidon2) and
-//! finite-field arithmetic (BabyBear), with no elliptic-curve assumptions.
+//! This is the **recommended post-quantum backend** for Symphony when the `whir`
+//! feature is enabled. It relies only on hash functions (Poseidon2/WHIR Merkle
+//! commitments) and finite-field arithmetic over BabyBear, with no
+//! elliptic-curve assumptions.
 //!
-//! Uses the WHIR protocol (Weighted Hash Interactive Reduction) from whir-p3 as a
-//! multilinear polynomial commitment scheme, combined with a Spartan-like
-//! R1CS-to-sumcheck reduction over BabyBear.
+//! # Route map
 //!
-//! Architecture:
-//! - Witness/instance bytes are converted to BabyBear field elements
-//! - R1CS is flattened and checked over BabyBear
-//! - WHIR provides Merkle-based (post-quantum) polynomial commitments
-//! - Sumcheck reduces R1CS to evaluation queries answered by WHIR
+//! This module hosts multiple related but distinct public routes:
 //!
-//! Two paths:
-//! - **Output SNARK** (context present): full R1CS verification via sumcheck
-//! - **CP-SNARK** (no context): witness commitment + simple sumcheck
+//! - **Default product public route:** `prove_public` / `verify_public` over the
+//!   version-2 public proof boundary. WHIR is authoritative typed CP and typed
+//!   output here, and uses Poseidon2/BabyBear public digests.
+//! - **Explicit K6a route:** `backend_impl.rs` exposes the opt-in SYMBT3 NonZK
+//!   integrity accumulator route.
+//! - **Explicit native/N8 accumulation work:** [`native_oracles`] exposes the
+//!   native-oracle performance infrastructure and the N8 integrated accumulation
+//!   APIs that sit alongside K6a.
 //!
-//! For the classical (non-PQ) alternative, see [`SpartanSnark`](super::spartan::SpartanSnark).
+//! The explicit K6a and N8 routes do **not** silently replace the default
+//! product `verify_public` path. They are separate APIs with their own proof
+//! shapes, gates, and maturity levels.
+//!
+//! # Backend architecture
+//!
+//! WHIR uses the WHIR protocol (Weighted Hash Interactive Reduction) from
+//! `whir-p3` as a multilinear polynomial commitment scheme, combined with a
+//! Spartan-like R1CS-to-sumcheck reduction over BabyBear.
+//!
+//! Shared backend flow:
+//! - witness/instance bytes are converted to BabyBear field elements;
+//! - R1CS or typed CP constraints are flattened over BabyBear;
+//! - WHIR provides Merkle-based polynomial commitments;
+//! - sumcheck reduces the target relation to evaluation queries answered by
+//!   WHIR.
+//!
+//! Internal proof paths:
+//! - **Output SNARK** (context present): full R1CS verification via sumcheck;
+//! - **CP-SNARK** (no context): witness commitment plus the CP-side sumcheck
+//!   path used by Symphony's folding/typed-CP pipeline.
+//!
+//! For the classical (non-PQ) alternative, see
+//! [`SpartanSnark`](super::spartan::SpartanSnark).
 
+pub mod canonical_encoding;
 pub mod field;
 pub mod instrumented_benchmark;
 pub mod native_oracles;

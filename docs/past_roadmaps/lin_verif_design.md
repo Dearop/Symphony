@@ -4,6 +4,26 @@
 
 Concrete Rust-oriented design for moving verification from linear to sublinear.
 
+> **Current status (2026-05-20): historical design note.** This file now lives
+> under `docs/past_roadmaps/` and should be read as the pre-authority
+> compressed-verifier design sketch. The current product ground truth is the
+> WHIR+WHIR public route over `ProofBundleV2` / `PublicProofBundle`, with
+> `Poseidon2BabyBear` public digests, `WhirSnark::has_authoritative_typed_cp()`
+> true, and `verify_public` / `verify_v2` expected to pass using public data
+> only. That route is authoritative but still a monolithic typed-CP baseline,
+> not the final sublinear performance route. The current performance direction
+> is the explicit SYMBT3/K6a/N8 line documented in
+> `docs/whir_public_performance_north_star_plan.md`,
+> `docs/path_to_native_multi.md`, `docs/protocols/whir.md`, and
+> `docs/protocols/n8_accumulation_relation.md`.
+>
+> The module names below are illustrative. The implemented reusable pipeline
+> lives mostly under `src/modular/{folding_core,transcript_core,digest_core,
+> cp_relation_core,cp_backend_api,output_backend_api,proof_orchestrator,
+> adapter_symphony}` plus WHIR-specific code under `src/snark/whir/`. WHIR
+> public digest semantics are Poseidon2/BabyBear; SHA remains a compatibility
+> path and this repository does not prove SHA-256 inside WHIR.
+
 ---
 
 ## Goal
@@ -623,9 +643,19 @@ This module is deliberately small. The verifier should only see the final folded
 
 ---
 
-## Recommended Engine Split
+## Historical Engine Split Recommendation
 
-Given your current IOR construction and the CP relation you described, use **Spartan** as the CP-SNARK backend and keep **WHIR** as the PCS / low-degree / outer wrapper engine.
+Given the earlier IOR construction and CP relation, this note recommended
+**Spartan** as the CP-SNARK backend and **WHIR** as the PCS / low-degree /
+outer wrapper engine.
+
+That is not the current product route. The implemented authoritative public
+path uses WHIR typed CP and WHIR typed output directly; `SpartanSnark` remains
+available as a backend, but product `verify_public` does not depend on Spartan
+for CP authority. The live performance work is SYMBT3: CP-aware WHIR oracle
+relations, explicit K6a NonZK integrity accumulation, and the N8 integrated
+one-WHIR NonZK accumulation route. Keep this section as historical rationale
+for a split-backend architecture, not as current routing guidance.
 
 **Reason:** The CP relation is transcript-semantic and generic; WHIR is more naturally suited to low-degree and evaluation consistency in IOR_C, which your formal IOR_C writeup already places there naturally.
 
@@ -695,17 +725,18 @@ The success criterion is: witness grows, public interface stops growing. That is
 
 ---
 
-## Suggested Immediate TODO List
+## Historical Immediate TODO List
 
 ```
-[ ] Add CpPublicInstance
-[ ] Add FoldInput and FoldedInstance
-[ ] Add digest_fold_inputs()
-[ ] Add fs commitment root type
-[ ] Move fold replay into CpRelation::check()
-[ ] Refactor public verifier to consume only compressed public instance
-[ ] Keep challenge derivation outside backend circuit
-[ ] Measure verifier time/public input size before vs after
+[x] Add the modular CP public/witness model (`CpPublicStatement`,
+    `CpPublicInstance`, `CpWitnessBundle`) under `src/modular/cp_relation_core`.
+[x] Add digest helpers under `src/modular/digest_core`; WHIR public proofs use
+    `Poseidon2BabyBear` public digests.
+[x] Make WHIR typed CP authoritative for the product public route.
+[x] Keep challenge derivation outside the WHIR typed CP relation.
+[x] Add `public_verify_v2_vs_k` for public-only verification.
+[ ] Continue performance compression through SYMBT3/K6a/N8 rather than treating
+    this generic sketch as the active implementation plan.
 ```
 
 ---
