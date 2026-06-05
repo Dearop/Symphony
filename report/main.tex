@@ -1843,6 +1843,18 @@ This distinction is important. The theorem proves that the composition is sound
 provided the concrete row system faithfully implements the abstract relation. It
 does not by itself complete the implementation-specific row audit.
 
+\paragraph{Why this is not circular.}
+The theorem does not assume the conclusion that the concrete proof is sound. It
+assumes a separately checkable row-level implication: accepting concrete rows
+must denote the same abstract WHIR-backed obligations used by \(\Rfold\). If the
+rows merely carry digests or similarly named fields without enforcing the
+corresponding verifier semantics, typed-batch faithfulness is false and the
+theorem cannot be applied. What remains to audit is therefore concrete and
+row-local: for each K6a/N8 row family, show that the public metadata, transcript
+roots, challenge digests, openings, folding equations, and folded-output boundary
+jointly imply the six obligations of
+Lemma~\ref{lem:typed-row-faithfulness-sufficient}.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \subsection{Assumptions}
 \label{sec:soundness-assumptions}
@@ -2154,56 +2166,34 @@ commitment experiment.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 This section maps the abstract construction of Sections~\ref{sec:whir-accumulation-through-lattice-based-folding}
-and~\ref{sec:formal-relations} to the current implementation. The main point is
-that the implementation does not expose an unrestricted accumulator over
-arbitrary vectors of WHIR proofs. Instead, the single-oracle and multi-oracle
-routes consume typed accumulation batches and route-specific public instances.
-These typed objects implement the semantic interface used in the construction.
+and~\ref{sec:formal-relations} to the current codebase. The implementation does
+not expose a generic accumulator over arbitrary vectors of WHIR proof objects.
+It exposes typed public batches and route-specific accumulator instances whose
+rows are intended to represent the WHIR-backed obligations of the abstract
+construction.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Repository Structure}
-\label{sec:repository-structure}
+\subsection{Routes and Data Model}
+\label{sec:routes-and-data-model}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-The implementation is organized around three relevant public routes.
+There are three relevant implementation routes. The default
+\texttt{prove\_public}/\texttt{verify\_public} route is the product WHIR+WHIR
+public verifier. K6a is the explicit single-oracle full-workload accumulator
+route. N8 is the explicit integrated multi-oracle alternative with
+\(\mathsf{ACC.P}\), \(\mathsf{ACC.V}\), and \(\mathsf{ACC.D}\) entry points. K6a
+and N8 are opt-in NonZK integrity routes; they do not silently replace the
+default product verifier.
 
-\begin{enumerate}
-  \item The default public verifier route exposes the ordinary WHIR+WHIR public
-  verification boundary through the version-2 public proof API.
-
-  \item The single-oracle route is the current full-workload accumulation path.
-  It is an explicit opt-in NonZK integrity-only route.
-
-  \item The multi-oracle route is an implemented integrated alternative. It
-  exposes an explicit accumulator interface with prover, verifier, and decider
-  entry points, but it is not the default product verifier and is not
-  production-reviewed.
-\end{enumerate}
-
-These routes share the same conceptual stack: public claim data is bound to a
-folding transition, the transition is represented by a CP relation, and WHIR is
-used as the backend proof system for that relation. The difference between the
-routes is the shape of the public instance and the way the relevant rows are
-encoded.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Core Data Structures}
-\label{sec:core-data-structures}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-The abstract notation in the previous sections uses the objects
+The implementation represents the abstract objects
 \[
   \mathsf{Claim}_i,\quad
   \Acc_{\mathsf{old}},\quad
   \Acc_{\mathsf{new}},\quad
   I_{\mathsf{cp}},\quad
-  \Pi_{\mathsf{cp}}.
+  \Pi_{\mathsf{cp}}
 \]
-In the implementation these are represented by typed public structures rather
-than by raw tuples.
-
-At a high level, the correspondence is:
-
+by typed public structures rather than by raw tuples:
 \[
 \begin{array}{c|c}
 \text{Abstract object} & \text{Implementation role} \\
@@ -2217,56 +2207,12 @@ w_{\mathsf{cp}} & \text{private folding witness, openings, and auxiliary data} \
 \end{array}
 \]
 
-The important implementation principle is that public verification must depend
-only on public instances, public digests, public transcript commitments, and
-backend proof objects. Witnesses, openings, fold inputs, and replay material are
-not part of the public verifier boundary.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{WHIR Proof Ingestion}
-\label{sec:whir-proof-ingestion}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-In the abstract construction, the accumulator receives a family of WHIR
-statement/proof pairs
-\[
-  \{(\mathsf{stmt}_i,\pi_i)\}_{i=1}^k
-\]
-and interprets them as proof-validity claims. The implementation uses a more
-structured representation. The route-specific input batch encodes the public
-obligations that correspond to these claims, together with the metadata needed
-to bind them to the accumulator transition.
-
-This distinction is important. The implementation should not be read as a
-generic API that accepts arbitrary WHIR proof objects and folds them directly.
-Rather, it implements the semantic operation of folding WHIR-backed validity
-obligations through typed accumulation data. The soundness theorem therefore
-depends on typed-batch faithfulness: the typed batch must represent the same
-public obligations that the abstract claim notation denotes.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Accumulator API}
-\label{sec:accumulator-api}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-The single-oracle route and the multi-oracle route expose accumulation as an
-explicit operation rather than silently replacing the default public verifier.
-
-The single-oracle route is the current full-workload path. It is an explicit
-NonZK integrity-only accumulation route and should be viewed as the main
-implemented route for the current report.
-
-The multi-oracle route exposes an integrated accumulator boundary. Conceptually,
-it has the three usual accumulation interfaces:
-\[
-  \mathsf{ACC.P},\qquad
-  \mathsf{ACC.V},\qquad
-  \mathsf{ACC.D}.
-\]
-The prover constructs an accumulation transition, the verifier checks the public
-transition proof, and the decider checks the resulting accumulator state. This
-route is implemented as an explicit opt-in alternative, not as the default
-public verifier.
+Route-specific batches encode the public obligations corresponding to the
+abstract WHIR statement/proof claims, plus the metadata needed to bind them to an
+accumulator transition. This is why typed-batch faithfulness is the main
+implementation obligation: the typed public rows must denote the same public
+verification obligations as the abstract claim notation, not just carry digests
+with compatible names.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \subsection{Single-Oracle versus Multi-Oracle Organization}
@@ -2277,23 +2223,17 @@ The terms \emph{single-oracle} and \emph{multi-oracle} refer to the organization
 of the backend row system, not to whether the public route is allowed to verify
 many independent proofs.
 
-In the single-oracle route, the accumulation workload is packaged into one
-public-canonical backend table. The route exposes one explicit accumulator
-transition and one top-level WHIR backend proof for the typed CP relation. This
-is the current full-workload path used by K6a.
+In K6a, the accumulation workload is packaged into one public-canonical backend
+table and one top-level WHIR backend proof for the typed CP relation. In N8, the
+same public transition is organized into logical row families before being
+proved by one integrated WHIR proof. These families include K6a semantic rows,
+tuple-RLC semantic rows, and transition/binding rows.
 
-In the multi-oracle route, the same public transition is organized into multiple
-logical row families before being proved by the backend. For N8, these families
-include the K6a semantic rows, tuple-RLC semantic rows, and transition/binding
-rows. The route still exposes one integrated public accumulation boundary, but
-the backend statement has more internal structure: distinct logical oracle
-families represent different parts of the accumulator relation.
-
-Thus the distinction is not:
+Thus the distinction is not
 \[
   \text{one proof versus many independent proofs}.
 \]
-Both routes are explicit accumulation routes. The distinction is:
+It is
 \[
   \begin{aligned}
     &\text{one monolithic row/table organization}
@@ -2303,16 +2243,16 @@ Both routes are explicit accumulation routes. The distinction is:
     &\text{multiple logical oracle families inside one integrated route}.
   \end{aligned}
 \]
-This is why N8 is useful as evidence for the native multi-oracle direction: it
-explores a more structured backend statement while preserving the same public
-accumulator boundary.
+N8 is therefore evidence for the native multi-oracle direction because it
+structures the backend statement without turning the route into a list of
+independent WHIR verifications.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Folding Transition}
-\label{sec:folding-transition}
+\subsection{Encoded Folding Transition}
+\label{sec:encoded-folding-transition}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-The folding transition is the implementation counterpart of
+The concrete routes encode the abstract transition
 \[
   \Rfold\!\left(
     \Acc_{\mathsf{old}},
@@ -2321,65 +2261,26 @@ The folding transition is the implementation counterpart of
     w_{\mathsf{fold}}
   \right)=1.
 \]
-In the concrete routes, the claims are represented by typed semantic rows rather
-than by an unrestricted list of WHIR proof objects. The folding transition must
-therefore enforce three properties.
+The typed rows must enforce shape compatibility, challenge derivation from the
+declared public transcript, opening consistency, algebraic folding consistency,
+and equality between the computed folded state and
+\(\Acc_{\mathsf{new}}\). The CP relation is the public-verifier form of this
+transition: it proves those checks while keeping folding witnesses, openings,
+and auxiliary prover data outside the verifier boundary.
 
-First, it must enforce \emph{shape compatibility}: the input batch must be
-nonempty where required, and the relation metadata, backend parameters, and
-folded-output formats must agree.
-
-Second, it must enforce \emph{transition consistency}: the new accumulator must
-be the prescribed folded state obtained from the old accumulator and the input
-batch under the derived challenge vector.
-
-Third, it must enforce \emph{public-boundary consistency}: the resulting
-accumulator must be bound to the same public roots, digests, transcript material,
-and folded-output boundary that the public verifier later consumes.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{CP Relation Encoding}
-\label{sec:cp-relation-encoding}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-The CP relation is the implementation object corresponding to
-\[
-  \Rcp(I_{\mathsf{cp}};w_{\mathsf{cp}})=1.
-\]
-Its role is to certify the folding transition without exposing the folding
-witness, openings, or auxiliary prover-side material.
-
-The public CP instance contains the public accumulator boundary: old accumulator,
-new accumulator, typed claim batch, parameters, transcript roots, challenge
-digests, and folded-output boundary. The private witness contains the folding
-witness and opening material required to justify the transition.
-
-The central implementation requirement is that the encoded CP relation must be
-faithful to the semantic folding relation. In particular, the typed rows used by
-the implementation must not omit any binding condition required by the public
-verifier. If they do, the WHIR backend may prove a valid statement that is weaker
-than the accumulator transition claimed by the public API.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{WHIR Backend Integration}
-\label{sec:whir-backend-integration}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-WHIR is used as the backend proof system for the encoded CP relation. The
-implementation forms a WHIR statement
+WHIR is then used as the backend proof system for the encoded CP relation. The
+implementation forms
 \[
   \mathsf{stmt}_{\mathsf{cp}}
   =
   \mathsf{Enc}_{\WHIR}(\Rcp,I_{\mathsf{cp}},\mathsf{pp}_{\WHIR})
 \]
-and produces a backend proof \(\Pi_{\mathsf{cp}}\). Public verification checks
-this backend proof against the recomputed backend statement.
-
-This layer must bind the same public data as the CP instance. In particular, the
-backend WHIR statement must commit to the old accumulator, new accumulator,
-typed claim batch, relation metadata, transcript roots, challenge digests, and
-folded-output boundary. The public verifier must reject if the backend statement
-cannot be recomputed from the declared public instance.
+and verifies \(\Pi_{\mathsf{cp}}\) against the recomputed statement. The backend
+statement must bind the same public data as the CP instance: old and new
+accumulators, typed batch, relation metadata, transcript roots, challenge
+digests, and folded-output boundary. Omitting any of these values would make the
+backend proof sound for a weaker statement than the advertised accumulator
+transition.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \subsection{Tests and Guardrails}
@@ -2391,7 +2292,7 @@ route should reject if any required backend authority, typed verification, or
 public transcript binding is unavailable. It should not fall back to witness-side
 replay, debug helpers, or non-authoritative typed checks.
 
-The tests and review criteria should therefore cover the following cases:
+The corresponding review matrix is:
 \begin{enumerate}
   \item modifying public inputs or relation metadata invalidates the proof;
   \item modifying transcript roots or challenge digests invalidates the proof;
@@ -2402,8 +2303,8 @@ The tests and review criteria should therefore cover the following cases:
         the default public verifier.
 \end{enumerate}
 
-These guardrails are not only engineering tests. They are the implementation
-counterparts of the binding assumptions used in the soundness theorem.
+These are the implementation counterparts of the binding assumptions used in the
+soundness theorem.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{Evaluation}
 \label{sec:evaluation}
@@ -2755,103 +2656,47 @@ monolithic public-verifier cost that dominates the baseline.
 \label{sec:challenges-limitations}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-The construction and soundness argument above are intentionally conditional.
-They identify the interface required for a sound WHIR-backed accumulator, but
-they do not by themselves imply that every implementation route realizes this
-interface in a production-authoritative way. This section records the main
-remaining challenges.
+The construction and soundness argument above are conditional. They identify the
+interface required for a sound WHIR-backed accumulator, but they do not by
+themselves certify every concrete route as production-authoritative. The main
+limitations are the following.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Relation Encoding}
+\subsection{Relation and Transcript Faithfulness}
 \label{sec:relation-encoding-limitations}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-The most important limitation is relation encoding. The soundness theorem applies
-only if the WHIR backend statement faithfully encodes the intended CP folding
-relation. In particular, the backend relation must bind the same old accumulator,
-new accumulator, claim batch, transcript material, backend parameters, and
-folded-output boundary as the public verifier.
+The central limitation is faithfulness of the encoded relation. The WHIR backend
+is sound for the statement it actually proves; if that statement omits an
+accumulator field, transcript digest, opening condition, or folded-output
+boundary, then it may prove a weaker language than the accumulator API claims.
+The K6a and N8 rows must therefore be checked against the ledger of
+Section~\ref{sec:formal-relations}: claim representation, shape consistency,
+challenge binding, opening consistency, folding consistency, and output
+consistency.
 
-This is not merely a formatting requirement. If the WHIR backend proves a
-strictly weaker relation, omits part of the CP instance, or proves the folding
-transition under different public metadata, then backend soundness applies to the
-wrong language. In that case the WHIR proof may be valid while the accumulator
-transition is not sound for the intended public statement.
-
-The implemented routes therefore have to be checked against the relation ledger
-of Section~\ref{sec:formal-relations}. In particular, the typed SYMBT3/K6a/N8
-rows must represent the same proof-validity obligations as the abstract claims
-used in the soundness theorem. This is the main mathematical interface between
-the implementation and the proof.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Commitment Compatibility}
-\label{sec:commitment-compatibility-limitations}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-The construction uses several commitment layers with different purposes. The
-lattice/Ajtai-style commitments bind folding data and openings. The
-commit-and-prove layer binds the witness material used to certify the folding
-transition. The WHIR backend uses oracle commitments, typically represented by
-hash or Merkle-style commitments, to make the encoded CP relation succinctly
-verifiable.
-
-These layers must not be conflated. A commitment that binds a WHIR oracle does
-not automatically bind an Ajtai opening, and an Ajtai commitment does not
-automatically bind the public WHIR transcript. Soundness requires that all
-commitment layers be tied to the same public statement through explicit digests,
-relation identifiers, transcript roots, and accumulator boundaries.
-
-A production implementation should therefore maintain a clear separation between
-commitment roles, while ensuring that the final public verifier checks that all
-commitment layers refer to the same accumulator transition.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\subsection{Transcript Binding}
-\label{sec:transcript-binding-limitations}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-Transcript binding is another major soundness boundary. The folding challenges,
+This includes commitment compatibility. Lattice/Ajtai commitments, CP witness
+commitments, and WHIR oracle commitments bind different objects. Soundness
+requires explicit public digests and relation identifiers tying all of them to
+the same transition. It also includes transcript binding: folding challenges,
 WHIR backend challenges, and public verifier digests must be derived from the
-same public statement material. A prover should not be able to derive challenges
-from one transcript and then present the resulting proof under a different public
-boundary.
-
-In this report, the transcript-binding requirement appears in several places:
-the WHIR proof-validity claims, the folding challenge derivation, the CP public
-instance, and the backend WHIR statement. The implementation must ensure that
-all these views agree. The relevant public material includes relation metadata,
-public inputs, transcript roots, challenge digests, folded-output boundaries,
-and accumulator identifiers.
-
-The fail-closed verifier boundary is essential here. If the verifier cannot
-recompute or validate the transcript binding from public data, it should reject
-rather than replaying prover-side material or using a debug helper.
+same public statement material, and the verifier must reject if this cannot be
+checked from public data.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \subsection{Prototype Boundaries}
 \label{sec:prototype-boundaries}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-The report distinguishes between the semantic accumulator and the implemented
-routes. The abstract notation uses a batch of WHIR proof-validity claims
+The abstract notation uses a batch of WHIR proof-validity claims
 \[
   \{\mathsf{Claim}_i\}_{i=1}^k,
 \]
 but the concrete single-oracle and multi-oracle routes consume typed
-accumulation batches and route-specific public instances. They should therefore
-be understood as implementations of the semantic interface, not as unrestricted
-generic accumulators for arbitrary WHIR proof objects.
-
-This distinction matters for evaluation and for soundness claims. The
-single-oracle route is the current explicit full-workload accumulation path. The
-multi-oracle route is an implemented opt-in alternative, but it is not the
-default public verifier and should not be presented as production-reviewed. Both
-routes are NonZK integrity-only in the current report.
-
-Thus the implementation should be viewed as a soundness-guided prototype of
-WHIR-backed accumulation, not as a complete production implementation of a full
-zero-knowledge Symphony-style SNARK.
+accumulation batches. They are implementations of the semantic interface, not
+unrestricted generic accumulators for arbitrary WHIR proof objects. The current
+K6a and N8 routes should therefore be viewed as soundness-guided NonZK
+integrity prototypes, not as a complete zero-knowledge Symphony-style SNARK.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \subsection{Remaining Gaps}
@@ -2860,43 +2705,24 @@ zero-knowledge Symphony-style SNARK.
 
 The main remaining gaps are the following.
 
-First, the typed CP relation remains large. The default public verifier preserves
-the public boundary, but its cost is still dominated by the monolithic typed CP
-relation. This motivates the native and multi-oracle direction.
-
-Second, the relation encoding must be audited carefully. The strongest version
-of the construction requires the backend WHIR statement to encode exactly the CP
-folding relation. Any mismatch between typed implementation rows and the
-abstract relation definitions weakens the soundness theorem.
-
-Third, the implementation is not zero-knowledge. The current accumulation routes
-are described as NonZK integrity-only routes. Adding zero-knowledge would require
-additional masking/blinding arguments and a separate analysis.
-
-\paragraph{Zero-knowledge.}
-The current routes are NonZK integrity-only. Adding zero-knowledge is not a
-matter of simply hiding the final accumulator. The prover would need to mask or
-blind the folding witness, commitment openings, and auxiliary CP witness data,
-and the backend WHIR statement would need to prove the masked CP relation while
-binding the masking commitments into the same public transcript.
-
-The performance overhead depends on the chosen zero-knowledge compiler. At a
-minimum, one should expect additional committed columns or rows for masks,
-additional constraints checking consistency between masked and unmasked
-quantities, and additional transcript material binding the masking commitments.
-Because the evaluation already identifies the typed CP relation as a dominant
-cost, any ZK layer that enlarges this relation may have a meaningful prover-time
-impact. Quantifying that overhead requires choosing a concrete ZK transformation
-for the CP relation and is left as future work.
-
-Fourth, the current report proves a one-step conditional composition theorem.
-For long accumulation chains, the error terms and accumulator invariants must be
-tracked across multiple steps. The simple bound in Section~\ref{sec:error-composition}
-scales with the number of accumulation steps unless a tighter analysis is used.
-
-Finally, a production-authoritative route would need a complete public-verifier
-audit: no witness-side replay, no debug-only fallback, no non-authoritative typed
-helper, and explicit binding of all public statement components.
+\begin{enumerate}
+  \item The typed CP relation remains large, which motivates the native
+        multi-oracle direction measured in the evaluation.
+  \item The row-level faithfulness audit remains the main mathematical gap
+        between the reduction theorem and concrete K6a/N8 soundness.
+  \item The current routes are not zero-knowledge. Adding ZK would require
+        masking the folding witness, openings, and auxiliary CP witness data,
+        then proving the masked relation while binding masking commitments into
+        the same transcript.
+  \item The soundness theorem is one-step. Long-chain accumulation needs a
+        \(\mathsf{ValidAcc}\) invariant and a global transcript and commitment
+        analysis rather than only the conservative union bound of
+        Section~\ref{sec:error-composition}.
+  \item A production-authoritative route still needs a complete public-verifier
+        audit: no witness-side replay, no debug-only fallback, no
+        non-authoritative helper, and explicit binding of every public statement
+        component.
+\end{enumerate}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{Related Work}

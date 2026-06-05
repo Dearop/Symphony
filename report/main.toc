@@ -38,45 +38,38 @@
 \contentsline {subsection}{\numberline {6.4}Completeness of the WHIR Backend}{22}{subsection.6.4}%
 \contentsline {subsection}{\numberline {6.5}Full Completeness Theorem}{22}{subsection.6.5}%
 \contentsline {section}{\numberline {7}Soundness as a Reduction to Row-Level Faithfulness}{23}{section.7}%
+\contentsline {paragraph}{Why this is not circular.}{23}{section*.4}%
 \contentsline {subsection}{\numberline {7.1}Assumptions}{23}{subsection.7.1}%
 \contentsline {subsection}{\numberline {7.2}Soundness Chain}{24}{subsection.7.2}%
 \contentsline {subsection}{\numberline {7.3}Error Composition}{25}{subsection.7.3}%
-\contentsline {paragraph}{Long-chain accumulation.}{26}{section*.4}%
-\contentsline {section}{\numberline {8}Implementation}{26}{section.8}%
-\contentsline {subsection}{\numberline {8.1}Repository Structure}{27}{subsection.8.1}%
-\contentsline {subsection}{\numberline {8.2}Core Data Structures}{27}{subsection.8.2}%
-\contentsline {subsection}{\numberline {8.3}WHIR Proof Ingestion}{27}{subsection.8.3}%
-\contentsline {subsection}{\numberline {8.4}Accumulator API}{28}{subsection.8.4}%
-\contentsline {subsection}{\numberline {8.5}Single-Oracle versus Multi-Oracle Organization}{28}{subsection.8.5}%
-\contentsline {subsection}{\numberline {8.6}Folding Transition}{28}{subsection.8.6}%
-\contentsline {subsection}{\numberline {8.7}CP Relation Encoding}{29}{subsection.8.7}%
-\contentsline {subsection}{\numberline {8.8}WHIR Backend Integration}{29}{subsection.8.8}%
-\contentsline {subsection}{\numberline {8.9}Tests and Guardrails}{29}{subsection.8.9}%
-\contentsline {section}{\numberline {9}Evaluation}{30}{section.9}%
-\contentsline {subsection}{\numberline {9.1}Experimental Setup}{30}{subsection.9.1}%
-\contentsline {paragraph}{Measurement protocol.}{31}{section*.5}%
-\contentsline {subsection}{\numberline {9.2}Product Public-Verifier Baseline}{31}{subsection.9.2}%
-\contentsline {subsection}{\numberline {9.3}K6a Explicit Accumulator Route}{32}{subsection.9.3}%
-\contentsline {subsection}{\numberline {9.4}N8 Integrated Route and Native Multi-Oracle Evidence}{33}{subsection.9.4}%
-\contentsline {subsection}{\numberline {9.5}Bottleneck Analysis}{35}{subsection.9.5}%
-\contentsline {section}{\numberline {10}Challenges and Limitations}{36}{section.10}%
-\contentsline {subsection}{\numberline {10.1}Relation Encoding}{36}{subsection.10.1}%
-\contentsline {subsection}{\numberline {10.2}Commitment Compatibility}{36}{subsection.10.2}%
-\contentsline {subsection}{\numberline {10.3}Transcript Binding}{37}{subsection.10.3}%
-\contentsline {subsection}{\numberline {10.4}Prototype Boundaries}{37}{subsection.10.4}%
-\contentsline {subsection}{\numberline {10.5}Remaining Gaps}{37}{subsection.10.5}%
-\contentsline {paragraph}{Zero-knowledge.}{37}{section*.6}%
-\contentsline {section}{\numberline {11}Related Work}{38}{section.11}%
-\contentsline {subsection}{\numberline {11.1}WHIR and Reed--Solomon Proximity Testing}{38}{subsection.11.1}%
-\contentsline {subsection}{\numberline {11.2}Symphony and Lattice-Based Folding}{38}{subsection.11.2}%
-\contentsline {subsection}{\numberline {11.3}Commit-and-Prove SNARKs}{39}{subsection.11.3}%
-\contentsline {subsection}{\numberline {11.4}Accumulation and Folding Schemes}{39}{subsection.11.4}%
-\contentsline {subsection}{\numberline {11.5}Transparent SNARKs and Spartan}{39}{subsection.11.5}%
-\contentsline {subsection}{\numberline {11.6}Positioning of This Work}{40}{subsection.11.6}%
-\contentsline {section}{\numberline {12}Future Work}{40}{section.12}%
-\contentsline {paragraph}{Faithfulness proof for typed rows.}{40}{section*.7}%
-\contentsline {paragraph}{Quasar-style partial evaluation.}{40}{section*.8}%
-\contentsline {paragraph}{Zero-knowledge.}{40}{section*.9}%
-\contentsline {paragraph}{Long-chain accumulation.}{41}{section*.10}%
-\contentsline {paragraph}{Broader comparisons.}{41}{section*.11}%
-\contentsline {section}{\numberline {13}Conclusion}{41}{section.13}%
+\contentsline {paragraph}{Long-chain accumulation.}{26}{section*.5}%
+\contentsline {section}{\numberline {8}Implementation}{27}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Routes and Data Model}{27}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Single-Oracle versus Multi-Oracle Organization}{27}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Encoded Folding Transition}{28}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Tests and Guardrails}{28}{subsection.8.4}%
+\contentsline {section}{\numberline {9}Evaluation}{29}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Experimental Setup}{29}{subsection.9.1}%
+\contentsline {paragraph}{Measurement protocol.}{30}{section*.6}%
+\contentsline {subsection}{\numberline {9.2}Product Public-Verifier Baseline}{30}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}K6a Explicit Accumulator Route}{31}{subsection.9.3}%
+\contentsline {subsection}{\numberline {9.4}N8 Integrated Route and Native Multi-Oracle Evidence}{32}{subsection.9.4}%
+\contentsline {subsection}{\numberline {9.5}Bottleneck Analysis}{34}{subsection.9.5}%
+\contentsline {section}{\numberline {10}Challenges and Limitations}{35}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Relation and Transcript Faithfulness}{35}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Prototype Boundaries}{35}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Remaining Gaps}{35}{subsection.10.3}%
+\contentsline {section}{\numberline {11}Related Work}{36}{section.11}%
+\contentsline {subsection}{\numberline {11.1}WHIR and Reed--Solomon Proximity Testing}{36}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}Symphony and Lattice-Based Folding}{36}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Commit-and-Prove SNARKs}{37}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Accumulation and Folding Schemes}{37}{subsection.11.4}%
+\contentsline {subsection}{\numberline {11.5}Transparent SNARKs and Spartan}{37}{subsection.11.5}%
+\contentsline {subsection}{\numberline {11.6}Positioning of This Work}{37}{subsection.11.6}%
+\contentsline {section}{\numberline {12}Future Work}{38}{section.12}%
+\contentsline {paragraph}{Faithfulness proof for typed rows.}{38}{section*.7}%
+\contentsline {paragraph}{Quasar-style partial evaluation.}{38}{section*.8}%
+\contentsline {paragraph}{Zero-knowledge.}{38}{section*.9}%
+\contentsline {paragraph}{Long-chain accumulation.}{38}{section*.10}%
+\contentsline {paragraph}{Broader comparisons.}{39}{section*.11}%
+\contentsline {section}{\numberline {13}Conclusion}{39}{section.13}%
